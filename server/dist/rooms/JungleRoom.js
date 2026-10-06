@@ -27,6 +27,8 @@ class JungleRoom extends colyseus_1.Room {
     onCreate(options) {
         this.setState(new GameState_1.GameState());
         this.state.status = "WAITING";
+        // 60 FPS ultra-low latency patch rate (16.6ms)
+        this.setPatchRate(1000 / 60);
         // Initialize static Bushes on map
         this.createStaticBushes();
         // Initialize Item Pickups
@@ -165,14 +167,24 @@ class JungleRoom extends colyseus_1.Room {
         }
     }
     onJoin(client, options) {
-        console.log(`Player connected: ${client.sessionId}`);
+        const playerName = (options && typeof options.name === "string" && options.name.trim())
+            ? options.name.trim().slice(0, 16)
+            : "Michi Campeón";
+        const skinColor = (options && typeof options.skin === "number" && !isNaN(options.skin))
+            ? Math.max(0, Math.min(5, Math.floor(options.skin)))
+            : 0;
+        console.log(`Player connected: ${client.sessionId} (Name: ${playerName}, Skin: ${skinColor})`);
         let player = this.state.players.get(client.sessionId);
         if (!player) {
             player = new GameState_1.Player();
             player.id = client.sessionId;
-            player.name = "Michi Campeón";
+            player.name = playerName;
             player.isBot = false;
-            player.catColor = 0; // 0 = Player Emerald
+            player.catColor = skinColor;
+        }
+        else {
+            player.name = playerName;
+            player.catColor = skinColor;
         }
         const angle = Math.random() * Math.PI * 2;
         const dist = Math.random() * (this.state.zone.currentRadius * 0.5);

@@ -1,5 +1,5 @@
 import { Room, Client } from "colyseus";
-import { GameState, Player, Projectile, Trap, Bush, ItemPickup } from "./schema/GameState";
+import { GameState, Player, Projectile, Trap, Bush, ItemPickup, Obstacle } from "./schema/GameState";
 
 interface MovePayload {
   dx: number;
@@ -16,6 +16,14 @@ interface TrapPayload {
   y: number;
 }
 
+interface SwitchWeaponPayload {
+  weapon: string;
+}
+
+interface EmotePayload {
+  emote: string;
+}
+
 interface BotController {
   id: string;
   changeDirTimer: number;
@@ -29,6 +37,8 @@ export class JungleRoom extends Room<GameState> {
   maxClients = 16;
   private projectileIdCounter = 0;
   private trapIdCounter = 0;
+  private obstacleIdCounter = 0;
+  private itemIdCounter = 0;
   private zonePhaseDuration = 25; // seconds per safe phase
   private zoneShrinkDuration = 14; // seconds per shrink transition
   private zoneShrinkTimer = 0;
@@ -49,8 +59,14 @@ export class JungleRoom extends Room<GameState> {
     this.setState(new GameState());
     this.state.status = "WAITING";
 
+    // 60 FPS ultra-low latency patch rate (16.6ms)
+    this.setPatchRate(1000 / 60);
+
     // Initialize static Bushes on map
     this.createStaticBushes();
+
+    // Initialize Obstacles (Wood Crates, Explosive Barrels, Boulders, Trees)
+    this.createStaticObstacles();
 
     // Initialize Item Pickups
     this.createItemPickups();
@@ -84,8 +100,25 @@ export class JungleRoom extends Room<GameState> {
       }
 
       const dt = 1 / 60;
-      const newX = player.x + dx * baseSpeed * dt;
-      const newY = player.y + dy * baseSpeed * dt;
+      let newX = player.x + dx * baseSpeed * dt;
+      let newY = player.y + dy * baseSpeed * dt;
+
+      // Obstacle collision response (stop player from walking into solid obstacles)
+      if (!player.isGhost) {
+        const pRadius = 22;
+        this.state.obstacles.forEach((obs) => {
+          if (obs.destroyed) return;
+          const dist = Math.hypot(newX - obs.x, newY - obs.y);
+          const minDist = pRadius + obs.radius;
+          if (dist < minDist && dist > 0) {
+            const overlap = minDist - dist;
+            const nx = (newX - obs.x) / dist;
+            const ny = (newY - obs.y) / dist;
+            newX += nx * overlap;
+            newY += ny * overlap;
+          }
+        });
+      }
 
       player.x = Math.max(30, Math.min(this.state.worldWidth - 30, newX));
       player.y = Math.max(30, Math.min(this.state.worldHeight - 30, newY));
@@ -112,7 +145,35 @@ export class JungleRoom extends Room<GameState> {
 
       const angle = typeof data.angle === "number" ? data.angle : player.rotation;
       this.spawnProjectiles(player, angle);
-      player.shootCooldown = player.activeBuff === "SPEED" ? 0.18 : 0.25;
+      
+      const w = player.equippedWeapon;
+      let cooldown = 0.25;
+      if (w === "SHOTGUN") cooldown = 0.65;
+      else if (w === "SNIPER") cooldown = 0.85;
+      else if (w === "GRENADE") cooldown = 0.75;
+      else if (w === "MELEE") cooldown = 0.2;
+      else cooldown = 0.22;
+
+      if (player.activeBuff === "SPEED") cooldown *= 0.7;
+      player.shootCooldown = cooldown;
+    });
+
+    this.onMessage("switchWeapon", (client, data: SwitchWeaponPayload) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player || player.isGhost) return;
+      const valid = ["LASER", "SHOTGUN", "SNIPER", "GRENADE", "MELEE"];
+      if (valid.includes(data.weapon)) {
+        player.equippedWeapon = data.weapon;
+      }
+    });
+
+    this.onMessage("emote", (client, data: EmotePayload) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+      const emote = String(data.emote || "🐾").slice(0, 4);
+      player.lastEmote = emote;
+      player.emoteTimer = 2.5;
+      this.broadcast("playerEmote", { id: client.sessionId, emote });
     });
 
     this.onMessage("placeTrap", (client, data: TrapPayload) => {
@@ -157,10 +218,150 @@ export class JungleRoom extends Room<GameState> {
     this.state.zone.isShrinking = false;
   }
 
+  private applyDamage(player: Player, damage: number, attackerId?: string, weaponName = "Arma") {
+    if (player.isGhost) return;
+
+    let finalDmg = damage;
+    if (player.shield > 0) {
+      const shieldAbsorb = Math.min(player.shield, damage * 0.75);
+      player.shield -= shieldAbsorb;
+      finalDmg = damage - shieldAbsorb;
+    }
+
+    player.hp -= finalDmg;
+    if (player.hp <= 0) {
+      player.hp = 0;
+      player.isGhost = true;
+
+      // Drop loot on death
+      this.spawnDeathLoot(player.x, player.y);
+
+      if (attackerId) {
+        const killer = this.state.players.get(attackerId);
+        if (killer) killer.kills += 1;
+        this.broadcast("kill", {
+          killerId: attackerId,
+          killerName: killer ? killer.name : "Alguien",
+          victimId: player.id,
+          victimName: player.name,
+          weapon: weaponName,
+        });
+      }
+
+      this.updateAliveCount();
+    }
+  }
+
+  private spawnDeathLoot(x: number, y: number) {
+    const lootTypes = ["MEDKIT", "SHIELD", "SHOTGUN", "SNIPER", "SPEED"];
+    const chosen = lootTypes[Math.floor(Math.random() * lootTypes.length)];
+    const item = new ItemPickup();
+    item.id = `loot_drop_${++this.itemIdCounter}_${Date.now()}`;
+    item.x = x + (Math.random() - 0.5) * 40;
+    item.y = y + (Math.random() - 0.5) * 40;
+    item.itemType = chosen;
+    item.active = true;
+    item.respawnTimer = 0;
+    this.state.items.set(item.id, item);
+  }
+
   private spawnProjectiles(player: Player, angle: number) {
+    const weapon = player.equippedWeapon;
     const isTriple = player.activeBuff === "TRIPLE";
+
+    if (weapon === "MELEE") {
+      // Melee attack: Instant slash area
+      const slashX = player.x + Math.cos(angle) * 35;
+      const slashY = player.y + Math.sin(angle) * 35;
+      
+      this.state.players.forEach((target) => {
+        if (target.id === player.id || target.isGhost) return;
+        const d = Math.hypot(target.x - slashX, target.y - slashY);
+        if (d < 50) {
+          this.applyDamage(target, 35, player.id, "Garras Felinas");
+          this.broadcast("hit", { x: target.x, y: target.y, damage: 35, victimId: target.id, shooterId: player.id });
+        }
+      });
+
+      // Also damage obstacles
+      this.state.obstacles.forEach((obs) => {
+        if (obs.destroyed) return;
+        const d = Math.hypot(obs.x - slashX, obs.y - slashY);
+        if (d < 50 + obs.radius) {
+          this.damageObstacle(obs, 35, player.id);
+        }
+      });
+
+      this.broadcast("playerMelee", { id: player.id, x: slashX, y: slashY, angle });
+      return;
+    }
+
+    if (weapon === "SHOTGUN") {
+      const pelletCount = isTriple ? 7 : 5;
+      const spread = 0.28;
+      for (let i = 0; i < pelletCount; i++) {
+        const offset = (i - (pelletCount - 1) / 2) * (spread / (pelletCount - 1));
+        const a = angle + offset + (Math.random() - 0.5) * 0.04;
+        const speed = 640 + Math.random() * 40;
+
+        const proj = new Projectile();
+        proj.id = `proj_${++this.projectileIdCounter}_${Date.now()}`;
+        proj.x = player.x + Math.cos(a) * 26;
+        proj.y = player.y + Math.sin(a) * 26;
+        proj.vx = Math.cos(a) * speed;
+        proj.vy = Math.sin(a) * speed;
+        proj.ownerId = player.id;
+        proj.damage = player.isBot ? 9 : 13;
+        proj.lifetime = 1.1;
+        proj.projType = "PELLET";
+        proj.radius = 4;
+        this.state.projectiles.set(proj.id, proj);
+      }
+      this.broadcast("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SHOTGUN" });
+      return;
+    }
+
+    if (weapon === "SNIPER") {
+      const speed = 1100;
+      const proj = new Projectile();
+      proj.id = `proj_${++this.projectileIdCounter}_${Date.now()}`;
+      proj.x = player.x + Math.cos(angle) * 30;
+      proj.y = player.y + Math.sin(angle) * 30;
+      proj.vx = Math.cos(angle) * speed;
+      proj.vy = Math.sin(angle) * speed;
+      proj.ownerId = player.id;
+      proj.damage = player.isBot ? 30 : 52;
+      proj.lifetime = 2.8;
+      proj.projType = "SNIPER_BEAM";
+      proj.radius = 7;
+      this.state.projectiles.set(proj.id, proj);
+
+      this.broadcast("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SNIPER" });
+      return;
+    }
+
+    if (weapon === "GRENADE") {
+      const speed = 380;
+      const proj = new Projectile();
+      proj.id = `proj_${++this.projectileIdCounter}_${Date.now()}`;
+      proj.x = player.x + Math.cos(angle) * 26;
+      proj.y = player.y + Math.sin(angle) * 26;
+      proj.vx = Math.cos(angle) * speed;
+      proj.vy = Math.sin(angle) * speed;
+      proj.ownerId = player.id;
+      proj.damage = 55;
+      proj.lifetime = 1.2;
+      proj.projType = "GRENADE";
+      proj.radius = 10;
+      this.state.projectiles.set(proj.id, proj);
+
+      this.broadcast("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "GRENADE" });
+      return;
+    }
+
+    // Default LASER rifle
     const angles = isTriple ? [angle - 0.18, angle, angle + 0.18] : [angle];
-    const speed = 680;
+    const speed = 720;
 
     for (const a of angles) {
       const proj = new Projectile();
@@ -170,17 +371,75 @@ export class JungleRoom extends Room<GameState> {
       proj.vx = Math.cos(a) * speed;
       proj.vy = Math.sin(a) * speed;
       proj.ownerId = player.id;
-      proj.damage = player.isBot ? 14 : (isTriple ? 22 : 25);
+      proj.damage = player.isBot ? 14 : (isTriple ? 20 : 25);
       proj.lifetime = 2.4;
+      proj.projType = "LASER";
+      proj.radius = 6;
       this.state.projectiles.set(proj.id, proj);
     }
 
-    this.broadcast("playerShoot", { id: player.id, x: player.x, y: player.y, angle, isTriple });
+    this.broadcast("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "LASER", isTriple });
+  }
+
+  private damageObstacle(obs: Obstacle, dmg: number, shooterId?: string) {
+    if (obs.destroyed) return;
+    obs.hp -= dmg;
+    if (obs.hp <= 0) {
+      obs.hp = 0;
+      obs.destroyed = true;
+
+      if (obs.obstacleType === "BARREL") {
+        // Explosive Barrel Detonates!
+        this.triggerBarrelExplosion(obs.x, obs.y, shooterId);
+      } else if (obs.obstacleType === "CRATE") {
+        // Crate drops loot
+        this.spawnCrateLoot(obs.x, obs.y);
+      }
+    }
+  }
+
+  private triggerBarrelExplosion(x: number, y: number, shooterId?: string) {
+    this.broadcast("explosion", { x, y, radius: 140, type: "BARREL" });
+
+    // Damage nearby players & bots
+    this.state.players.forEach((player) => {
+      if (player.isGhost) return;
+      const dist = Math.hypot(player.x - x, player.y - y);
+      if (dist < 140) {
+        const falloff = 1 - dist / 140;
+        const dmg = Math.floor(65 * falloff);
+        this.applyDamage(player, dmg, shooterId, "Barril Explosivo");
+      }
+    });
+
+    // Destroy adjacent crates
+    this.state.obstacles.forEach((obs) => {
+      if (obs.destroyed) return;
+      const dist = Math.hypot(obs.x - x, obs.y - y);
+      if (dist < 140) {
+        this.damageObstacle(obs, 100, shooterId);
+      }
+    });
+  }
+
+  private spawnCrateLoot(x: number, y: number) {
+    const possible = ["MEDKIT", "SHIELD", "SHOTGUN", "SNIPER", "GRENADE", "SPEED", "TRIPLE"];
+    const chosen = possible[Math.floor(Math.random() * possible.length)];
+
+    const item = new ItemPickup();
+    item.id = `crate_loot_${++this.itemIdCounter}_${Date.now()}`;
+    item.x = x;
+    item.y = y;
+    item.itemType = chosen;
+    item.active = true;
+    item.respawnTimer = 0;
+    this.state.items.set(item.id, item);
   }
 
   private spawnBots() {
     this.botControllers.clear();
     const colors = [1, 2, 3, 4, 5, 2];
+    const botWeapons = ["LASER", "SHOTGUN", "SNIPER", "LASER", "SHOTGUN", "SNIPER"];
 
     for (let i = 0; i < this.botNames.length; i++) {
       const botId = `bot_${i + 1}`;
@@ -189,6 +448,7 @@ export class JungleRoom extends Room<GameState> {
       bot.name = this.botNames[i];
       bot.isBot = true;
       bot.catColor = colors[i % colors.length];
+      bot.equippedWeapon = botWeapons[i % botWeapons.length];
 
       const angle = (i / this.botNames.length) * Math.PI * 2;
       const dist = 550 + Math.random() * 380;
@@ -197,6 +457,8 @@ export class JungleRoom extends Room<GameState> {
       bot.rotation = angle + Math.PI;
       bot.hp = 100;
       bot.maxHp = 100;
+      bot.shield = 25;
+      bot.maxShield = 50;
       bot.isGhost = false;
       bot.isHidden = false;
       bot.kills = 0;
@@ -214,15 +476,25 @@ export class JungleRoom extends Room<GameState> {
   }
 
   onJoin(client: Client, options: any) {
-    console.log(`Player connected: ${client.sessionId}`);
+    const playerName = (options && typeof options.name === "string" && options.name.trim()) 
+      ? options.name.trim().slice(0, 16) 
+      : "Michi Campeón";
+    const skinColor = (options && typeof options.skin === "number" && !isNaN(options.skin))
+      ? Math.max(0, Math.min(5, Math.floor(options.skin)))
+      : 0;
+
+    console.log(`Player connected: ${client.sessionId} (Name: ${playerName}, Skin: ${skinColor})`);
 
     let player = this.state.players.get(client.sessionId);
     if (!player) {
       player = new Player();
       player.id = client.sessionId;
-      player.name = "Michi Campeón";
+      player.name = playerName;
       player.isBot = false;
-      player.catColor = 0; // 0 = Player Emerald
+      player.catColor = skinColor;
+    } else {
+      player.name = playerName;
+      player.catColor = skinColor;
     }
 
     const angle = Math.random() * Math.PI * 2;
@@ -232,6 +504,9 @@ export class JungleRoom extends Room<GameState> {
     player.rotation = 0;
     player.hp = 100;
     player.maxHp = 100;
+    player.shield = 50;
+    player.maxShield = 50;
+    player.equippedWeapon = "LASER";
     player.isGhost = false;
     player.isHidden = false;
     player.kills = 0;
@@ -273,6 +548,11 @@ export class JungleRoom extends Room<GameState> {
       if (player.trapCooldown > 0) player.trapCooldown = Math.max(0, player.trapCooldown - dt);
       if (player.shootCooldown > 0) player.shootCooldown = Math.max(0, player.shootCooldown - dt);
 
+      if (player.emoteTimer > 0) {
+        player.emoteTimer -= dt;
+        if (player.emoteTimer <= 0) player.lastEmote = "";
+      }
+
       // Buffs expiration
       if (player.buffTimer > 0) {
         player.buffTimer -= dt;
@@ -289,13 +569,7 @@ export class JungleRoom extends Room<GameState> {
         const distFromZoneCenter = Math.hypot(player.x - this.state.zone.x, player.y - this.state.zone.y);
         if (distFromZoneCenter > this.state.zone.currentRadius) {
           const damageRate = 7.0 + this.state.zone.phase * 3.0;
-          player.hp -= damageRate * dt;
-          if (player.hp <= 0) {
-            player.hp = 0;
-            player.isGhost = true;
-            this.broadcast("playerDied", { victimId: player.id, victimName: player.name, reason: "ZONE" });
-            this.updateAliveCount();
-          }
+          this.applyDamage(player, damageRate * dt, undefined, "Niebla Tóxica");
         }
       }
     });
@@ -303,52 +577,58 @@ export class JungleRoom extends Room<GameState> {
     // 3. Update Item Pickups
     this.updateItems(dt);
 
-    // 4. Update Projectiles & Check Collisions
-    const projToDelete: string[] = [];
+    // 4. Update Projectiles & Check Collisions (Players & Obstacles)
+    const projToDelete = new Set<string>();
     this.state.projectiles.forEach((proj, key) => {
       proj.x += proj.vx * dt;
       proj.y += proj.vy * dt;
       proj.lifetime -= dt;
 
-      if (proj.lifetime <= 0 || proj.x < 0 || proj.x > this.state.worldWidth || proj.y < 0 || proj.y > this.state.worldHeight) {
-        projToDelete.push(key);
+      if (proj.lifetime <= 0) {
+        projToDelete.add(key);
+        // Grenade explodes at end of lifetime
+        if (proj.projType === "GRENADE") {
+          this.triggerBarrelExplosion(proj.x, proj.y, proj.ownerId);
+        }
         return;
       }
 
+      if (proj.x < 0 || proj.x > this.state.worldWidth || proj.y < 0 || proj.y > this.state.worldHeight) {
+        projToDelete.add(key);
+        return;
+      }
+
+      // Collision check with Obstacles
+      this.state.obstacles.forEach((obs) => {
+        if (projToDelete.has(key) || obs.destroyed) return;
+        const dist = Math.hypot(obs.x - proj.x, obs.y - proj.y);
+        if (dist < obs.radius + proj.radius) {
+          projToDelete.add(key);
+          this.damageObstacle(obs, proj.damage, proj.ownerId);
+          this.broadcast("hit", { x: proj.x, y: proj.y, damage: proj.damage });
+        }
+      });
+
       // Collision check with alive players & bots
       this.state.players.forEach((player) => {
-        if (projToDelete.includes(key)) return;
+        if (projToDelete.has(key)) return;
         if (player.isGhost) return;
         if (player.id === proj.ownerId) return;
 
         const dist = Math.hypot(player.x - proj.x, player.y - proj.y);
         if (dist < 26) {
-          player.hp -= proj.damage;
-          projToDelete.push(key);
-
-          this.broadcast("hit", {
-            x: player.x,
-            y: player.y,
-            damage: proj.damage,
-            victimId: player.id,
-            shooterId: proj.ownerId,
-          });
-
-          if (player.hp <= 0) {
-            player.hp = 0;
-            player.isGhost = true;
-
-            const shooter = this.state.players.get(proj.ownerId);
-            if (shooter) shooter.kills += 1;
-
-            this.broadcast("kill", {
-              killerId: proj.ownerId,
-              killerName: shooter ? shooter.name : "Alguien",
+          projToDelete.add(key);
+          if (proj.projType === "GRENADE") {
+            this.triggerBarrelExplosion(proj.x, proj.y, proj.ownerId);
+          } else {
+            this.applyDamage(player, proj.damage, proj.ownerId, "Bláster");
+            this.broadcast("hit", {
+              x: player.x,
+              y: player.y,
+              damage: proj.damage,
               victimId: player.id,
-              victimName: player.name,
+              shooterId: proj.ownerId,
             });
-
-            this.updateAliveCount();
           }
         }
       });
@@ -357,36 +637,19 @@ export class JungleRoom extends Room<GameState> {
     projToDelete.forEach((id) => this.state.projectiles.delete(id));
 
     // 5. Check Traps Collisions
-    const trapToDelete: string[] = [];
+    const trapToDelete = new Set<string>();
     this.state.traps.forEach((trap, key) => {
       if (!trap.active) return;
 
       this.state.players.forEach((player) => {
-        if (trapToDelete.includes(key)) return;
+        if (trapToDelete.has(key)) return;
         if (player.isGhost) return;
 
         const dist = Math.hypot(player.x - trap.x, player.y - trap.y);
         if (dist < 32) {
-          player.hp -= trap.damage;
-          trapToDelete.push(key);
-
+          trapToDelete.add(key);
           this.broadcast("trapExplode", { x: trap.x, y: trap.y, victimId: player.id });
-
-          if (player.hp <= 0) {
-            player.hp = 0;
-            player.isGhost = true;
-            const trapper = this.state.players.get(trap.ownerId);
-            if (trapper) trapper.kills += 1;
-
-            this.broadcast("kill", {
-              killerId: trap.ownerId,
-              killerName: trapper ? trapper.name : "Fantasma",
-              victimId: player.id,
-              victimName: player.name,
-            });
-
-            this.updateAliveCount();
-          }
+          this.applyDamage(player, trap.damage, trap.ownerId, "Trampa Espectral");
         }
       });
     });
@@ -403,7 +666,6 @@ export class JungleRoom extends Room<GameState> {
       if (!bot) return;
 
       if (bot.isGhost) {
-        // Ghost bot randomly places traps
         ctrl.dashTimer -= dt;
         if (ctrl.dashTimer <= 0 && bot.trapCooldown <= 0) {
           const trap = new Trap();
@@ -419,17 +681,14 @@ export class JungleRoom extends Room<GameState> {
         return;
       }
 
-      // Check distance to zone center
       const distToZone = Math.hypot(bot.x - this.state.zone.x, bot.y - this.state.zone.y);
       const isOutsideZone = distToZone > this.state.zone.currentRadius * 0.85;
 
-      // Find nearest alive enemy
       let nearestEnemy: Player | null = null;
       let minEnemyDist = Infinity;
 
       for (const [_, p] of this.state.players) {
         if (p.id === bot.id || p.isGhost) continue;
-        // Don't target hidden enemies in bush unless very close
         if (p.isHidden && !bot.isHidden) {
           const d = Math.hypot(p.x - bot.x, p.y - bot.y);
           if (d > 120) continue;
@@ -441,41 +700,33 @@ export class JungleRoom extends Room<GameState> {
         }
       }
 
-      // Direction logic
       ctrl.changeDirTimer -= dt;
       ctrl.dashTimer -= dt;
 
       if (isOutsideZone) {
-        // Urgent: run toward safe zone center!
         const angleToCenter = Math.atan2(this.state.zone.y - bot.y, this.state.zone.x - bot.x);
         ctrl.targetDx = Math.cos(angleToCenter);
         ctrl.targetDy = Math.sin(angleToCenter);
         bot.rotation = angleToCenter;
       } else if (nearestEnemy && minEnemyDist < 450) {
-        // Combat mode
         const targetAngle = Math.atan2(nearestEnemy.y - bot.y, nearestEnemy.x - bot.x);
         const angleVar = nearestEnemy.isBot ? (Math.random() - 0.5) * 0.4 : (Math.random() - 0.5) * 0.2;
         bot.rotation = targetAngle + angleVar;
 
-        // Shoot if line of sight
         if (bot.shootCooldown <= 0 && minEnemyDist < 380) {
           this.spawnProjectiles(bot, bot.rotation);
-          bot.shootCooldown = nearestEnemy.isBot ? (1.8 + Math.random() * 1.0) : (1.2 + Math.random() * 0.6);
+          bot.shootCooldown = nearestEnemy.isBot ? (1.6 + Math.random() * 0.8) : (1.0 + Math.random() * 0.5);
         }
 
-        // Tactical movement: strafe or approach
         if (minEnemyDist < 140) {
-          // Back up or circle
           const perpAngle = targetAngle + Math.PI / 2;
           ctrl.targetDx = Math.cos(perpAngle);
           ctrl.targetDy = Math.sin(perpAngle);
         } else {
-          // Advance gently
           ctrl.targetDx = Math.cos(targetAngle) * 0.8;
           ctrl.targetDy = Math.sin(targetAngle) * 0.8;
         }
 
-        // Occasional combat dash
         if (ctrl.dashTimer <= 0 && bot.dashCooldown <= 0 && minEnemyDist < 200) {
           bot.dashCooldown = 3.5;
           ctrl.dashTimer = 4 + Math.random() * 3;
@@ -486,7 +737,6 @@ export class JungleRoom extends Room<GameState> {
           this.broadcast("playerDash", { id: bot.id, x: bot.x, y: bot.y });
         }
       } else {
-        // Patrol wander
         if (ctrl.changeDirTimer <= 0) {
           const wanderAngle = Math.random() * Math.PI * 2;
           ctrl.targetDx = Math.cos(wanderAngle) * 0.7;
@@ -496,12 +746,27 @@ export class JungleRoom extends Room<GameState> {
         }
       }
 
-      // Move bot
       let speed = bot.isGhost ? 260 : 190;
       if (bot.activeBuff === "SPEED") speed *= 1.35;
 
-      bot.x = Math.max(30, Math.min(this.state.worldWidth - 30, bot.x + ctrl.targetDx * speed * dt));
-      bot.y = Math.max(30, Math.min(this.state.worldHeight - 30, bot.y + ctrl.targetDy * speed * dt));
+      let nextX = bot.x + ctrl.targetDx * speed * dt;
+      let nextY = bot.y + ctrl.targetDy * speed * dt;
+
+      // Bot obstacle collision
+      const pRadius = 22;
+      this.state.obstacles.forEach((obs) => {
+        if (obs.destroyed) return;
+        const dist = Math.hypot(nextX - obs.x, nextY - obs.y);
+        const minDist = pRadius + obs.radius;
+        if (dist < minDist && dist > 0) {
+          const overlap = minDist - dist;
+          nextX += ((nextX - obs.x) / dist) * overlap;
+          nextY += ((nextY - obs.y) / dist) * overlap;
+        }
+      });
+
+      bot.x = Math.max(30, Math.min(this.state.worldWidth - 30, nextX));
+      bot.y = Math.max(30, Math.min(this.state.worldHeight - 30, nextY));
     });
   }
 
@@ -515,23 +780,26 @@ export class JungleRoom extends Room<GameState> {
         return;
       }
 
-      // Check pickup overlap with alive players/bots
       this.state.players.forEach((player) => {
         if (!item.active || player.isGhost) return;
 
         const dist = Math.hypot(player.x - item.x, player.y - item.y);
         if (dist < 34) {
           item.active = false;
-          item.respawnTimer = 16.0; // 16 seconds to respawn
+          item.respawnTimer = 16.0;
 
           if (item.itemType === "MEDKIT") {
-            player.hp = Math.min(player.maxHp, player.hp + 35);
+            player.hp = Math.min(player.maxHp, player.hp + 40);
+          } else if (item.itemType === "SHIELD") {
+            player.shield = Math.min(player.maxShield, player.shield + 50);
           } else if (item.itemType === "SPEED") {
             player.activeBuff = "SPEED";
             player.buffTimer = 7.0;
           } else if (item.itemType === "TRIPLE") {
             player.activeBuff = "TRIPLE";
             player.buffTimer = 9.0;
+          } else if (item.itemType === "SHOTGUN" || item.itemType === "SNIPER" || item.itemType === "GRENADE") {
+            player.equippedWeapon = item.itemType;
           }
 
           this.broadcast("itemPicked", {
@@ -560,7 +828,6 @@ export class JungleRoom extends Room<GameState> {
 
     this.state.aliveCount = alive;
 
-    // Victory check
     if (this.state.players.size > 1 && alive === 1 && this.state.status !== "VICTORY" && lastAlivePlayer) {
       this.state.status = "VICTORY";
       this.state.winnerId = lastAlivePlayer.id;
@@ -583,6 +850,12 @@ export class JungleRoom extends Room<GameState> {
     this.state.projectiles.clear();
     this.state.traps.clear();
 
+    // Reset obstacles
+    this.state.obstacles.forEach((obs) => {
+      obs.destroyed = false;
+      obs.hp = obs.maxHp;
+    });
+
     // Respawn all items
     this.state.items.forEach((item) => {
       item.active = true;
@@ -597,6 +870,9 @@ export class JungleRoom extends Room<GameState> {
       player.y = this.state.zone.y + Math.sin(angle) * dist;
       player.hp = 100;
       player.maxHp = 100;
+      player.shield = 50;
+      player.maxShield = 50;
+      player.equippedWeapon = "LASER";
       player.isGhost = false;
       player.isHidden = false;
       player.kills = 0;
@@ -674,16 +950,61 @@ export class JungleRoom extends Room<GameState> {
     });
   }
 
+  private createStaticObstacles() {
+    const obstacleData = [
+      // Wood Crates (Destructible, drop loot)
+      { type: "CRATE", x: 500, y: 500, hp: 60, r: 30 },
+      { type: "CRATE", x: 1500, y: 500, hp: 60, r: 30 },
+      { type: "CRATE", x: 500, y: 1500, hp: 60, r: 30 },
+      { type: "CRATE", x: 1500, y: 1500, hp: 60, r: 30 },
+      { type: "CRATE", x: 900, y: 900, hp: 60, r: 30 },
+      { type: "CRATE", x: 1100, y: 1100, hp: 60, r: 30 },
+      { type: "CRATE", x: 900, y: 1100, hp: 60, r: 30 },
+      { type: "CRATE", x: 1100, y: 900, hp: 60, r: 30 },
+
+      // Explosive Barrels (Detonate on destroy!)
+      { type: "BARREL", x: 750, y: 500, hp: 40, r: 26 },
+      { type: "BARREL", x: 1250, y: 500, hp: 40, r: 26 },
+      { type: "BARREL", x: 750, y: 1500, hp: 40, r: 26 },
+      { type: "BARREL", x: 1250, y: 1500, hp: 40, r: 26 },
+
+      // Boulders (Indestructible stone cover)
+      { type: "BOULDER", x: 800, y: 800, hp: 9999, r: 42 },
+      { type: "BOULDER", x: 1200, y: 1200, hp: 9999, r: 42 },
+      { type: "BOULDER", x: 1200, y: 800, hp: 9999, r: 42 },
+      { type: "BOULDER", x: 800, y: 1200, hp: 9999, r: 42 },
+
+      // Trees (Lush solid trees)
+      { type: "TREE", x: 300, y: 800, hp: 9999, r: 36 },
+      { type: "TREE", x: 1700, y: 800, hp: 9999, r: 36 },
+      { type: "TREE", x: 300, y: 1200, hp: 9999, r: 36 },
+      { type: "TREE", x: 1700, y: 1200, hp: 9999, r: 36 },
+    ];
+
+    obstacleData.forEach((d) => {
+      const obs = new Obstacle();
+      obs.id = `obs_${++this.obstacleIdCounter}`;
+      obs.x = d.x;
+      obs.y = d.y;
+      obs.obstacleType = d.type;
+      obs.hp = d.hp;
+      obs.maxHp = d.hp;
+      obs.radius = d.r;
+      obs.destroyed = false;
+      this.state.obstacles.set(obs.id, obs);
+    });
+  }
+
   private createItemPickups() {
     const itemsData = [
       { id: "item_med_1", x: 1000, y: 1000, type: "MEDKIT" },
-      { id: "item_med_2", x: 700, y: 700, type: "MEDKIT" },
-      { id: "item_med_3", x: 1300, y: 1300, type: "MEDKIT" },
-      { id: "item_spd_1", x: 800, y: 1200, type: "SPEED" },
+      { id: "item_shd_1", x: 1000, y: 800, type: "SHIELD" },
+      { id: "item_shd_2", x: 1000, y: 1200, type: "SHIELD" },
+      { id: "item_sg_1", x: 700, y: 700, type: "SHOTGUN" },
+      { id: "item_snp_1", x: 1300, y: 1300, type: "SNIPER" },
+      { id: "item_grn_1", x: 800, y: 1200, type: "GRENADE" },
       { id: "item_spd_2", x: 1200, y: 800, type: "SPEED" },
       { id: "item_tri_1", x: 500, y: 1000, type: "TRIPLE" },
-      { id: "item_tri_2", x: 1500, y: 1000, type: "TRIPLE" },
-      { id: "item_tri_3", x: 1000, y: 400, type: "TRIPLE" },
     ];
 
     itemsData.forEach((d) => {

@@ -4,7 +4,14 @@ import { MainScene } from "../game/scenes/MainScene";
 import { NetworkClient } from "../game/NetworkManager";
 import { createPhaserConfig } from "../game/PhaserGame";
 
-export const GameCanvas: React.FC = () => {
+interface GameCanvasProps {
+  playerConfig?: {
+    name: string;
+    skin: number;
+  };
+}
+
+export const GameCanvas: React.FC<GameCanvasProps> = ({ playerConfig }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const gameRef  = useRef<Phaser.Game | null>(null);
   const netRef   = useRef<NetworkClient | null>(null);
@@ -19,6 +26,9 @@ export const GameCanvas: React.FC = () => {
     /* 2. Crear escena con referencia al cliente */
     const scene = new MainScene();
     scene.net   = net;            // inyección directa antes de que Phaser llame a create()
+    if (playerConfig) {
+      scene.playerOptions = { name: playerConfig.name, skin: playerConfig.skin };
+    }
 
     /* 3. Arrancar Phaser */
     const config: Phaser.Types.Core.GameConfig = {

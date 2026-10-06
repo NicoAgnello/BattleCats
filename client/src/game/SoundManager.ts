@@ -1,10 +1,12 @@
 // Web Audio API Synthesizer for high-octane Battle Royale arcade SFX (Zero external assets)
 class SoundManager {
   private ctx: AudioContext | null = null;
-  public isMuted: boolean = false;
+  public isMuted: boolean = false;        // SFX
+  public isMusicMuted: boolean = false;   // BGM
+  private bgmInterval: any = null;
+  private bgmStep: number = 0;
 
   private getContext(): AudioContext | null {
-    if (this.isMuted) return null;
     if (!this.ctx) {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (AudioCtx) {
@@ -21,7 +23,82 @@ class SoundManager {
     this.isMuted = muted;
   }
 
+  public setMusicMuted(muted: boolean) {
+    this.isMusicMuted = muted;
+    if (muted) {
+      this.stopBGM();
+    } else {
+      this.startBGM();
+    }
+  }
+
+  public startBGM() {
+    if (this.isMusicMuted || this.bgmInterval) return;
+    const ctx = this.getContext();
+    if (ctx && ctx.state === "suspended") {
+      ctx.resume();
+    }
+
+    const notes = [220, 261.63, 329.63, 392, 440, 523.25, 440, 329.63];
+    const bass = [110, 110, 130.81, 146.83];
+
+    this.bgmStep = 0;
+    this.bgmInterval = setInterval(() => {
+      if (this.isMusicMuted) return;
+      const audioCtx = this.getContext();
+      if (!audioCtx) return;
+
+      const now = audioCtx.currentTime;
+
+      // Arpeggio synth note
+      const noteFreq = notes[this.bgmStep % notes.length];
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(noteFreq, now);
+
+      gain.gain.setValueAtTime(0.035, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.19);
+
+      // Bass note every 2 steps
+      if (this.bgmStep % 2 === 0) {
+        const bassFreq = bass[Math.floor(this.bgmStep / 2) % bass.length];
+        const bOsc = audioCtx.createOscillator();
+        const bGain = audioCtx.createGain();
+
+        bOsc.type = "triangle";
+        bOsc.frequency.setValueAtTime(bassFreq, now);
+
+        bGain.gain.setValueAtTime(0.05, now);
+        bGain.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+
+        bOsc.connect(bGain);
+        bGain.connect(audioCtx.destination);
+
+        bOsc.start(now);
+        bOsc.stop(now + 0.33);
+      }
+
+      this.bgmStep++;
+    }, 180);
+  }
+
+  public stopBGM() {
+    if (this.bgmInterval) {
+      clearInterval(this.bgmInterval);
+      this.bgmInterval = null;
+    }
+  }
+
   public playShoot(isTriple: boolean = false) {
+    if (this.isMuted) return;
     const ctx = this.getContext();
     if (!ctx) return;
 
@@ -44,6 +121,7 @@ class SoundManager {
   }
 
   public playHit() {
+    if (this.isMuted) return;
     const ctx = this.getContext();
     if (!ctx) return;
 
@@ -66,6 +144,7 @@ class SoundManager {
   }
 
   public playDash() {
+    if (this.isMuted) return;
     const ctx = this.getContext();
     if (!ctx) return;
 
@@ -88,6 +167,7 @@ class SoundManager {
   }
 
   public playPickup(type: string = "MEDKIT") {
+    if (this.isMuted) return;
     const ctx = this.getContext();
     if (!ctx) return;
 
@@ -114,6 +194,7 @@ class SoundManager {
   }
 
   public playTrapPlace() {
+    if (this.isMuted) return;
     const ctx = this.getContext();
     if (!ctx) return;
 
@@ -136,6 +217,7 @@ class SoundManager {
   }
 
   public playTrapExplode() {
+    if (this.isMuted) return;
     const ctx = this.getContext();
     if (!ctx) return;
 
@@ -158,6 +240,7 @@ class SoundManager {
   }
 
   public playKill() {
+    if (this.isMuted) return;
     const ctx = this.getContext();
     if (!ctx) return;
 
@@ -183,6 +266,7 @@ class SoundManager {
   }
 
   public playVictory() {
+    if (this.isMuted) return;
     const ctx = this.getContext();
     if (!ctx) return;
 
@@ -213,7 +297,92 @@ class SoundManager {
     });
   }
 
+  public playShotgun() {
+    if (this.isMuted) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(320, now);
+    osc.frequency.exponentialRampToValueAtTime(40, now + 0.22);
+
+    gain.gain.setValueAtTime(0.35, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.23);
+  }
+
+  public playSniper() {
+    if (this.isMuted) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(1200, now);
+    osc.frequency.exponentialRampToValueAtTime(120, now + 0.28);
+
+    gain.gain.setValueAtTime(0.32, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.29);
+  }
+
+  public playExplosion() {
+    if (this.isMuted) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(110, now);
+    osc.frequency.exponentialRampToValueAtTime(20, now + 0.45);
+
+    gain.gain.setValueAtTime(0.4, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.46);
+  }
+
+  public playEmote() {
+    if (this.isMuted) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(520, now);
+    osc.frequency.exponentialRampToValueAtTime(780, now + 0.12);
+
+    gain.gain.setValueAtTime(0.2, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.13);
+  }
+
   public playBush() {
+    if (this.isMuted) return;
     const ctx = this.getContext();
     if (!ctx) return;
 
@@ -237,3 +406,5 @@ class SoundManager {
 }
 
 export const soundManager = new SoundManager();
+
+

@@ -10,6 +10,8 @@ export class Player extends Schema {
   @type("number") rotation: number = 0;
   @type("number") hp: number = 100;
   @type("number") maxHp: number = 100;
+  @type("number") shield: number = 0;
+  @type("number") maxShield: number = 50;
   @type("boolean") isGhost: boolean = false;
   @type("boolean") isHidden: boolean = false;
   @type("number") dashCooldown: number = 0; // remaining s
@@ -18,6 +20,9 @@ export class Player extends Schema {
   @type("number") kills: number = 0;
   @type("string") activeBuff: string = ""; // "SPEED", "TRIPLE", ""
   @type("number") buffTimer: number = 0;
+  @type("string") equippedWeapon: string = "LASER"; // "LASER", "SHOTGUN", "SNIPER", "GRENADE", "MELEE"
+  @type("string") lastEmote: string = ""; // "🐾", "🔥", "💀", "😎", "😿", "🏆"
+  @type("number") emoteTimer: number = 0;
 }
 
 export class Projectile extends Schema {
@@ -29,6 +34,8 @@ export class Projectile extends Schema {
   @type("string") ownerId: string = "";
   @type("number") damage: number = 25;
   @type("number") lifetime: number = 2.0;
+  @type("string") projType: string = "LASER"; // "LASER", "PELLET", "SNIPER_BEAM", "GRENADE"
+  @type("number") radius: number = 6;
 }
 
 export class Trap extends Schema {
@@ -48,11 +55,22 @@ export class Bush extends Schema {
   @type("number") height: number = 120;
 }
 
+export class Obstacle extends Schema {
+  @type("string") id: string = "";
+  @type("number") x: number = 0;
+  @type("number") y: number = 0;
+  @type("string") obstacleType: string = "CRATE"; // "CRATE", "BARREL", "BOULDER", "TREE"
+  @type("number") hp: number = 60;
+  @type("number") maxHp: number = 60;
+  @type("number") radius: number = 32;
+  @type("boolean") destroyed: boolean = false;
+}
+
 export class ItemPickup extends Schema {
   @type("string") id: string = "";
   @type("number") x: number = 0;
   @type("number") y: number = 0;
-  @type("string") itemType: string = "MEDKIT"; // "MEDKIT", "SPEED", "TRIPLE"
+  @type("string") itemType: string = "MEDKIT"; // "MEDKIT", "SPEED", "TRIPLE", "SHIELD", "SHOTGUN", "SNIPER", "GRENADE"
   @type("boolean") active: boolean = true;
   @type("number") respawnTimer: number = 0;
 }
@@ -72,6 +90,7 @@ export class GameState extends Schema {
   @type({ map: Projectile }) projectiles = new MapSchema<Projectile>();
   @type({ map: Trap }) traps = new MapSchema<Trap>();
   @type({ map: Bush }) bushes = new MapSchema<Bush>();
+  @type({ map: Obstacle }) obstacles = new MapSchema<Obstacle>();
   @type({ map: ItemPickup }) items = new MapSchema<ItemPickup>();
   @type(ZoneState) zone = new ZoneState();
   @type("number") worldWidth: number = 2000;

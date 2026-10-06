@@ -15,10 +15,10 @@ export class NetworkClient {
     this.client = new Client(serverUrl);
   }
 
-  public async connect(): Promise<Room<GameState>> {
-    this.room = await this.client.joinOrCreate<GameState>("jungle_room", {}, GameState);
+  public async connect(options: { name?: string; skin?: number } = {}): Promise<Room<GameState>> {
+    this.room = await this.client.joinOrCreate<GameState>("jungle_room", options, GameState);
     this.sessionId = this.room.sessionId;
-    console.log(`✅ Sala conectada. SessionId: ${this.sessionId}`);
+    console.log(`✅ Sala conectada. SessionId: ${this.sessionId}`, options);
     return this.room;
   }
 
@@ -45,8 +45,17 @@ export class NetworkClient {
     this.room?.send("placeTrap", { x, y });
   }
 
+  public sendSwitchWeapon(weapon: string) {
+    this.room?.send("switchWeapon", { weapon });
+  }
+
+  public sendEmote(emote: string) {
+    this.room?.send("emote", { emote });
+  }
+
   public sendRestart() {
     this.room?.send("restart");
   }
 }
+
 
