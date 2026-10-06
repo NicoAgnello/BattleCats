@@ -1,0 +1,47 @@
+import React, { useEffect, useRef } from "react";
+import Phaser from "phaser";
+import { MainScene } from "../game/scenes/MainScene";
+import { NetworkClient } from "../game/NetworkManager";
+import { createPhaserConfig } from "../game/PhaserGame";
+
+export const GameCanvas: React.FC = () => {
+  const mountRef = useRef<HTMLDivElement>(null);
+  const gameRef  = useRef<Phaser.Game | null>(null);
+  const netRef   = useRef<NetworkClient | null>(null);
+
+  useEffect(() => {
+    if (!mountRef.current || gameRef.current) return;
+
+    /* 1. Crear cliente de red */
+    const net = new NetworkClient();
+    netRef.current = net;
+
+    /* 2. Crear escena con referencia al cliente */
+    const scene = new MainScene();
+    scene.net   = net;            // inyección directa antes de que Phaser llame a create()
+
+    /* 3. Arrancar Phaser */
+    const config: Phaser.Types.Core.GameConfig = {
+      ...createPhaserConfig("phaser-root"),
+      scene: [scene],
+    };
+
+    gameRef.current = new Phaser.Game(config);
+
+    /* 4. Limpieza al desmontar */
+    return () => {
+      gameRef.current?.destroy(true);
+      gameRef.current = null;
+      netRef.current?.disconnect();
+      netRef.current = null;
+    };
+  }, []);  // [] → ejecutar solo una vez
+
+  return (
+    <div
+      id="phaser-root"
+      ref={mountRef}
+      style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
+    />
+  );
+};
