@@ -8,32 +8,48 @@ html, body, #root {
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background-color: #07160d;
+  background-color: #06150b;
+  cursor: crosshair;
 }
 
 @layer base {
   body {
     user-select: none;
-    font-family: 'Outfit', 'Inter', sans-serif;
+    font-family: 'Outfit', 'Inter', system-ui, sans-serif;
   }
 }
 
-/* Custom scrollbars and glow utilities */
+/* Custom glow utilities */
 .glow-emerald {
-  box-shadow: 0 0 20px rgba(16, 185, 129, 0.5);
+  box-shadow: 0 0 25px rgba(16, 185, 129, 0.6);
 }
 
 .glow-blue {
-  box-shadow: 0 0 20px rgba(96, 165, 250, 0.5);
+  box-shadow: 0 0 25px rgba(56, 189, 248, 0.6);
 }
 
 .glow-red {
-  box-shadow: 0 0 20px rgba(239, 68, 68, 0.6);
+  box-shadow: 0 0 25px rgba(239, 68, 68, 0.7);
 }
 
 .glass-panel {
-  background: rgba(10, 26, 17, 0.85);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  background: rgba(8, 22, 14, 0.82);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(16, 185, 129, 0.22);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }

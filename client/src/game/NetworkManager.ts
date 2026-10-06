@@ -1,9 +1,10 @@
 import { Client, Room } from "colyseus.js";
+import { GameState } from "./schema/GameState";
 
 // No singleton — instancia nueva cada vez para evitar sockets zombies con HMR
 export class NetworkClient {
   private client: Client;
-  public room: Room | null = null;
+  public room: Room<GameState> | null = null;
   public sessionId: string = "";
 
   constructor() {
@@ -14,8 +15,8 @@ export class NetworkClient {
     this.client = new Client(serverUrl);
   }
 
-  public async connect(): Promise<Room> {
-    this.room = await this.client.joinOrCreate("jungle_room");
+  public async connect(): Promise<Room<GameState>> {
+    this.room = await this.client.joinOrCreate<GameState>("jungle_room", {}, GameState);
     this.sessionId = this.room.sessionId;
     console.log(`✅ Sala conectada. SessionId: ${this.sessionId}`);
     return this.room;
@@ -43,4 +44,9 @@ export class NetworkClient {
   public sendPlaceTrap(x: number, y: number) {
     this.room?.send("placeTrap", { x, y });
   }
+
+  public sendRestart() {
+    this.room?.send("restart");
+  }
 }
+

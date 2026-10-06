@@ -4,7 +4,7 @@ interface LogEntry { t: string; msg: string; level: "log"|"warn"|"error"; }
 
 export const DebugOverlay: React.FC = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [visible, setVisible] = useState(true);
+  const [visible, setVisible] = useState(false);
 
   useEffect(() => {
     const add = (level: "log"|"warn"|"error") => (...args: any[]) => {
@@ -20,8 +20,12 @@ export const DebugOverlay: React.FC = () => {
     console.warn  = (...a) => { origWarn(...a); add("warn")(...a); };
     console.error = (...a) => { origErr(...a);  add("error")(...a); };
 
+    window.addEventListener("error", (e) => {
+      add("error")("Error: " + e.message + " at " + (e.filename ? e.filename.split("/").pop() : "") + ":" + e.lineno);
+    });
+
     window.addEventListener("unhandledrejection", (e) => {
-      add("error")("UnhandledRejection:", e.reason?.message || e.reason);
+      add("error")("UnhandledRejection: " + (e.reason?.message || e.reason));
     });
 
     return () => {
