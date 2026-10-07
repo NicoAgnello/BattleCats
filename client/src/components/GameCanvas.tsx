@@ -37,14 +37,19 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ playerConfig }) => {
     };
 
     gameRef.current = new Phaser.Game(config);
+    (window as any).__PHASER_GAME__ = gameRef.current;
+    (window as any).__MAIN_SCENE__ = scene;
 
     /* 4. Limpieza al desmontar */
     return () => {
+      delete (window as any).__PHASER_GAME__;
+      delete (window as any).__MAIN_SCENE__;
       gameRef.current?.destroy(true);
       gameRef.current = null;
       netRef.current?.disconnect();
       netRef.current = null;
     };
+
   }, []);  // [] → ejecutar solo una vez
 
   return (

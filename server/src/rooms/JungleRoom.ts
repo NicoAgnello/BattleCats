@@ -1,11 +1,15 @@
 import { Room, Client } from "colyseus";
 import { GameState, Player, Projectile, Trap, Bush, ItemPickup, Obstacle } from "./schema/GameState";
+import { broadcastSSE } from "../sse";
 
 interface MovePayload {
   dx: number;
   dy: number;
   rotation: number;
+  x?: number;
+  y?: number;
 }
+
 
 interface ShootPayload {
   angle: number;
@@ -89,6 +93,9 @@ export class JungleRoom extends Room<GameState> {
       // Calculate speed with buffs
       let baseSpeed = player.isGhost ? 280 : 220;
       if (player.activeBuff === "SPEED") baseSpeed *= 1.4;
+      if (!player.isGhost && this.checkInRiver(player.x, player.y)) {
+        baseSpeed *= 0.75; // Suroi-style water movement drag
+      }
 
       let dx = Number(data.dx) || 0;
       let dy = Number(data.dy) || 0;
@@ -99,9 +106,28 @@ export class JungleRoom extends Room<GameState> {
         dy /= mag;
       }
 
-      const dt = 1 / 60;
-      let newX = player.x + dx * baseSpeed * dt;
-      let newY = player.y + dy * baseSpeed * dt;
+      let newX = player.x;
+      let newY = player.y;
+
+      // Suroi-style client prediction validation:
+      // Si el cliente envía su posición predicha y está dentro del rango físico plausible,
+      // la aceptamos para evitar tirones y micro-reconciliaciones bruscas.
+      if (typeof data.x === "number" && typeof data.y === "number") {
+        const deltaDist = Math.hypot(data.x - player.x, data.y - player.y);
+        if (deltaDist <= 75) {
+          newX = data.x;
+          newY = data.y;
+        } else {
+          const dt = 1 / 60;
+          newX = player.x + dx * baseSpeed * dt;
+          newY = player.y + dy * baseSpeed * dt;
+        }
+      } else {
+        const dt = 1 / 60;
+        newX = player.x + dx * baseSpeed * dt;
+        newY = player.y + dy * baseSpeed * dt;
+      }
+
 
       // Obstacle collision response (stop player from walking into solid obstacles)
       if (!player.isGhost) {
@@ -122,6 +148,12 @@ export class JungleRoom extends Room<GameState> {
 
       player.x = Math.max(30, Math.min(this.state.worldWidth - 30, newX));
       player.y = Math.max(30, Math.min(this.state.worldHeight - 30, newY));
+    });
+
+    this.onMessage("interact", (client, data: { itemId?: string }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player || player.isGhost) return;
+      this.handlePlayerInteract(player, data?.itemId);
     });
 
     this.onMessage("dash", (client) => {
@@ -238,15 +270,17 @@ export class JungleRoom extends Room<GameState> {
 
       if (attackerId) {
         const killer = this.state.players.get(attackerId);
-        if (killer) killer.kills += 1;
-        this.broadcast("kill", {
+        const killPayload = {
           killerId: attackerId,
           killerName: killer ? killer.name : "Alguien",
           victimId: player.id,
           victimName: player.name,
           weapon: weaponName,
-        });
+        };
+        this.broadcast("kill", killPayload);
+        broadcastSSE("kill", killPayload);
       }
+
 
       this.updateAliveCount();
     }
@@ -514,7 +548,11 @@ export class JungleRoom extends Room<GameState> {
     player.buffTimer = 0;
 
     this.state.players.set(client.sessionId, player);
-    this.restartMatch();
+    if (this.state.status === "WAITING" || this.state.players.size <= 1) {
+      this.restartMatch();
+    } else {
+      this.updateAliveCount();
+    }
   }
 
   onLeave(client: Client, consented: boolean) {
@@ -768,6 +806,134 @@ export class JungleRoom extends Room<GameState> {
       bot.x = Math.max(30, Math.min(this.state.worldWidth - 30, nextX));
       bot.y = Math.max(30, Math.min(this.state.worldHeight - 30, nextY));
     });
+
+    // Bot-to-bot collision repulsion (prevents stacking)
+    for (let i = 0; i < this.botControllers.length; i++) {
+      const b1 = this.state.players.get(this.botControllers[i].id);
+      if (!b1 || b1.isGhost) continue;
+      for (let j = i + 1; j < this.botControllers.length; j++) {
+        const b2 = this.state.players.get(this.botControllers[j].id);
+        if (!b2 || b2.isGhost) continue;
+        const dist = Math.hypot(b1.x - b2.x, b1.y - b2.y);
+        if (dist < 36 && dist > 0) {
+          const overlap = (36 - dist) * 0.5;
+          const nx = (b1.x - b2.x) / dist;
+          const ny = (b1.y - b2.y) / dist;
+          b1.x += nx * overlap;
+          b1.y += ny * overlap;
+          b2.x -= nx * overlap;
+          b2.y -= ny * overlap;
+        }
+      }
+    }
+  }
+
+  public checkInRiver(x: number, y: number): boolean {
+    // Bridges provide safe crossing without water drag
+    // Bridge 1 (North)
+    if (x >= 940 && x <= 1080 && y >= 660 && y <= 740) return false;
+    // Bridge 2 (South)
+    if (x >= 890 && x <= 1030 && y >= 1360 && y <= 1440) return false;
+
+    // Meandering river centerline segments
+    const pts = [
+      { x: 1000, y: 0 },
+      { x: 1050, y: 400 },
+      { x: 1000, y: 800 },
+      { x: 950, y: 1200 },
+      { x: 1100, y: 1600 },
+      { x: 1200, y: 2000 },
+    ];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const l2 = dx * dx + dy * dy;
+      if (l2 === 0) continue;
+      let t = ((x - p1.x) * dx + (y - p1.y) * dy) / l2;
+      t = Math.max(0, Math.min(1, t));
+      const px = p1.x + t * dx;
+      const py = p1.y + t * dy;
+      if (Math.hypot(x - px, y - py) < 42) return true;
+    }
+    return false;
+  }
+
+  public handlePlayerInteract(player: Player, requestedItemId?: string) {
+    let targetItem: ItemPickup | null = null;
+    let minDist = 75;
+
+    if (requestedItemId && this.state.items.has(requestedItemId)) {
+      const it = this.state.items.get(requestedItemId)!;
+      if (it.active && Math.hypot(player.x - it.x, player.y - it.y) <= 85) {
+        targetItem = it;
+      }
+    }
+
+    if (!targetItem) {
+      this.state.items.forEach((item) => {
+        if (!item.active) return;
+        const d = Math.hypot(player.x - item.x, player.y - item.y);
+        if (d < minDist) {
+          minDist = d;
+          targetItem = item;
+        }
+      });
+    }
+
+    if (!targetItem) return;
+
+    const item: ItemPickup = targetItem;
+    const isWeapon = ["SHOTGUN", "SNIPER", "GRENADE", "LASER"].includes(item.itemType);
+
+    if (isWeapon) {
+      const prevWeapon = player.equippedWeapon;
+      player.equippedWeapon = item.itemType;
+
+      // Suroi-style weapon swap: drop previous weapon on ground so it can be picked back up!
+      if (prevWeapon && prevWeapon !== item.itemType && prevWeapon !== "LASER") {
+        const dropItem = new ItemPickup();
+        dropItem.id = `drop_${++this.itemIdCounter}_${Date.now()}`;
+        dropItem.x = player.x;
+        dropItem.y = player.y;
+        dropItem.itemType = prevWeapon;
+        dropItem.active = true;
+        dropItem.respawnTimer = 0;
+        this.state.items.set(dropItem.id, dropItem);
+      }
+
+      if (item.id.startsWith("drop_") || item.id.startsWith("crate_")) {
+        this.state.items.delete(item.id);
+      } else {
+        item.active = false;
+        item.respawnTimer = 22.0;
+      }
+    } else {
+      item.active = false;
+      item.respawnTimer = 16.0;
+
+      if (item.itemType === "MEDKIT") {
+        player.hp = Math.min(player.maxHp, player.hp + 40);
+      } else if (item.itemType === "SHIELD") {
+        player.shield = Math.min(player.maxShield, player.shield + 50);
+      } else if (item.itemType === "SPEED") {
+        player.activeBuff = "SPEED";
+        player.buffTimer = 7.0;
+      } else if (item.itemType === "TRIPLE") {
+        player.activeBuff = "TRIPLE";
+        player.buffTimer = 9.0;
+      }
+    }
+
+    this.broadcast("itemPicked", {
+      id: item.id,
+      itemType: item.itemType,
+      playerId: player.id,
+      playerName: player.name,
+      x: item.x,
+      y: item.y,
+    });
   }
 
   private updateItems(dt: number) {
@@ -785,31 +951,58 @@ export class JungleRoom extends Room<GameState> {
 
         const dist = Math.hypot(player.x - item.x, player.y - item.y);
         if (dist < 34) {
-          item.active = false;
-          item.respawnTimer = 16.0;
+          const isWeapon = ["SHOTGUN", "SNIPER", "GRENADE", "LASER"].includes(item.itemType);
 
-          if (item.itemType === "MEDKIT") {
+          // For weapons: only auto-pickup if player is still using default starter LASER.
+          // If player has already equipped a special gun (Sniper, Shotgun, etc.),
+          // don't overwrite it automatically! They must press [F] to swap (Suroi style).
+          if (isWeapon) {
+            if (player.equippedWeapon === "LASER" && player.equippedWeapon !== item.itemType) {
+              item.active = false;
+              item.respawnTimer = 18.0;
+              player.equippedWeapon = item.itemType;
+              this.broadcast("itemPicked", {
+                id: item.id,
+                itemType: item.itemType,
+                playerId: player.id,
+                playerName: player.name,
+                x: item.x,
+                y: item.y,
+              });
+            }
+            return;
+          }
+
+          // Consumables: auto-consume if needed
+          let picked = false;
+          if (item.itemType === "MEDKIT" && player.hp < player.maxHp) {
             player.hp = Math.min(player.maxHp, player.hp + 40);
-          } else if (item.itemType === "SHIELD") {
+            picked = true;
+          } else if (item.itemType === "SHIELD" && player.shield < player.maxShield) {
             player.shield = Math.min(player.maxShield, player.shield + 50);
+            picked = true;
           } else if (item.itemType === "SPEED") {
             player.activeBuff = "SPEED";
             player.buffTimer = 7.0;
+            picked = true;
           } else if (item.itemType === "TRIPLE") {
             player.activeBuff = "TRIPLE";
             player.buffTimer = 9.0;
-          } else if (item.itemType === "SHOTGUN" || item.itemType === "SNIPER" || item.itemType === "GRENADE") {
-            player.equippedWeapon = item.itemType;
+            picked = true;
           }
 
-          this.broadcast("itemPicked", {
-            id: item.id,
-            itemType: item.itemType,
-            playerId: player.id,
-            playerName: player.name,
-            x: item.x,
-            y: item.y,
-          });
+          if (picked) {
+            item.active = false;
+            item.respawnTimer = 16.0;
+            this.broadcast("itemPicked", {
+              id: item.id,
+              itemType: item.itemType,
+              playerId: player.id,
+              playerName: player.name,
+              x: item.x,
+              y: item.y,
+            });
+          }
         }
       });
     });

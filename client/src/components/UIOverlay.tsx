@@ -68,11 +68,26 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
   const [isMuted, setIsMuted] = useState(soundManager.isMuted);
   const [redirectCountdown, setRedirectCountdown] = useState<number | null>(null);
   const [showEmotes, setShowEmotes] = useState(false);
+  const [sseInfo, setSseInfo] = useState<{ connected: boolean; tickRate: number; ping: number }>({
+    connected: false,
+    tickRate: 60,
+    ping: 0,
+  });
 
   const onConn = useCallback((e: Event) => setConn((e as CustomEvent).detail), []);
   const onPlayer = useCallback((e: Event) => setPlayer((e as CustomEvent).detail), []);
   const onZone = useCallback((e: Event) => setZone((e as CustomEvent).detail), []);
   const onAlive = useCallback((e: Event) => setAlive((e as CustomEvent).detail), []);
+  const onSseTelemetry = useCallback((e: Event) => {
+    const d = (e as CustomEvent).detail;
+    if (d) {
+      setSseInfo({
+        connected: !!d.connected,
+        tickRate: d.tickRate || 60,
+        ping: d.ping || 0,
+      });
+    }
+  }, []);
   const onVictory = useCallback((e: Event) => {
     const d = (e as CustomEvent).detail;
     setVictory({ isVictory: true, winnerName: d.winnerName, isMe: d.isMe, kills: d.kills });
@@ -133,6 +148,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
     window.addEventListener("playing-update", onPlaying);
     window.addEventListener("killFeed-update", onKillFeed);
     window.addEventListener("style-update", onStyle);
+    window.addEventListener("sse-telemetry", onSseTelemetry);
 
     return () => {
       window.removeEventListener("conn-update", onConn);
@@ -144,8 +160,10 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
       window.removeEventListener("playing-update", onPlaying);
       window.removeEventListener("killFeed-update", onKillFeed);
       window.removeEventListener("style-update", onStyle);
+      window.removeEventListener("sse-telemetry", onSseTelemetry);
     };
-  }, [onConn, onPlayer, onZone, onAlive, onVictory, onRestart, onPlaying, onKillFeed, onStyle]);
+  }, [onConn, onPlayer, onZone, onAlive, onVictory, onRestart, onPlaying, onKillFeed, onStyle, onSseTelemetry]);
+
 
   const toggleMute = () => {
     const next = !isMuted;
@@ -211,6 +229,20 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
               {conn === "CONNECTING" && <><Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" /><span className="text-amber-400">Conectando…</span></>}
               {conn === "ERROR" && <><WifiOff className="w-3.5 h-3.5 text-red-400" /><span className="text-red-400">Error de conexión</span></>}
             </div>
+
+            {/* SSE Stream Telemetry */}
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full glass-panel text-xs font-bold shadow-lg border border-cyan-500/30" title="Server-Sent Events Telemetría en Vivo">
+              <span className={`w-2 h-2 rounded-full ${sseInfo.connected ? "bg-emerald-400 animate-pulse" : "bg-amber-400"}`} />
+              <span className="text-cyan-400 font-mono text-[11px]">
+                ⚡ SSE {sseInfo.tickRate}Hz
+              </span>
+              {sseInfo.connected && (
+                <span className="text-emerald-300 font-mono text-[10px]">
+                  {sseInfo.ping}ms
+                </span>
+              )}
+            </div>
+
 
             <button
               onClick={toggleMute}
@@ -514,6 +546,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
         {/* Guía de controles */}
         <div className="glass-panel px-5 py-2.5 rounded-2xl border border-slate-800/80 text-[11px] text-slate-400 flex items-center gap-3 shadow-xl backdrop-blur-md">
           <span><b className="text-slate-100">WASD</b> Moverse</span>
+          <span><b className="text-emerald-400">F</b> Recoger/Cambiar</span>
           <span><b className="text-slate-100">1-5 / Rueda</b> Armas</span>
           <span><b className="text-slate-100">E</b> Emotes</span>
           <span><b className="text-slate-100">Espacio</b> Dash</span>

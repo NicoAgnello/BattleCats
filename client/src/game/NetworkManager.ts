@@ -29,9 +29,10 @@ export class NetworkClient {
     }
   }
 
-  public sendMove(dx: number, dy: number, rotation: number) {
-    this.room?.send("move", { dx, dy, rotation });
+  public sendMove(dx: number, dy: number, rotation: number, x?: number, y?: number) {
+    this.room?.send("move", { dx, dy, rotation, x, y });
   }
+
 
   public sendDash() {
     this.room?.send("dash");
@@ -51,6 +52,10 @@ export class NetworkClient {
 
   public sendEmote(emote: string) {
     this.room?.send("emote", { emote });
+  }
+
+  public sendInteract(itemId?: string) {
+    this.room?.send("interact", { itemId });
   }
 
   public sendRestart() {
