@@ -34,12 +34,16 @@ export class NetworkClient {
   }
 
 
-  public sendDash() {
-    this.room?.send("dash");
+  public sendDash(dirX?: number, dirY?: number) {
+    this.room?.send("dash", { dirX, dirY });
   }
 
-  public sendShoot(angle: number) {
-    this.room?.send("shoot", { angle });
+  public sendShoot(angle: number, targetX?: number, targetY?: number) {
+    this.room?.send("shoot", { angle, targetX, targetY });
+  }
+
+  public sendReload() {
+    this.room?.send("reload");
   }
 
   public sendPlaceTrap(x: number, y: number) {

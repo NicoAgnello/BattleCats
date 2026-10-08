@@ -4,6 +4,7 @@ import express from "express";
 export const sseClients = new Set<express.Response>();
 
 export function broadcastSSE(type: string, data: any) {
+  if (sseClients.size === 0) return;
   const payload = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
   sseClients.forEach((client) => {
     try {
@@ -17,6 +18,7 @@ export function broadcastSSE(type: string, data: any) {
 export function setupSSERoutes(app: express.Express) {
   // SSE Event Stream Endpoint
   app.get("/api/events", (req, res) => {
+    req.socket.setNoDelay(true); // Disable Nagle's algorithm for instant event streaming
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",

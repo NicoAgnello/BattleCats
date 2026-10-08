@@ -8,6 +8,12 @@ interface PlayerState {
   shield?: number;
   maxShield?: number;
   equippedWeapon?: string;
+  ammo?: number;
+  maxAmmo?: number;
+  reserveAmmo?: number;
+  isReloading?: boolean;
+  reloadTimer?: number;
+  maxReloadTimer?: number;
   isGhost: boolean;
   isHidden: boolean;
   dashCooldown: number;
@@ -43,6 +49,12 @@ const DEFAULT_PLAYER: PlayerState = {
   shield: 50,
   maxShield: 50,
   equippedWeapon: "LASER",
+  ammo: 12,
+  maxAmmo: 12,
+  reserveAmmo: 24,
+  isReloading: false,
+  reloadTimer: 0,
+  maxReloadTimer: 2.0,
   isGhost: false,
   isHidden: false,
   dashCooldown: 0,
@@ -203,10 +215,14 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
   const shdPct = Math.max(0, Math.min(100, ((player.shield || 0) / (player.maxShield || 50)) * 100));
   const stylePct = Math.min(100, (styleScore / 1000) * 100);
 
+  const triggerReload = () => {
+    window.dispatchEvent(new CustomEvent("reload-weapon"));
+  };
+
   const weapons = [
-    { key: "1", id: "LASER", name: "Bláster", icon: "🔫" },
+    { key: "1", id: "LASER", name: "Pistola", icon: "🔫" },
     { key: "2", id: "SHOTGUN", name: "Escopeta", icon: "💥" },
-    { key: "3", id: "SNIPER", name: "Sniper", icon: "⚡" },
+    { key: "3", id: "SNIPER", name: "Sniper", icon: "🎯" },
     { key: "4", id: "GRENADE", name: "Granada", icon: "💣" },
     { key: "5", id: "MELEE", name: "Garras", icon: "🐾" },
   ];
@@ -503,10 +519,10 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
       {/* ── FILA INFERIOR (SELECTOR DE ARMAS, DASH Y CONTROLES) ── */}
       <div className="flex items-end justify-between gap-4">
 
-        {/* Cooldown del Dash */}
+        {/* Cooldown del Dash / Roll */}
         <div className="pointer-events-auto glass-panel flex items-center gap-3 px-4 py-3 rounded-2xl border border-slate-700/60 shadow-xl backdrop-blur-md">
           <div className="relative w-11 h-11 rounded-xl bg-slate-800 border border-slate-600 flex items-center justify-center shadow-inner">
-            <Zap className="w-6 h-6 text-amber-400" />
+            <Zap className={`w-6 h-6 ${player.equippedWeapon === "MELEE" ? "text-amber-400" : "text-cyan-400"}`} />
             {player.dashCooldown > 0 && (
               <div className="absolute inset-0 bg-slate-950/85 rounded-xl flex items-center justify-center text-xs font-mono font-black text-amber-400">
                 {player.dashCooldown.toFixed(1)}s
@@ -514,32 +530,104 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
             )}
           </div>
           <div>
-            <div className="text-xs font-black tracking-wide text-slate-100">DASH FELINO</div>
-            <div className="text-[10px] font-bold text-slate-400">BARRA ESPACIADORA</div>
+            <div className="text-xs font-black tracking-wide text-slate-100">
+              {player.equippedWeapon === "MELEE" ? "DASH FELINO" : "ROLL FELINO"}
+            </div>
+            <div className="text-[10px] font-bold text-slate-400">
+              {player.equippedWeapon === "MELEE" ? "ESPACIO • 1.8s CD (RÁPIDO)" : "ESPACIO • 2.5s CD (ESQUIVAR)"}
+            </div>
           </div>
         </div>
 
-        {/* Selector de Armas Suroi (Slot 1-5) */}
+        {/* Selector de Armas Suroi (Slot 1-5) + Widget de Munición y Recarga */}
         {!player.isGhost && (
-          <div className="pointer-events-auto glass-panel p-2 rounded-2xl flex items-center gap-2 border border-slate-700/60 shadow-2xl backdrop-blur-md">
-            {weapons.map((w) => {
-              const active = (player.equippedWeapon || "LASER") === w.id;
-              return (
-                <button
-                  key={w.id}
-                  onClick={() => selectWeapon(w.id)}
-                  className={`px-3 py-2 rounded-xl flex flex-col items-center min-w-[54px] transition cursor-pointer border ${
-                    active
-                      ? "bg-emerald-500/25 border-emerald-400 text-white scale-105 shadow-lg"
-                      : "bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"
-                  }`}
-                >
-                  <span className="text-xs font-mono font-black text-slate-400">{w.key}</span>
-                  <span className="text-base my-0.5">{w.icon}</span>
-                  <span className="text-[9px] font-bold uppercase tracking-wider">{w.name}</span>
-                </button>
-              );
-            })}
+          <div className="flex flex-col items-center gap-2">
+            {/* Widget de Munición y Recarga del Arma Equipada */}
+            <div className="pointer-events-auto glass-panel px-4 py-1.5 rounded-2xl flex items-center gap-3 border border-slate-700/60 shadow-2xl backdrop-blur-md">
+              {/* Icono y Nombre */}
+              <div className="flex items-center gap-2 pr-3 border-r border-slate-800">
+                <span className="text-xl">
+                  {weapons.find(w => w.id === (player.equippedWeapon || "LASER"))?.icon || "🔫"}
+                </span>
+                <div className="flex flex-col">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-200">
+                    {weapons.find(w => w.id === (player.equippedWeapon || "LASER"))?.name || "Pistola"}
+                  </span>
+                  <span className="text-[9px] font-bold text-emerald-400">
+                    {player.equippedWeapon === "MELEE" ? "ZARPAZOS (50 DMG • +15% VELOCIDAD)" : (player.equippedWeapon === "GRENADE" ? "LANZABLE (100/70 DMG)" : (player.equippedWeapon === "SHOTGUN" ? "15x5 DMG (75)" : (player.equippedWeapon === "SNIPER" ? "50 DMG" : "20 DMG")))}
+                  </span>
+                </div>
+              </div>
+
+              {/* Indicador de Munición */}
+              {player.equippedWeapon === "MELEE" ? (
+                <div className="flex items-center gap-1.5 font-mono text-amber-400 font-black text-sm">
+                  <span>∞</span>
+                  <span className="text-[10px] text-slate-400 font-bold uppercase">INFINITO</span>
+                </div>
+              ) : player.equippedWeapon === "GRENADE" ? (
+                <div className="flex items-center gap-1.5 font-mono">
+                  <span className="text-xl font-black text-lime-400">{player.ammo ?? 3}</span>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">/ 3 GRANADAS</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 font-mono">
+                  <span className={`text-2xl font-black ${(player.ammo || 0) === 0 ? "text-red-400 animate-pulse" : "text-slate-100"}`}>
+                    {player.ammo ?? 12}
+                  </span>
+                  <span className="text-xs font-bold text-slate-500">/</span>
+                  <span className="text-sm font-bold text-emerald-400">
+                    {player.reserveAmmo ?? 24}
+                  </span>
+                </div>
+              )}
+
+              {/* Botón / Estado de Recarga */}
+              {player.isReloading ? (
+                <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs font-black animate-pulse">
+                  <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                  <span>RECARGANDO {((player.reloadTimer || 0)).toFixed(1)}s</span>
+                </div>
+              ) : (
+                player.equippedWeapon !== "MELEE" && player.equippedWeapon !== "GRENADE" && (
+                  <button
+                    onClick={triggerReload}
+                    disabled={(player.ammo ?? 0) >= (player.maxAmmo ?? 12) || (player.reserveAmmo ?? 0) <= 0}
+                    className={`px-3 py-1 rounded-xl text-xs font-black transition flex items-center gap-1.5 cursor-pointer border ${
+                      (player.ammo ?? 0) < (player.maxAmmo ?? 12) && (player.reserveAmmo ?? 0) > 0
+                        ? "bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40 shadow-sm"
+                        : "bg-slate-900/40 text-slate-600 border-slate-800 cursor-not-allowed"
+                    }`}
+                    title="Recargar arma (R)"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>[R] RECARGAR</span>
+                  </button>
+                )
+              )}
+            </div>
+
+            {/* Selector de Armas Suroi (Slot 1-5) */}
+            <div className="pointer-events-auto glass-panel p-2 rounded-2xl flex items-center gap-2 border border-slate-700/60 shadow-2xl backdrop-blur-md">
+              {weapons.map((w) => {
+                const active = (player.equippedWeapon || "LASER") === w.id;
+                return (
+                  <button
+                    key={w.id}
+                    onClick={() => selectWeapon(w.id)}
+                    className={`px-3 py-2 rounded-xl flex flex-col items-center min-w-[54px] transition cursor-pointer border ${
+                      active
+                        ? "bg-emerald-500/25 border-emerald-400 text-white scale-105 shadow-lg"
+                        : "bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"
+                    }`}
+                  >
+                    <span className="text-xs font-mono font-black text-slate-400">{w.key}</span>
+                    <span className="text-base my-0.5">{w.icon}</span>
+                    <span className="text-[9px] font-bold uppercase tracking-wider">{w.name}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
 
@@ -547,9 +635,10 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
         <div className="glass-panel px-5 py-2.5 rounded-2xl border border-slate-800/80 text-[11px] text-slate-400 flex items-center gap-3 shadow-xl backdrop-blur-md">
           <span><b className="text-slate-100">WASD</b> Moverse</span>
           <span><b className="text-emerald-400">F</b> Recoger/Cambiar</span>
+          <span><b className="text-amber-400">R</b> Recargar</span>
           <span><b className="text-slate-100">1-5 / Rueda</b> Armas</span>
           <span><b className="text-slate-100">E</b> Emotes</span>
-          <span><b className="text-slate-100">Espacio</b> Dash</span>
+          <span><b className="text-slate-100">Espacio</b> {player.equippedWeapon === "MELEE" ? "Dash rápido" : "Roll esquiva"}</span>
         </div>
       </div>
     </div>

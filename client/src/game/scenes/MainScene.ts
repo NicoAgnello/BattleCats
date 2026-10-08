@@ -5,24 +5,44 @@ import { GameState, Player, Projectile, Trap, Bush, ItemPickup, Obstacle } from 
 import { soundManager } from "../SoundManager";
 import { sseManager } from "../SSEClient";
 
+const WEAPON_CONFIGS: Record<string, { shootCooldown: number; speed: number; range: number; pellets?: number }> = {
+  LASER:   { shootCooldown: 0.3, speed: 800, range: 480 },
+  SHOTGUN: { shootCooldown: 1.0, speed: 680, range: 310, pellets: 5 },
+  SNIPER:  { shootCooldown: 0.5, speed: 1400, range: 980 },
+  GRENADE: { shootCooldown: 1.0, speed: 500, range: 400 },
+  MELEE:   { shootCooldown: 0.3, speed: 0, range: 75 },
+};
+
 /* ─── Tipos Gráficos ─────────────────────────────────────────── */
 interface VPlayer {
-  container: Phaser.GameObjects.Container;
-  bodyGfx:   Phaser.GameObjects.Graphics;
-  earsGfx:   Phaser.GameObjects.Graphics;
-  faceGfx:   Phaser.GameObjects.Graphics;
-  aimGfx:    Phaser.GameObjects.Graphics;
-  hpBg:      Phaser.GameObjects.Graphics;
-  hpFill:    Phaser.GameObjects.Graphics;
-  shdFill:   Phaser.GameObjects.Graphics;
-  label:     Phaser.GameObjects.Text;
-  buffIcon:  Phaser.GameObjects.Text;
-  emoteGfx:  Phaser.GameObjects.Container;
-  emoteText: Phaser.GameObjects.Text;
+  container:   Phaser.GameObjects.Container; // Contenedor visual rotativo del personaje (gato + arma)
+  uiContainer: Phaser.GameObjects.Container; // Contenedor HUD superior que NUNCA rota (barra vida, nombre)
+  bodyGfx:     Phaser.GameObjects.Graphics;
+  earsGfx:     Phaser.GameObjects.Graphics;
+  faceGfx:     Phaser.GameObjects.Graphics;
+  aimGfx:      Phaser.GameObjects.Graphics;
+  leftHandGfx: Phaser.GameObjects.Graphics;  // Mano izquierda estilo Suroi.io
+  rightHandGfx: Phaser.GameObjects.Graphics; // Mano derecha estilo Suroi.io
+  punchAlternator: number;                   // Alternador de puñetazo / zarpazo
+  hpBg:        Phaser.GameObjects.Graphics;
+  hpFill:      Phaser.GameObjects.Graphics;
+  shdFill:     Phaser.GameObjects.Graphics;
+  label:       Phaser.GameObjects.Text;
+  buffIcon:    Phaser.GameObjects.Text;
+  reloadBarGfx: Phaser.GameObjects.Graphics;
+  emoteGfx:    Phaser.GameObjects.Container;
+  emoteText:   Phaser.GameObjects.Text;
   tx: number; ty: number; tr: number;
   hp: number; maxHp: number;
   shield: number; maxShield: number;
   equippedWeapon: string;
+  ammo: number; maxAmmo: number;
+  reserveAmmo: number;
+  isReloading: boolean;
+  reloadTimer: number;
+  maxReloadTimer: number;
+  dashCooldown: number;
+  isRolling?: boolean;
   isGhost: boolean; isHidden: boolean;
   isMe: boolean;
   catColor: number;
@@ -42,6 +62,10 @@ interface VProj {
   tx: number; ty: number;
   vx: number; vy: number;
   projType: string;
+  targetX?: number;
+  targetY?: number;
+  isArmed?: boolean;
+  blinkTimer?: number;
 }
 
 interface VTrap {
@@ -71,12 +95,60 @@ interface VItem {
   y: number;
 }
 
+/* ─── Bala Local Pre-alocada (Object Pool de 200 Balas) ────────── */
+export class VisualBullet extends Phaser.GameObjects.Graphics {
+  public vx = 0;
+  public vy = 0;
+  public life = 0;
+  public maxLife = 0;
+  public radius = 4;
+  public color = 0xffffff;
+  public trailGfx!: Phaser.GameObjects.Graphics;
+
+  init(x: number, y: number, angle: number, speed: number, lifetime: number, radius: number, color: number) {
+    this.setPosition(x, y);
+    this.vx = Math.cos(angle) * speed;
+    this.vy = Math.sin(angle) * speed;
+    this.life = lifetime;
+    this.maxLife = lifetime;
+    this.radius = radius;
+    this.color = color;
+    this.setActive(true);
+    this.setVisible(true);
+
+    this.clear();
+    this.fillStyle(color, 1);
+    this.fillCircle(0, 0, radius);
+    this.fillStyle(0xffffff, 1);
+    this.fillCircle(0, 0, radius * 0.45);
+
+    if (this.trailGfx) {
+      this.trailGfx.clear();
+      this.trailGfx.setActive(true);
+      this.trailGfx.setVisible(true);
+    }
+  }
+
+  deactivate() {
+    this.setActive(false);
+    this.setVisible(false);
+    this.clear();
+    if (this.trailGfx) {
+      this.trailGfx.clear();
+      this.trailGfx.setActive(false);
+      this.trailGfx.setVisible(false);
+    }
+  }
+}
+
 /* ─── Escena Principal Phaser (Optimizado & Game Feel) ───────── */
 export class MainScene extends Phaser.Scene {
   public net!: NetworkClient;
   public playerOptions: { name?: string; skin?: number } = {};
   private room!: Room<GameState>;
   private myId = "";
+
+  private bulletPool!: Phaser.GameObjects.Group;
 
   private players = new Map<string, VPlayer>();
   private projs   = new Map<string, VProj>();
@@ -90,7 +162,7 @@ export class MainScene extends Phaser.Scene {
   private crosshairGfx!: Phaser.GameObjects.Graphics;
   private aimConeGfx!: Phaser.GameObjects.Graphics;
 
-  private zone = { x: 1000, y: 1000, r: 950 };
+  private zone = { x: 2400, y: 2400, r: 2300 };
 
   private styleScore = 0;
   private wasInBush = false;
@@ -102,7 +174,7 @@ export class MainScene extends Phaser.Scene {
 
   // Suroi-style dynamic camera target & look-ahead
   private camTargetDummy!: Phaser.GameObjects.Arc;
-  private camTarget = { x: 1000, y: 1000 };
+  private camTarget = { x: 2400, y: 2400 };
 
   // Suroi-style interaction prompt & loot beacon
   private interactPromptGfx!: Phaser.GameObjects.Container;
@@ -113,12 +185,13 @@ export class MainScene extends Phaser.Scene {
 
   // Footsteps & water movement tracking
   private lastFootstepDist = 0;
-  private lastPlayerPos = { x: 1000, y: 1000 };
+  private lastPlayerPos = { x: 2400, y: 2400 };
 
   // Dirty flags & throttle
   private zoneDirty = true;
   private lastZoneR = -1;
   private minimapThrottle = 0;
+  private localShootCooldown = 0;
 
   // Object Pools for High FPS Zero-GC Performance
   private sparksPool!: Phaser.GameObjects.Group;
@@ -129,9 +202,9 @@ export class MainScene extends Phaser.Scene {
   create() {
     this.game.canvas.addEventListener("contextmenu", e => e.preventDefault());
 
-    this.physics.world.setBounds(0, 0, 2000, 2000);
-    this.cameras.main.setBounds(0, 0, 2000, 2000);
-    this.cameras.main.centerOn(1000, 1000);
+    this.physics.world.setBounds(0, 0, 4800, 4800);
+    this.cameras.main.setBounds(0, 0, 4800, 4800);
+    this.cameras.main.centerOn(2400, 2400);
 
     // 1. Mapa de batalla estilo Suroi.io
     this.buildMap();
@@ -153,6 +226,21 @@ export class MainScene extends Phaser.Scene {
       runChildUpdate: false,
     });
 
+    // 3.1 Pre-alocación fija de Object Pool de 200 balas locales (Zero-GC y Culling)
+    this.bulletPool = this.add.group({
+      maxSize: 200,
+      runChildUpdate: false,
+    });
+    for (let i = 0; i < 200; i++) {
+      const b = new VisualBullet(this);
+      b.trailGfx = this.add.graphics().setDepth(69);
+      b.trailGfx.setActive(false).setVisible(false);
+      b.setDepth(70);
+      b.setActive(false).setVisible(false);
+      this.add.existing(b);
+      this.bulletPool.add(b);
+    }
+
     // 4. Retícula Crosshair y Arco de Apuntado
     this.aimConeGfx = this.add.graphics().setDepth(50);
     this.crosshairGfx = this.add.graphics().setDepth(180);
@@ -161,7 +249,7 @@ export class MainScene extends Phaser.Scene {
     this.minimapGfx = this.add.graphics().setDepth(200).setScrollFactor(0);
 
     // 5.1 Dummy para Cámara Dinámica con Anticipación (Mouse Look-Ahead)
-    this.camTargetDummy = this.add.circle(1000, 1000, 2, 0x000000, 0).setDepth(0);
+    this.camTargetDummy = this.add.circle(2400, 2400, 2, 0x000000, 0).setDepth(0);
     this.cameras.main.startFollow(this.camTargetDummy, true, 0.12, 0.12);
 
     // 5.2 Prompt de Interacción Flotante Estilo Suroi ([F] Recoger / Cambiar)
@@ -212,6 +300,7 @@ export class MainScene extends Phaser.Scene {
       FIVE:  kb.addKey(Phaser.Input.Keyboard.KeyCodes.FIVE),
       E:     kb.addKey(Phaser.Input.Keyboard.KeyCodes.E),
       F:     kb.addKey(Phaser.Input.Keyboard.KeyCodes.F),
+      R:     kb.addKey(Phaser.Input.Keyboard.KeyCodes.R),
     };
 
     // Tecla F: Recoger / Cambiar arma estilo Suroi
@@ -219,12 +308,15 @@ export class MainScene extends Phaser.Scene {
       this.tryInteract();
     });
 
+    // Tecla R: Recargar arma actual
+    this.keys.R.on("down", () => {
+      this.tryReload();
+    });
+
     this.keys.SPACE.on("down", () => {
       const me = this.players.get(this.myId);
       if (me && !me.isGhost) {
-        this.net.sendDash();
-        soundManager.playDash();
-        this.spawnGhostTrail(me);
+        this.performLocalDash(me);
       }
     });
 
@@ -262,33 +354,8 @@ export class MainScene extends Phaser.Scene {
       const wp = this.cameras.main.getWorldPoint(ptr.x, ptr.y);
 
       if (ptr.leftButtonDown() && !me.isGhost) {
-        const angle = Phaser.Math.Angle.Between(me.container.x, me.container.y, wp.x, wp.y);
-        this.net.sendShoot(angle);
-
-        if (me.equippedWeapon === "SHOTGUN") soundManager.playShotgun();
-        else if (me.equippedWeapon === "SNIPER") soundManager.playSniper();
-        else soundManager.playShoot();
-
-        this.cameras.main.shake(60, me.equippedWeapon === "SNIPER" ? 0.008 : 0.003);
-
-        // Retroceso visual de cañón (Gun Recoil estilo Suroi.io)
-        // CRUCIAL: El retroceso afecta exclusivamente al cañón/arma (aimGfx),
-        // NUNCA al contenedor de posición en el mundo (me.container).
-        // Esto permite correr y ametrallar simultáneamente con cero tirones o congelamientos.
-        const kickAmt = me.equippedWeapon === "SNIPER" ? 9 : me.equippedWeapon === "SHOTGUN" ? 7 : 4;
-        const kickX = -Math.cos(angle) * kickAmt;
-        const kickY = -Math.sin(angle) * kickAmt;
-        me.aimGfx.setPosition(kickX, kickY);
-        this.tweens.killTweensOf(me.aimGfx);
-        this.tweens.add({
-          targets: me.aimGfx,
-          x: 0,
-          y: 0,
-          duration: 75,
-          ease: "Quad.easeOut",
-        });
+        this.executeLocalShoot(me);
       }
-
 
       if (ptr.rightButtonDown() && me.isGhost) {
         this.net.sendPlaceTrap(wp.x, wp.y);
@@ -304,12 +371,496 @@ export class MainScene extends Phaser.Scene {
       if (e.detail?.weapon) this.switchWeapon(e.detail.weapon);
     });
 
+    window.addEventListener("reload-weapon", () => {
+      this.tryReload();
+    });
+
     window.addEventListener("send-emote", (e: any) => {
       if (e.detail?.emote) this.triggerEmote(e.detail.emote);
     });
 
-    // 8. Conectar sala Colyseus
+    // 8. Integración con Pipeline Ultra-Rápido SSE (Server-Sent Events)
+    window.addEventListener("sse-tick", (e: any) => {
+      const data = e.detail;
+      if (!data?.players) return;
+      data.players.forEach((pState: any) => {
+        const v = this.players.get(pState.id);
+        if (v && !v.isMe) {
+          // Push autoritativo en tiempo real a 60/30Hz sin retardo de websocket
+          v.tx = pState.x;
+          v.ty = pState.y;
+          v.tr = pState.rot;
+          v.hp = pState.hp;
+          v.shield = pState.shield;
+          if (pState.w && pState.w !== v.equippedWeapon) {
+            v.equippedWeapon = pState.w;
+            this.drawCat(v);
+          }
+        }
+      });
+      if (data.zone) {
+        this.zone.x = data.zone.x;
+        this.zone.y = data.zone.y;
+        this.zone.r = data.zone.r;
+        this.zoneDirty = true;
+      }
+    });
+
+    window.addEventListener("sse-shoot", (e: any) => {
+      const d = e.detail;
+      if (!d || d.id === this.myId) return;
+      const p = this.players.get(d.id);
+      if (p) {
+        if (d.weapon === "SHOTGUN") soundManager.playShotgun();
+        else if (d.weapon === "SNIPER") soundManager.playSniper();
+        else if (d.weapon === "GRENADE") soundManager.playGrenadeThrow();
+        else soundManager.playShoot();
+
+        // Retroceso en arma y manos estilo Suroi.io
+        const kick = d.weapon === "SNIPER" ? 10 : d.weapon === "SHOTGUN" ? 8 : 4;
+        p.aimGfx.setPosition(-kick, 0);
+
+        const lx = p.leftHandGfx.getData("baseX") ?? 16;
+        const ly = p.leftHandGfx.getData("baseY") ?? -4;
+        const rx = p.rightHandGfx.getData("baseX") ?? 12;
+        const ry = p.rightHandGfx.getData("baseY") ?? 6.5;
+
+        p.leftHandGfx.setPosition(lx - kick, ly);
+        p.rightHandGfx.setPosition(rx - kick, ry);
+
+        this.tweens.killTweensOf([p.aimGfx, p.leftHandGfx, p.rightHandGfx]);
+        this.tweens.add({ targets: p.aimGfx, x: 0, duration: 65, ease: "Quad.easeOut" });
+        this.tweens.add({ targets: p.leftHandGfx, x: lx, duration: 65, ease: "Quad.easeOut" });
+        this.tweens.add({ targets: p.rightHandGfx, x: rx, duration: 65, ease: "Quad.easeOut" });
+      }
+    });
+
+    window.addEventListener("sse-melee", (e: any) => {
+      const d = e.detail;
+      if (!d || d.id === this.myId) return;
+      this.showGraphicClawSlash(d.x, d.y, d.angle);
+
+      const p = this.players.get(d.id);
+      if (p) {
+        p.punchAlternator = (p.punchAlternator || 0) + 1;
+        const isRight = p.punchAlternator % 2 === 1;
+        const hand = isRight ? p.rightHandGfx : p.leftHandGfx;
+        const bx = hand.getData("baseX") ?? 18;
+        const by = hand.getData("baseY") ?? (isRight ? 13 : -13);
+
+        this.tweens.killTweensOf(hand);
+        hand.setPosition(bx + 15, by);
+        this.tweens.add({ targets: hand, x: bx, duration: 110, ease: "Cubic.easeOut" });
+      }
+    });
+
+    window.addEventListener("sse-dash", (e: any) => {
+      const d = e.detail;
+      if (!d || d.id === this.myId) return;
+      const p = this.players.get(d.id);
+      if (p) {
+        if (d.isRoll) {
+          this.playRollAnimation(p, d.dirX || 0, d.dirY || 0, 120, d.x, d.y);
+        } else {
+          this.playFastDashAnimation(p, d.dirX || 0, d.dirY || 0, 160, d.x, d.y);
+        }
+      }
+    });
+
+    window.addEventListener("sse-hit", (e: any) => {
+      const d = e.detail;
+      if (!d) return;
+      this.showDamageText(d.x, d.y, `-${d.damage}`, "#ef4444");
+      this.createSparksFX(d.x, d.y, 0xff4444);
+      if (d.victimId === this.myId) {
+        soundManager.playHit();
+        this.cameras.main.shake(120, 0.012);
+      }
+    });
+
+    window.addEventListener("sse-explosion", (e: any) => {
+      const d = e.detail;
+      if (!d) return;
+      soundManager.playExplosion();
+      this.createExplosionFX(d.x, d.y, d.type === "GRENADE", d.radius || 140, d.innerRadius || 70);
+      this.cameras.main.shake(d.type === "GRENADE" ? 320 : 220, d.type === "GRENADE" ? 0.022 : 0.016);
+    });
+
+    // 9. Conectar sala Colyseus
     this.connect();
+  }
+
+  private executeLocalShoot(me: VPlayer) {
+    if (me.isGhost || me.isReloading || this.localShootCooldown > 0) return;
+
+    const w = me.equippedWeapon || "LASER";
+    const cfg = WEAPON_CONFIGS[w] || WEAPON_CONFIGS.LASER;
+
+    // Comprobar munición si el arma no es cuerpo a cuerpo
+    if (w !== "MELEE" && typeof me.ammo === "number" && me.ammo <= 0) {
+      if (typeof me.reserveAmmo === "number" && me.reserveAmmo > 0) {
+        this.tryReload();
+      } else {
+        soundManager.playEmptyClick();
+        this.showDamageText(me.container.x, me.container.y - 25, "¡SIN BALAS!", "#f87171");
+        this.localShootCooldown = 0.4;
+      }
+      return;
+    }
+
+    const wp = this.cameras.main.getWorldPoint(this.input.activePointer.x, this.input.activePointer.y);
+    const angle = Phaser.Math.Angle.Between(me.container.x, me.container.y, wp.x, wp.y);
+
+    this.localShootCooldown = cfg.shootCooldown;
+
+    // Descontar munición local predictiva y notificar a la UI
+    if (w !== "MELEE" && typeof me.ammo === "number") {
+      me.ammo = Math.max(0, me.ammo - 1);
+      emit("ammo", {
+        weapon: w,
+        ammo: me.ammo,
+        maxAmmo: me.maxAmmo,
+        reserveAmmo: me.reserveAmmo,
+        isReloading: me.isReloading,
+      });
+    }
+
+    // Enviar disparo al servidor
+    this.net.sendShoot(angle, wp.x, wp.y);
+
+    // Audio y retroceso instantáneo a 0ms
+    if (w === "SHOTGUN") soundManager.playShotgun();
+    else if (w === "SNIPER") soundManager.playSniper();
+    else if (w === "GRENADE") soundManager.playGrenadeThrow();
+    else if (w === "MELEE") soundManager.playClawSlash();
+    else soundManager.playShoot();
+
+    this.cameras.main.shake(60, w === "SNIPER" ? 0.008 : 0.003);
+
+    if (w === "MELEE") {
+      me.punchAlternator = (me.punchAlternator || 0) + 1;
+      const isRight = me.punchAlternator % 2 === 1;
+      const punchingHand = isRight ? me.rightHandGfx : me.leftHandGfx;
+      const bx = punchingHand.getData("baseX") ?? 18;
+      const by = punchingHand.getData("baseY") ?? (isRight ? 13 : -13);
+
+      this.tweens.killTweensOf(punchingHand);
+      punchingHand.setPosition(bx + 16, by);
+      this.tweens.add({
+        targets: punchingHand,
+        x: bx,
+        y: by,
+        duration: 120,
+        ease: "Cubic.easeOut",
+      });
+    } else {
+      const kickAmt = w === "SNIPER" ? 11 : w === "SHOTGUN" ? 9 : 5;
+      me.aimGfx.setPosition(-kickAmt, 0);
+
+      const lx = me.leftHandGfx.getData("baseX") ?? 16;
+      const ly = me.leftHandGfx.getData("baseY") ?? -4;
+      const rx = me.rightHandGfx.getData("baseX") ?? 12;
+      const ry = me.rightHandGfx.getData("baseY") ?? 6.5;
+
+      me.leftHandGfx.setPosition(lx - kickAmt, ly);
+      me.rightHandGfx.setPosition(rx - kickAmt, ry);
+
+      this.tweens.killTweensOf([me.aimGfx, me.leftHandGfx, me.rightHandGfx]);
+      this.tweens.add({
+        targets: me.aimGfx,
+        x: 0,
+        y: 0,
+        duration: 75,
+        ease: "Quad.easeOut",
+      });
+      this.tweens.add({
+        targets: me.leftHandGfx,
+        x: lx,
+        y: ly,
+        duration: 75,
+        ease: "Quad.easeOut",
+      });
+      this.tweens.add({
+        targets: me.rightHandGfx,
+        x: rx,
+        y: ry,
+        duration: 75,
+        ease: "Quad.easeOut",
+      });
+    }
+
+    // Proyectil visual predictivo instantáneo
+    this.spawnPredictedProjectile(me, angle, wp.x, wp.y, w);
+  }
+
+  private spawnPredictedProjectile(me: VPlayer, angle: number, targetX: number, targetY: number, weapon: string) {
+    if (weapon === "MELEE") {
+      const slashX = me.container.x + Math.cos(angle) * 36;
+      const slashY = me.container.y + Math.sin(angle) * 36;
+      this.showGraphicClawSlash(slashX, slashY, angle);
+      return;
+    }
+
+    const barrelDist = weapon === "SNIPER" ? 32 : weapon === "SHOTGUN" ? 22 : 28;
+    const spawnX = me.container.x + Math.cos(angle) * barrelDist;
+    const spawnY = me.container.y + Math.sin(angle) * barrelDist;
+
+    // Destello de boca de cañón
+    this.createSparksFX(spawnX, spawnY, weapon === "SNIPER" ? 0x06b6d4 : weapon === "SHOTGUN" ? 0xef4444 : 0x10b981);
+
+    if (weapon === "SHOTGUN") {
+      const pellets = 5;
+      const spread = 0.28;
+      const speed = 680;
+      for (let i = 0; i < pellets; i++) {
+        const offset = (i - (pellets - 1) / 2) * (spread / (pellets - 1));
+        const a = angle + offset;
+        this.createLocalVisualBullet(spawnX, spawnY, a, speed, 310 / speed, 4, 0xef4444);
+      }
+    } else if (weapon === "SNIPER") {
+      const speed = 1400;
+      this.createLocalVisualBullet(spawnX, spawnY, angle, speed, 980 / speed, 7, 0x06b6d4);
+    } else if (weapon === "GRENADE") {
+      const rawDist = Math.hypot(targetX - me.container.x, targetY - me.container.y);
+      const dist = Math.min(400, rawDist);
+      const destX = me.container.x + Math.cos(angle) * dist;
+      const destY = me.container.y + Math.sin(angle) * dist;
+      const speed = 500;
+      const flightDuration = Math.max(0.08, dist / speed);
+      const gObj = this.add.graphics().setDepth(70).setPosition(spawnX, spawnY);
+      gObj.fillStyle(0x84cc16, 1);
+      gObj.fillCircle(0, 0, 9);
+      gObj.lineStyle(2, 0xffffff, 1);
+      gObj.strokeCircle(0, 0, 9);
+      this.tweens.add({
+        targets: gObj,
+        x: destX,
+        y: destY,
+        duration: flightDuration * 1000,
+        ease: "Linear",
+        onComplete: () => {
+          this.time.delayedCall(2200, () => {
+            if (gObj && gObj.active) gObj.destroy();
+          });
+        }
+      });
+    } else { // LASER
+      const isTriple = me.lastBuff === "TRIPLE";
+      const angles = isTriple ? [angle - 0.18, angle, angle + 0.18] : [angle];
+      const speed = 800;
+      for (const a of angles) {
+        this.createLocalVisualBullet(spawnX, spawnY, a, speed, 480 / speed, 6, 0xf472b6);
+      }
+    }
+  }
+
+  public isInCameraView(x: number, y: number, padding = 100): boolean {
+    const cam = this.cameras.main.worldView;
+    return (
+      x >= cam.x - padding &&
+      x <= cam.right + padding &&
+      y >= cam.y - padding &&
+      y <= cam.bottom + padding
+    );
+  }
+
+  private createLocalVisualBullet(x: number, y: number, angle: number, speed: number, lifetime: number, radius: number, color: number) {
+    const children = this.bulletPool.getChildren() as VisualBullet[];
+    let bullet: VisualBullet | null = null;
+
+    // 1. Buscar bala inactiva en el Object Pool
+    for (let i = 0; i < children.length; i++) {
+      if (!children[i].active) {
+        bullet = children[i];
+        break;
+      }
+    }
+
+    // 2. Si las 200 balas están en uso activo, reciclar la más antigua (menor vida restante)
+    if (!bullet && children.length > 0) {
+      let lowestLife = Infinity;
+      let oldestIdx = 0;
+      for (let i = 0; i < children.length; i++) {
+        if (children[i].life < lowestLife) {
+          lowestLife = children[i].life;
+          oldestIdx = i;
+        }
+      }
+      bullet = children[oldestIdx];
+      bullet.deactivate();
+    }
+
+    if (bullet) {
+      bullet.init(x, y, angle, speed, lifetime, radius, color);
+    }
+  }
+
+  private tryReload() {
+    const me = this.players.get(this.myId);
+    if (!me || me.isGhost || me.isReloading) return;
+    if (me.equippedWeapon === "MELEE" || me.equippedWeapon === "GRENADE") return;
+    if (typeof me.ammo === "number" && typeof me.maxAmmo === "number" && me.ammo >= me.maxAmmo) return;
+    if (typeof me.reserveAmmo === "number" && me.reserveAmmo <= 0) {
+      soundManager.playEmptyClick();
+      this.showDamageText(me.container.x, me.container.y - 25, "¡SIN RESERVA!", "#f87171");
+      return;
+    }
+    this.net.sendReload();
+    soundManager.playReload();
+    this.showDamageText(me.container.x, me.container.y - 25, "RECARGANDO...", "#fbbf24");
+  }
+
+  private performLocalDash(me: VPlayer) {
+    if (me.isGhost || (me.dashCooldown || 0) > 0) return;
+
+    let dx = 0;
+    let dy = 0;
+    if (this.keys.W.isDown) dy -= 1;
+    if (this.keys.S.isDown) dy += 1;
+    if (this.keys.A.isDown) dx -= 1;
+    if (this.keys.D.isDown) dx += 1;
+
+    let dirX = 0;
+    let dirY = 0;
+    const mag = Math.hypot(dx, dy);
+
+    if (mag > 0) {
+      // Movimiento con WASD activo: se desplaza hacia la dirección de WASD
+      dirX = dx / mag;
+      dirY = dy / mag;
+    } else {
+      // Estacionario (sin movimiento): se desplaza hacia donde apunta el cursor del ratón
+      const wp = this.cameras.main.getWorldPoint(
+        this.input.activePointer.x, this.input.activePointer.y
+      );
+      const angle = Phaser.Math.Angle.Between(me.container.x, me.container.y, wp.x, wp.y);
+      dirX = Math.cos(angle);
+      dirY = Math.sin(angle);
+    }
+
+    const isMelee = me.equippedWeapon === "MELEE";
+    const isRoll = !isMelee;
+    const cooldown = isMelee ? 1.8 : 2.5;
+    const dashDist = isMelee ? 160 : 120; // 160px para garras (rápido), 120px para roll de arma (más lento pero esquiva)
+
+    me.dashCooldown = cooldown;
+    this.net.sendDash(dirX, dirY);
+
+    if (isRoll) {
+      soundManager.playRoll();
+      this.playRollAnimation(me, dirX, dirY, dashDist);
+    } else {
+      soundManager.playDash();
+      this.playFastDashAnimation(me, dirX, dirY, dashDist);
+    }
+  }
+
+  public playFastDashAnimation(
+    v: VPlayer,
+    dirX: number,
+    dirY: number,
+    distance: number,
+    targetX?: number,
+    targetY?: number
+  ) {
+    this.cameras.main.shake(90, 0.006);
+
+    let destX = typeof targetX === "number" ? targetX : v.container.x + dirX * distance;
+    let destY = typeof targetY === "number" ? targetY : v.container.y + dirY * distance;
+
+    if (typeof targetX !== "number") {
+      const pRadius = 22;
+      this.obstacles.forEach((obs) => {
+        if (obs.destroyed) return;
+        const dist = Math.hypot(destX - obs.container.x, destY - obs.container.y);
+        const minDist = pRadius + obs.radius;
+        if (dist < minDist && dist > 0) {
+          const overlap = minDist - dist;
+          destX += ((destX - obs.container.x) / dist) * overlap;
+          destY += ((destY - obs.container.y) / dist) * overlap;
+        }
+      });
+    }
+    destX = Math.max(30, Math.min(4800 - 30, destX));
+    destY = Math.max(30, Math.min(4800 - 30, destY));
+
+    // Estelas doradas rápidas
+    for (let i = 0; i < 4; i++) {
+      this.time.delayedCall(i * 30, () => {
+        if (v.container && v.container.active) {
+          this.spawnGhostTrail(v, 0xfbbf24);
+        }
+      });
+    }
+
+    this.tweens.killTweensOf(v.container);
+    this.tweens.add({
+      targets: v.container,
+      x: destX,
+      y: destY,
+      duration: 140,
+      ease: "Quad.easeOut",
+    });
+  }
+
+  public playRollAnimation(
+    v: VPlayer,
+    dirX: number,
+    dirY: number,
+    distance: number,
+    targetX?: number,
+    targetY?: number
+  ) {
+    this.cameras.main.shake(70, 0.004);
+    v.isRolling = true;
+
+    let destX = typeof targetX === "number" ? targetX : v.container.x + dirX * distance;
+    let destY = typeof targetY === "number" ? targetY : v.container.y + dirY * distance;
+
+    if (typeof targetX !== "number") {
+      const pRadius = 22;
+      this.obstacles.forEach((obs) => {
+        if (obs.destroyed) return;
+        const dist = Math.hypot(destX - obs.container.x, destY - obs.container.y);
+        const minDist = pRadius + obs.radius;
+        if (dist < minDist && dist > 0) {
+          const overlap = minDist - dist;
+          destX += ((destX - obs.container.x) / dist) * overlap;
+          destY += ((destY - obs.container.y) / dist) * overlap;
+        }
+      });
+    }
+    destX = Math.max(30, Math.min(4800 - 30, destX));
+    destY = Math.max(30, Math.min(4800 - 30, destY));
+
+    // Partículas de polvo al rodar
+    this.createDustPuffFX(v.container.x, v.container.y);
+    this.time.delayedCall(90, () => {
+      if (v.container && v.container.active) this.createDustPuffFX(v.container.x, v.container.y);
+    });
+
+    // Giro acrobático 360° en la dirección del movimiento
+    const spinDir = dirX >= 0 ? 1 : -1;
+    const initialRot = v.container.rotation;
+
+    this.tweens.add({
+      targets: v.container,
+      rotation: initialRot + spinDir * Math.PI * 2,
+      duration: 220,
+      ease: "Cubic.easeInOut",
+      onComplete: () => {
+        v.isRolling = false;
+      },
+    });
+
+    this.tweens.killTweensOf(v.container);
+    this.tweens.add({
+      targets: v.container,
+      x: destX,
+      y: destY,
+      duration: 220,
+      ease: "Cubic.easeOut",
+    });
   }
 
   private switchWeapon(w: string) {
@@ -318,6 +869,26 @@ export class MainScene extends Phaser.Scene {
       me.equippedWeapon = w;
       this.net.sendSwitchWeapon(w);
       this.drawCat(me);
+      emit("player", {
+        hp: me.hp,
+        maxHp: me.maxHp,
+        shield: me.shield,
+        maxShield: me.maxShield,
+        equippedWeapon: me.equippedWeapon,
+        ammo: me.ammo,
+        maxAmmo: me.maxAmmo,
+        reserveAmmo: me.reserveAmmo,
+        isGhost: me.isGhost,
+        activeBuff: "",
+        dashCooldown: me.dashCooldown,
+      });
+      emit("ammo", {
+        weapon: w,
+        ammo: me.ammo,
+        maxAmmo: me.maxAmmo,
+        reserveAmmo: me.reserveAmmo,
+        isReloading: me.isReloading,
+      });
     }
   }
 
@@ -396,6 +967,7 @@ export class MainScene extends Phaser.Scene {
 
     // Projectiles
     s.projectiles.onAdd((p: Projectile, id: string) => {
+      if (p.ownerId === this.myId) return; // El cliente local ya cuenta con su proyectil predictivo instantáneo a 0ms
       this.createProj(id, p);
       p.onChange(() => {
         const v = this.projs.get(id);
@@ -404,6 +976,9 @@ export class MainScene extends Phaser.Scene {
           v.ty = p.y;
           v.vx = p.vx || 0;
           v.vy = p.vy || 0;
+          v.isArmed = !!p.isArmed;
+          v.targetX = p.targetX;
+          v.targetY = p.targetY;
         }
       });
     });
@@ -440,10 +1015,24 @@ export class MainScene extends Phaser.Scene {
       }
     });
 
+    this.room.onMessage("playerMelee", (d: any) => {
+      this.showGraphicClawSlash(d.x, d.y, d.angle);
+    });
+
+    this.room.onMessage("playerReloading", (d: any) => {
+      if (d.id === this.myId) {
+        soundManager.playReload();
+      }
+    });
+
+    this.room.onMessage("playerReloadComplete", (_d: any) => {
+      // Reload complete event
+    });
+
     this.room.onMessage("explosion", (d: any) => {
       soundManager.playExplosion();
-      this.createExplosionFX(d.x, d.y);
-      this.cameras.main.shake(220, 0.016);
+      this.createExplosionFX(d.x, d.y, d.type === "GRENADE", d.radius || 140, d.innerRadius || 70);
+      this.cameras.main.shake(d.type === "GRENADE" ? 320 : 220, d.type === "GRENADE" ? 0.022 : 0.016);
     });
 
     this.room.onMessage("meteor", (d: any) => {
@@ -488,8 +1077,17 @@ export class MainScene extends Phaser.Scene {
     this.room.onMessage("playerDash", (d: any) => {
       const p = this.players.get(d.id);
       if (p) {
-        this.spawnGhostTrail(p);
-        if (d.id === this.myId) this.addStyle(30, "DASH TÁCTICO");
+        p.dashCooldown = d.cooldown ?? (d.isRoll ? 2.5 : 1.8);
+        if (d.id !== this.myId) {
+          if (d.isRoll) {
+            this.playRollAnimation(p, d.dirX || 0, d.dirY || 0, 120, d.x, d.y);
+          } else {
+            this.playFastDashAnimation(p, d.dirX || 0, d.dirY || 0, 160, d.x, d.y);
+          }
+        }
+        if (d.id === this.myId) {
+          this.addStyle(30, d.isRoll ? "ESQUIVA TÁCTICA" : "DASH FELINO");
+        }
       }
     });
 
@@ -513,123 +1111,267 @@ export class MainScene extends Phaser.Scene {
     emit("style", { score: this.styleScore, reason });
   }
 
-  /* ── Mapa y Vegetación (Estética Suroi.io) ─────────────────── */
+  /* ── Mapa y Vegetación Optimizado (Phaser 3 Tilemap + Culling) ─── */
   private buildMap() {
-    const g = this.add.graphics().setDepth(0);
+    const tileW = 80;
+    const tileH = 80;
+    const numCols = 60; // 4800 / 80
+    const numRows = 60; // 4800 / 80
+    const totalTileTypes = 10;
 
-    // 1. Océano Profundo Exterior (Suroi Deep Ocean)
-    g.fillStyle(0x1a4a7a, 1);
-    g.fillRect(0, 0, 2000, 2000);
+    // 1. Textura procedural para el Tileset oficial
+    if (this.textures.exists("jungleTileset")) {
+      this.textures.remove("jungleTileset");
+    }
 
-    // Ondas y crestas de agua en los bordes del océano
-    g.lineStyle(1.5, 0x2563a6, 0.55);
-    for (let x = 35; x < 2000; x += 110) {
-      for (let y = 35; y < 2000; y += 110) {
-        if (x < 170 || x > 1830 || y < 170 || y > 1830) {
-          g.strokeCircle(x, y, 14);
+    const canvasTex = this.textures.createCanvas("jungleTileset", tileW * totalTileTypes, tileH);
+    if (!canvasTex) return;
+    const ctx = canvasTex.getContext();
+
+    // Helper para dibujar cada tipo de tile en su slot horizontal
+    const drawTileBase = (idx: number, fill: string) => {
+      const tx = idx * tileW;
+      ctx.fillStyle = fill;
+      ctx.fillRect(tx, 0, tileW, tileH);
+      // Cuadrícula táctica sutil (estilo Suroi)
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.05)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(tx + 0.5, 0.5, tileW - 1, tileH - 1);
+    };
+
+    // Tile 0: Océano Profundo Exterior (0x1c497d)
+    drawTileBase(0, "#1c497d");
+    ctx.strokeStyle = "rgba(56, 189, 248, 0.15)";
+    ctx.beginPath();
+    ctx.arc(0 * tileW + 40, 40, 24, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Tile 1: Océano Costero (0x2767ae)
+    drawTileBase(1, "#2767ae");
+    ctx.strokeStyle = "rgba(65, 139, 214, 0.4)";
+    ctx.beginPath();
+    ctx.arc(1 * tileW + 28, 30, 14, 0, Math.PI * 2);
+    ctx.arc(1 * tileW + 56, 56, 12, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Tile 2: Playa de Arena (0xbc9f5d)
+    drawTileBase(2, "#bc9f5d");
+    ctx.fillStyle = "#a58849";
+    ctx.fillRect(2 * tileW + 18, 22, 4, 4);
+    ctx.fillRect(2 * tileW + 48, 52, 4, 4);
+    ctx.fillRect(2 * tileW + 62, 16, 3, 3);
+
+    // Tile 3: Hierba Principal (0x53893a)
+    drawTileBase(3, "#53893a");
+    ctx.fillStyle = "#44752c";
+    ctx.fillRect(3 * tileW + 24, 26, 3, 6);
+    ctx.fillRect(3 * tileW + 54, 48, 3, 6);
+    ctx.fillStyle = "#5c9641";
+    ctx.fillRect(3 * tileW + 38, 60, 4, 3);
+
+    // Tile 4: Claro Soleado de Hierba (0x5c9641)
+    drawTileBase(4, "#5c9641");
+    ctx.fillStyle = "#68a74b";
+    ctx.fillRect(4 * tileW + 20, 20, 4, 4);
+    ctx.fillRect(4 * tileW + 50, 40, 4, 4);
+
+    // Tile 5: Bosque Denso (0x45732f)
+    drawTileBase(5, "#45732f");
+    ctx.fillStyle = "#3b6228";
+    ctx.fillRect(5 * tileW + 16, 28, 5, 5);
+    ctx.fillRect(5 * tileW + 46, 54, 5, 5);
+
+    // Tile 6: Camino de Tierra (0x996733)
+    drawTileBase(6, "#996733");
+    ctx.fillStyle = "#7c4f22";
+    ctx.fillRect(6 * tileW, 0, 4, tileH);
+    ctx.fillRect(6 * tileW + tileW - 4, 0, 4, tileH);
+    ctx.fillStyle = "#b47f44";
+    ctx.fillRect(6 * tileW + 30, 24, 5, 5);
+    ctx.fillRect(6 * tileW + 50, 52, 4, 4);
+
+    // Tile 7: Orilla del Río / Lodo Ribereño (0x735130)
+    drawTileBase(7, "#735130");
+    ctx.fillStyle = "#5a3e23";
+    ctx.fillRect(7 * tileW + 24, 28, 6, 6);
+    ctx.fillRect(7 * tileW + 52, 48, 5, 5);
+
+    // Tile 8: Agua Viva del Río (0x2767ae)
+    drawTileBase(8, "#2767ae");
+    ctx.strokeStyle = "rgba(94, 166, 243, 0.65)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(8 * tileW + 10, 20);
+    ctx.lineTo(8 * tileW + 70, 20);
+    ctx.moveTo(8 * tileW + 20, 55);
+    ctx.lineTo(8 * tileW + 60, 55);
+    ctx.stroke();
+
+    // Tile 9: Tablones del Puente de Madera (0x784421)
+    drawTileBase(9, "#784421");
+    ctx.fillStyle = "#4d2810";
+    ctx.fillRect(9 * tileW, 10, tileW, 4);
+    ctx.fillRect(9 * tileW, 36, tileW, 4);
+    ctx.fillRect(9 * tileW, 62, tileW, 4);
+    ctx.fillStyle = "#d97706";
+    ctx.fillRect(9 * tileW + 12, 22, 5, 5);
+    ctx.fillRect(9 * tileW + 62, 22, 5, 5);
+    ctx.fillRect(9 * tileW + 12, 48, 5, 5);
+    ctx.fillRect(9 * tileW + 62, 48, 5, 5);
+
+    canvasTex.refresh();
+
+    // 2. Generación matricial del mapa 60x60
+    const riverPoints = [
+      { x: 2400, y: 0 },
+      { x: 2520, y: 900 },
+      { x: 2360, y: 1900 },
+      { x: 2260, y: 2900 },
+      { x: 2580, y: 3900 },
+      { x: 2480, y: 4800 },
+    ];
+
+    const distToRiver = (x: number, y: number): number => {
+      let minDist = Infinity;
+      for (let i = 0; i < riverPoints.length - 1; i++) {
+        const p1 = riverPoints[i];
+        const p2 = riverPoints[i + 1];
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const l2 = dx * dx + dy * dy;
+        if (l2 === 0) continue;
+        let t = ((x - p1.x) * dx + (y - p1.y) * dy) / l2;
+        t = Math.max(0, Math.min(1, t));
+        const px = p1.x + t * dx;
+        const py = p1.y + t * dy;
+        const d = Math.hypot(x - px, y - py);
+        if (d < minDist) minDist = d;
+      }
+      return minDist;
+    };
+
+    const isBridge = (x: number, y: number): boolean => {
+      if (x >= 2440 && x <= 2600 && y >= 1110 && y <= 1210) return true;
+      if (x >= 2230 && x <= 2390 && y >= 2350 && y <= 2450) return true;
+      if (x >= 2460 && x <= 2620 && y >= 3550 && y <= 3650) return true;
+      return false;
+    };
+
+    const clearings = [
+      { x: 1200, y: 1100, rx: 260, ry: 180 },
+      { x: 3600, y: 1200, rx: 280, ry: 190 },
+      { x: 1300, y: 3500, rx: 270, ry: 180 },
+      { x: 3500, y: 3600, rx: 260, ry: 190 },
+      { x: 2400, y: 2400, rx: 320, ry: 240 },
+      { x: 2400, y: 700,  rx: 200, ry: 150 },
+      { x: 2400, y: 4100, rx: 200, ry: 150 },
+    ];
+
+    const densePatches = [
+      { x: 800,  y: 1800, rx: 220, ry: 170 },
+      { x: 3900, y: 2000, rx: 230, ry: 160 },
+      { x: 900,  y: 2800, rx: 240, ry: 160 },
+      { x: 3800, y: 2900, rx: 220, ry: 170 },
+      { x: 1700, y: 2400, rx: 250, ry: 180 },
+      { x: 3100, y: 2400, rx: 250, ry: 180 },
+    ];
+
+    const mapData: number[][] = [];
+    for (let row = 0; row < numRows; row++) {
+      const rowData: number[] = [];
+      for (let col = 0; col < numCols; col++) {
+        const wx = col * tileW + tileW / 2;
+        const wy = row * tileH + tileH / 2;
+
+        let tile = 3; // Hierba por defecto
+
+        // Océano y Playa en los bordes
+        if (wx < 120 || wx > 4680 || wy < 120 || wy > 4680) {
+          tile = 0; // Océano profundo
+        } else if (wx < 220 || wx > 4580 || wy < 220 || wy > 4580) {
+          tile = 1; // Océano costero
+        } else if (wx < 360 || wx > 4440 || wy < 360 || wy > 4440) {
+          tile = 2; // Playa de arena
+        } else {
+          // Puente de madera prioritario
+          if (isBridge(wx, wy)) {
+            tile = 9;
+          } else {
+            const rDist = distToRiver(wx, wy);
+            if (rDist < 42) {
+              tile = 8; // Agua de río
+            } else if (rDist < 65) {
+              tile = 7; // Orilla de lodo
+            } else if (Math.abs(wy - 2400) <= 32 && wx >= 400 && wx <= 4400) {
+              tile = 6; // Carretera central E-O
+            } else if (wx >= 2490 && wx <= 2550 && wy >= 400 && wy <= 1160) {
+              tile = 6; // Conector puente norte
+            } else if (wx >= 2510 && wx <= 2570 && wy >= 3600 && wy <= 4400) {
+              tile = 6; // Conector puente sur
+            } else {
+              // Comprobar parches de biomas
+              let inClearing = false;
+              for (const c of clearings) {
+                const ex = (wx - c.x) / c.rx;
+                const ey = (wy - c.y) / c.ry;
+                if (ex * ex + ey * ey <= 1) {
+                  inClearing = true;
+                  break;
+                }
+              }
+
+              if (inClearing) {
+                tile = 4; // Claro soleado
+              } else {
+                let inDense = false;
+                for (const d of densePatches) {
+                  const ex = (wx - d.x) / d.rx;
+                  const ey = (wy - d.y) / d.ry;
+                  if (ex * ex + ey * ey <= 1) {
+                    inDense = true;
+                    break;
+                  }
+                }
+                if (inDense) tile = 5; // Bosque denso
+              }
+            }
+          }
         }
+
+        rowData.push(tile);
+      }
+      mapData.push(rowData);
+    }
+
+    // 3. Crear Tilemap oficial de Phaser 3 con Culling activado
+    const tilemap = this.make.tilemap({
+      data: mapData,
+      tileWidth: tileW,
+      tileHeight: tileH,
+    });
+
+    const tileset = tilemap.addTilesetImage("jungleTileset", "jungleTileset", tileW, tileH, 0, 0, 0);
+    if (tileset) {
+      const layer = tilemap.createLayer(0, tileset, 0, 0);
+      if (layer) {
+        layer.setDepth(0);
+        layer.skipCull = false; // Culling activo en WebGL
+        layer.setCullPadding(2, 2); // 2 celdas de margen alrededor del frustum de cámara
       }
     }
 
-    // 2. Costa de Playa de Arena (Suroi Beach Perimeter: 0xc4a96b)
-    g.fillStyle(0xc4a96b, 1);
-    g.fillRoundedRect(90, 90, 1820, 1820, 52);
+    // Estructuras de puente de madera con relieve para máximo contraste visual
+    const bridgeGfx = this.add.graphics().setDepth(1);
+    this.drawWoodenBridge(bridgeGfx, 2520, 1160, 140, 70);
+    this.drawWoodenBridge(bridgeGfx, 2310, 2400, 140, 70);
+    this.drawWoodenBridge(bridgeGfx, 2540, 3600, 140, 70);
 
-    g.lineStyle(4, 0xb59756, 0.8);
-    g.strokeRoundedRect(90, 90, 1820, 1820, 52);
-
-    // 3. Isla de Hierba Principal (Suroi Grass Interior: 0x56893b)
-    g.fillStyle(0x56893b, 1);
-    g.fillRoundedRect(150, 150, 1700, 1700, 36);
-
-    g.lineStyle(3, 0x47752e, 0.9);
-    g.strokeRoundedRect(150, 150, 1700, 1700, 36);
-
-    // 4. Parches de Biomas (Claros Soleados y Bosque Denso)
-    g.fillStyle(0x629c42, 0.65);
-    const clearings = [
-      { x: 380, y: 420, rx: 130, ry: 95 },
-      { x: 1520, y: 480, rx: 140, ry: 100 },
-      { x: 450, y: 1480, rx: 130, ry: 95 },
-      { x: 1560, y: 1520, rx: 120, ry: 90 },
-      { x: 1000, y: 1000, rx: 160, ry: 120 },
-    ];
-    clearings.forEach(c => g.fillEllipse(c.x, c.y, c.rx, c.ry));
-
-    g.fillStyle(0x44722c, 0.6);
-    const densePatches = [
-      { x: 620, y: 820, rx: 110, ry: 80 },
-      { x: 1380, y: 780, rx: 120, ry: 85 },
-      { x: 700, y: 1250, rx: 100, ry: 90 },
-      { x: 1350, y: 1220, rx: 130, ry: 75 },
-    ];
-    densePatches.forEach(c => g.fillEllipse(c.x, c.y, c.rx, c.ry));
-
-    // 5. Senderos y Caminos de Tierra (Dirt Trails: 0x996733)
-    g.lineStyle(34, 0x996733, 0.7);
-    g.beginPath();
-    g.moveTo(200, 1000);
-    g.lineTo(1800, 1000);
-    g.strokePath();
-
-    g.lineStyle(2, 0x7c4f22, 0.65);
-    g.lineBetween(200, 983, 1800, 983);
-    g.lineBetween(200, 1017, 1800, 1017);
-
-    // 6. Río Suroi con Orillas de Piedra y Agua Viva
-    const riverPoints = [
-      { x: 1000, y: 0 },
-      { x: 1050, y: 400 },
-      { x: 1000, y: 800 },
-      { x: 950, y: 1200 },
-      { x: 1100, y: 1600 },
-      { x: 1200, y: 2000 },
-    ];
-
-    // Orilla del río (River Bank: 0x735130)
-    g.lineStyle(82, 0x735130, 0.95);
-    g.beginPath();
-    g.moveTo(riverPoints[0].x, riverPoints[0].y);
-    for (let i = 1; i < riverPoints.length; i++) {
-      g.lineTo(riverPoints[i].x, riverPoints[i].y);
-    }
-    g.strokePath();
-
-    // Agua del río (River Water: 0x2869ad)
-    g.lineStyle(64, 0x2869ad, 1);
-    g.beginPath();
-    g.moveTo(riverPoints[0].x, riverPoints[0].y);
-    for (let i = 1; i < riverPoints.length; i++) {
-      g.lineTo(riverPoints[i].x, riverPoints[i].y);
-    }
-    g.strokePath();
-
-    // Destellos de flujo de agua
-    g.lineStyle(2, 0x5ea6f3, 0.45);
-    g.beginPath();
-    g.moveTo(riverPoints[0].x - 10, riverPoints[0].y);
-    for (let i = 1; i < riverPoints.length; i++) {
-      g.lineTo(riverPoints[i].x - 10, riverPoints[i].y);
-    }
-    g.strokePath();
-
-    // 7. Puentes de Madera sobre el Río (Bridges)
-    this.drawWoodenBridge(g, 1010, 700, 110, 50);
-    this.drawWoodenBridge(g, 990, 1400, 110, 50);
-
-    // 8. Cuadrícula Táctica Sutil Estilo Suroi (Clean Grid 80px)
-    g.lineStyle(1, 0x000000, 0.08);
-    for (let i = 0; i <= 2000; i += 80) {
-      g.moveTo(i, 0); g.lineTo(i, 2000);
-      g.moveTo(0, i); g.lineTo(2000, i);
-    }
-    g.strokePath();
-
-    // 9. Límite de Frontera Marina
-    g.lineStyle(8, 0x1b406b, 1);
-    g.strokeRect(4, 4, 1992, 1992);
-    g.lineStyle(2, 0x38bdf8, 0.4);
-    g.strokeRect(12, 12, 1976, 1976);
+    // Límites de frontera exterior decorativos
+    const borderGfx = this.add.graphics().setDepth(2);
+    borderGfx.lineStyle(8, 0x1c497d, 1);
+    borderGfx.strokeRect(4, 4, 4792, 4792);
+    borderGfx.lineStyle(2, 0x38bdf8, 0.4);
+    borderGfx.strokeRect(12, 12, 4776, 4776);
   }
 
   private drawWoodenBridge(g: Phaser.GameObjects.Graphics, cx: number, cy: number, w: number, h: number) {
@@ -656,16 +1398,17 @@ export class MainScene extends Phaser.Scene {
   }
 
   public checkInRiver(x: number, y: number): boolean {
-    if (x >= 940 && x <= 1080 && y >= 660 && y <= 740) return false;
-    if (x >= 890 && x <= 1030 && y >= 1360 && y <= 1440) return false;
+    if (x >= 2440 && x <= 2600 && y >= 1110 && y <= 1210) return false;
+    if (x >= 2230 && x <= 2390 && y >= 2350 && y <= 2450) return false;
+    if (x >= 2460 && x <= 2620 && y >= 3550 && y <= 3650) return false;
 
     const pts = [
-      { x: 1000, y: 0 },
-      { x: 1050, y: 400 },
-      { x: 1000, y: 800 },
-      { x: 950, y: 1200 },
-      { x: 1100, y: 1600 },
-      { x: 1200, y: 2000 },
+      { x: 2400, y: 0 },
+      { x: 2520, y: 900 },
+      { x: 2360, y: 1900 },
+      { x: 2260, y: 2900 },
+      { x: 2580, y: 3900 },
+      { x: 2480, y: 4800 },
     ];
     for (let i = 0; i < pts.length - 1; i++) {
       const p1 = pts[i];
@@ -678,7 +1421,7 @@ export class MainScene extends Phaser.Scene {
       t = Math.max(0, Math.min(1, t));
       const px = p1.x + t * dx;
       const py = p1.y + t * dy;
-      if (Math.hypot(x - px, y - py) < 42) return true;
+      if (Math.hypot(x - px, y - py) < 55) return true;
     }
     return false;
   }
@@ -688,18 +1431,23 @@ export class MainScene extends Phaser.Scene {
     const g = this.add.graphics();
     const w = b.width || 160, h = b.height || 120;
 
+    // Sombra proyectada del arbusto
     g.fillStyle(0x000000, 0.25);
-    g.fillEllipse(4, 6, w * 0.48, h * 0.44);
+    g.fillEllipse(4, 5, w * 0.48, h * 0.45);
 
-    g.fillStyle(0x064e3b, 0.92);
-    g.fillRoundedRect(-w / 2, -h / 2, w, h, 24);
-    g.lineStyle(3, 0x10b981, 0.85);
-    g.strokeRoundedRect(-w / 2, -h / 2, w, h, 24);
+    // Arbusto estilo Suroi con lóbulos verdes orgánicos
+    g.fillStyle(0x274e22, 0.92);
+    g.fillEllipse(0, 0, w * 0.46, h * 0.42);
 
-    g.fillStyle(0x059669, 0.55);
-    g.fillCircle(-w * 0.22, -h * 0.15, h * 0.35);
-    g.fillCircle(w * 0.22, h * 0.15, h * 0.35);
-    g.fillCircle(0, 0, h * 0.32);
+    g.fillStyle(0x35632e, 0.90);
+    g.fillCircle(-w * 0.22, -h * 0.14, h * 0.32);
+    g.fillCircle(w * 0.22, -h * 0.12, h * 0.30);
+    g.fillCircle(-w * 0.18, h * 0.14, h * 0.30);
+    g.fillCircle(w * 0.18, h * 0.14, h * 0.32);
+
+    g.fillStyle(0x44773b, 0.85);
+    g.fillCircle(-w * 0.1, -h * 0.08, h * 0.24);
+    g.fillCircle(w * 0.1, h * 0.08, h * 0.24);
 
     container.add(g);
   }
@@ -730,112 +1478,161 @@ export class MainScene extends Phaser.Scene {
     gfx.clear();
     if (destroyed) {
       if (obsType === "CRATE") {
-        gfx.fillStyle(0x451a03, 0.4);
+        gfx.fillStyle(0x3f2e16, 0.45);
         gfx.fillRect(-radius * 0.8, -radius * 0.8, radius * 1.6, radius * 1.6);
       } else if (obsType === "BARREL") {
-        gfx.fillStyle(0x7f1d1d, 0.4);
+        gfx.fillStyle(0x450a0a, 0.45);
         gfx.fillCircle(0, 0, radius * 0.7);
       }
       return;
     }
 
     if (obsType === "CRATE") {
-      const s = radius * 1.8;
-      // Sombra
-      gfx.fillStyle(0x000000, 0.3);
-      gfx.fillRoundedRect(-s/2 + 4, -s/2 + 4, s, s, 6);
+      // Caja regular estilo Suroi.io regular_crate.svg
+      const s = radius * 1.85;
+      // Sombra proyectada en el suelo
+      gfx.fillStyle(0x000000, 0.28);
+      gfx.fillRect(-s/2 + 5, -s/2 + 5, s, s);
 
-      // Madera principal
-      gfx.fillStyle(0x8a5229, 1);
-      gfx.fillRoundedRect(-s/2, -s/2, s, s, 6);
+      // Fondo de tablones de madera
+      gfx.fillStyle(0x674b24, 1);
+      gfx.fillRect(-s/2, -s/2, s, s);
 
-      // Tablones internos
-      gfx.lineStyle(2, 0x593114, 0.9);
-      gfx.lineBetween(-s/2, -s/6, s/2, -s/6);
-      gfx.lineBetween(-s/2, s/6, s/2, s/6);
+      // Separaciones verticales entre tablones (grooves oscuros)
+      gfx.lineStyle(1.5, 0x342612, 1);
+      gfx.lineBetween(-s/6, -s/2, -s/6, s/2);
+      gfx.lineBetween(s/6, -s/2, s/6, s/2);
 
-      // Refuerzos de esquinas metálicas
-      gfx.fillStyle(0xd97706, 1);
-      gfx.fillRect(-s/2, -s/2, 10, 10);
-      gfx.fillRect(s/2 - 10, -s/2, 10, 10);
-      gfx.fillRect(-s/2, s/2 - 10, 10, 10);
-      gfx.fillRect(s/2 - 10, s/2 - 10, 10, 10);
+      // Marco perimetral de madera gruesa
+      gfx.lineStyle(4, 0x9e7437, 1);
+      gfx.strokeRect(-s/2 + 2, -s/2 + 2, s - 4, s - 4);
+      gfx.lineStyle(1.5, 0x3f2e16, 1);
+      gfx.strokeRect(-s/2, -s/2, s, s);
 
-      // Remaches
-      gfx.fillStyle(0xfde047, 1);
-      gfx.fillCircle(-s/2 + 5, -s/2 + 5, 2);
-      gfx.fillCircle(s/2 - 5, -s/2 + 5, 2);
-      gfx.fillCircle(-s/2 + 5, s/2 - 5, 2);
-      gfx.fillCircle(s/2 - 5, s/2 - 5, 2);
+      // Travesaño diagonal central reforzado estilo Suroi
+      gfx.lineStyle(5.5, 0x9e7437, 1);
+      gfx.lineBetween(-s/2 + 3, -s/2 + 3, s/2 - 3, s/2 - 3);
+      gfx.lineStyle(1.5, 0x3f2e16, 1);
+      gfx.lineBetween(-s/2 + 3, -s/2 + 3, s/2 - 3, s/2 - 3);
 
-      // Marco y diagonales
-      gfx.lineStyle(2.5, 0x451a03, 0.9);
-      gfx.strokeRoundedRect(-s/2, -s/2, s, s, 6);
-      gfx.lineBetween(-s/2 + 4, -s/2 + 4, s/2 - 4, s/2 - 4);
-      gfx.lineBetween(-s/2 + 4, s/2 - 4, s/2 - 4, -s/2 + 4);
+      // 4 Remaches esquineros metálicos con borde oscuro
+      const rivetOff = s/2 - 5;
+      const rivets = [
+        [-rivetOff, -rivetOff], [rivetOff, -rivetOff],
+        [-rivetOff, rivetOff], [rivetOff, rivetOff]
+      ];
+      rivets.forEach(([rx, ry]) => {
+        gfx.fillStyle(0x808080, 1);
+        gfx.fillCircle(rx, ry, 2.2);
+        gfx.lineStyle(1, 0x2e2e2e, 1);
+        gfx.strokeCircle(rx, ry, 2.2);
+      });
 
     } else if (obsType === "BARREL") {
-      // Sombra
+      // Barril explosivo estilo Suroi
       gfx.fillStyle(0x000000, 0.35);
       gfx.fillCircle(4, 5, radius);
 
-      // Barril Explosivo Rojo
-      gfx.fillStyle(0xdc2626, 1);
+      // Cuerpo rojo intenso
+      gfx.fillStyle(0xb91c1c, 1);
       gfx.fillCircle(0, 0, radius);
-      gfx.lineStyle(3, 0x475569, 1);
+      gfx.lineStyle(3, 0x1f2937, 1);
       gfx.strokeCircle(0, 0, radius);
 
       // Aro interior metálico
-      gfx.fillStyle(0x991b1b, 1);
-      gfx.fillCircle(0, 0, radius * 0.7);
+      gfx.fillStyle(0x7f1d1d, 1);
+      gfx.fillCircle(0, 0, radius * 0.72);
 
       // Franja de peligro amarilla
-      gfx.lineStyle(3, 0xfde047, 1);
-      gfx.strokeCircle(0, 0, radius * 0.5);
+      gfx.lineStyle(3.5, 0xfacc15, 1);
+      gfx.strokeCircle(0, 0, radius * 0.52);
 
-      // Centro inflamable
+      // Tapa central industrial
       gfx.fillStyle(0xfef08a, 1);
       gfx.fillCircle(0, 0, radius * 0.25);
 
     } else if (obsType === "BOULDER") {
-      // Sombra
-      gfx.fillStyle(0x000000, 0.3);
-      gfx.fillCircle(5, 5, radius);
+      // Roca facetada estilo Suroi.io rock_1.svg
+      gfx.fillStyle(0x000000, 0.28);
+      gfx.fillCircle(4, 5, radius);
 
-      // Roca facetada estilo Suroi
-      gfx.fillStyle(0x475569, 1);
-      gfx.fillCircle(0, 0, radius);
-      gfx.lineStyle(3, 0x1e293b, 1);
-      gfx.strokeCircle(0, 0, radius);
+      const r = radius;
+      const pts = [
+        { x: -r * 0.75, y: -r * 0.25 },
+        { x: -r * 0.40, y: -r * 0.85 },
+        { x:  r * 0.45, y: -r * 0.80 },
+        { x:  r * 0.88, y: -r * 0.20 },
+        { x:  r * 0.80, y:  r * 0.65 },
+        { x:  r * 0.10, y:  r * 0.90 },
+        { x: -r * 0.68, y:  r * 0.60 }
+      ];
 
-      // Faceta de luz (arriba izquierda)
-      gfx.fillStyle(0x94a3b8, 0.7);
-      gfx.fillCircle(-radius * 0.25, -radius * 0.25, radius * 0.5);
+      // Cuerpo base
+      gfx.fillStyle(0x787f86, 1);
+      gfx.beginPath();
+      gfx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) gfx.lineTo(pts[i].x, pts[i].y);
+      gfx.closePath();
+      gfx.fillPath();
 
-      // Faceta de sombra (abajo derecha)
-      gfx.fillStyle(0x1e293b, 0.55);
-      gfx.fillCircle(radius * 0.2, radius * 0.2, radius * 0.45);
+      // Faceta de sombra inferior derecha
+      gfx.fillStyle(0x555a60, 1);
+      gfx.beginPath();
+      gfx.moveTo(pts[4].x, pts[4].y);
+      gfx.lineTo(pts[5].x, pts[5].y);
+      gfx.lineTo(pts[6].x, pts[6].y);
+      gfx.lineTo(0, r * 0.2);
+      gfx.closePath();
+      gfx.fillPath();
+
+      // Faceta de luz superior izquierda
+      gfx.fillStyle(0x9ba1a8, 1);
+      gfx.beginPath();
+      gfx.moveTo(pts[1].x, pts[1].y);
+      gfx.lineTo(pts[2].x, pts[2].y);
+      gfx.lineTo(pts[3].x, pts[3].y);
+      gfx.lineTo(0, -r * 0.25);
+      gfx.closePath();
+      gfx.fillPath();
+
+      // Contorno oscuro nítido
+      gfx.lineStyle(2.8, 0x27292c, 1);
+      gfx.beginPath();
+      gfx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) gfx.lineTo(pts[i].x, pts[i].y);
+      gfx.closePath();
+      gfx.strokePath();
 
     } else if (obsType === "TREE") {
-      // Sombra suave proyectada
-      gfx.fillStyle(0x000000, 0.3);
-      gfx.fillCircle(7, 8, radius);
+      // Árbol estilo Suroi.io oak_tree_leaves_1.svg
+      gfx.fillStyle(0x000000, 0.28);
+      gfx.fillCircle(5, 7, radius * 1.05);
 
-      // Copa exterior frondosa (verde bosque profundo)
-      gfx.fillStyle(0x14532d, 1);
-      gfx.fillCircle(0, 0, radius);
+      const r = radius;
+      // Lóbulos base oscuros
+      gfx.fillStyle(0x416631, 1);
+      gfx.fillCircle(-r * 0.28,  r * 0.22, r * 0.58);
+      gfx.fillCircle( r * 0.28,  r * 0.25, r * 0.60);
+      gfx.fillCircle( r * 0.32, -r * 0.22, r * 0.55);
+      gfx.fillCircle(-r * 0.25, -r * 0.28, r * 0.58);
 
-      // Anillo de hojas iluminadas (verde esmeralda claro)
-      gfx.fillStyle(0x22c55e, 0.85);
-      gfx.fillCircle(-radius * 0.18, -radius * 0.18, radius * 0.68);
-      gfx.lineStyle(3, 0x4ade80, 0.9);
-      gfx.strokeCircle(0, 0, radius);
+      // Lóbulos intermedios
+      gfx.fillStyle(0x4a7538, 0.95);
+      gfx.fillCircle(0, 0, r * 0.68);
+      gfx.fillCircle(-r * 0.15, -r * 0.12, r * 0.52);
+      gfx.fillCircle( r * 0.15,  r * 0.12, r * 0.52);
 
-      // Tronco central visible
+      // Crestas de hojas iluminadas verde Suroi
+      gfx.fillStyle(0x588a42, 0.92);
+      gfx.fillCircle(-r * 0.18, -r * 0.25, r * 0.38);
+      gfx.fillCircle( r * 0.22, -r * 0.18, r * 0.35);
+      gfx.fillCircle( r * 0.12,  r * 0.28, r * 0.34);
+
+      // Tronco central visible entre las hojas
       gfx.fillStyle(0x5c3a21, 1);
-      gfx.fillCircle(0, 0, radius * 0.22);
+      gfx.fillCircle(0, 0, r * 0.22);
       gfx.lineStyle(1.5, 0x3d2311, 1);
-      gfx.strokeCircle(0, 0, radius * 0.22);
+      gfx.strokeCircle(0, 0, r * 0.22);
     }
 
     if (hp < maxHp && hp > 0) {
@@ -983,6 +1780,7 @@ export class MainScene extends Phaser.Scene {
   }
 
   private createWaterSplashFX(x: number, y: number) {
+    if (!this.isInCameraView(x, y, 60)) return;
     const splash = this.add.graphics().setDepth(21).setPosition(x, y);
     splash.lineStyle(2, 0x7dd3fc, 0.85);
     splash.strokeCircle(0, 0, 8);
@@ -1014,6 +1812,7 @@ export class MainScene extends Phaser.Scene {
   }
 
   private createDustPuffFX(x: number, y: number) {
+    if (!this.isInCameraView(x, y, 60)) return;
     const dust = this.add.graphics().setDepth(15).setPosition(x, y);
     dust.fillStyle(0x785532, 0.35);
     dust.fillCircle(0, 0, 4);
@@ -1031,10 +1830,11 @@ export class MainScene extends Phaser.Scene {
   /* ── Personajes Gatos (Battle Cats) ──────────────────────── */
   private createPlayer(id: string, p: Player) {
     const isMe = id === this.myId;
-    const px = typeof p.x === "number" && p.x !== 0 ? p.x : 1000;
-    const py = typeof p.y === "number" && p.y !== 0 ? p.y : 1000;
+    const px = typeof p.x === "number" && p.x !== 0 ? p.x : 2400;
+    const py = typeof p.y === "number" && p.y !== 0 ? p.y : 2400;
 
     const container = this.add.container(px, py).setDepth(60);
+    const uiContainer = this.add.container(px, py).setDepth(65);
 
     const bodyGfx  = this.add.graphics();
     const earsGfx  = this.add.graphics();
@@ -1072,15 +1872,34 @@ export class MainScene extends Phaser.Scene {
     const emoteText = this.add.text(0, -3, "🐾", { fontSize: "18px" }).setOrigin(0.5);
     emoteGfx.add([emoteBg, emoteText]);
 
-    container.add([bodyGfx, earsGfx, faceGfx, aimGfx, hpBg, hpFill, shdFill, label, buffIcon, emoteGfx]);
+    const reloadBarGfx = this.add.graphics();
+    const leftHandGfx = this.add.graphics();
+    const rightHandGfx = this.add.graphics();
+
+    // El contenedor de visuales del gato rota con la dirección de apuntado (cuerpo + manos + arma)
+    container.add([bodyGfx, earsGfx, faceGfx, aimGfx, leftHandGfx, rightHandGfx]);
+
+    // El contenedor de interfaz de usuario SOBRE EL PERSONAJE (HUD Billboard)
+    // NUNCA rota, siempre permanece horizontal arriba del personaje (y = -42px)
+    uiContainer.add([hpBg, hpFill, shdFill, label, buffIcon, emoteGfx, reloadBarGfx]);
+    uiContainer.setRotation(0);
 
     const vp: VPlayer = {
-      container, bodyGfx, earsGfx, faceGfx, aimGfx, hpBg, hpFill, shdFill, label, buffIcon,
-      emoteGfx, emoteText,
+      container, uiContainer, bodyGfx, earsGfx, faceGfx, aimGfx, leftHandGfx, rightHandGfx,
+      punchAlternator: 0,
+      hpBg, hpFill, shdFill, label, buffIcon,
+      reloadBarGfx, emoteGfx, emoteText,
       tx: px, ty: py, tr: p.rotation || 0,
       hp: p.hp ?? 100, maxHp: p.maxHp ?? 100,
       shield: p.shield ?? 0, maxShield: p.maxShield ?? 50,
       equippedWeapon: p.equippedWeapon || "LASER",
+      ammo: p.ammo ?? 12, maxAmmo: p.maxAmmo ?? 12,
+      reserveAmmo: p.reserveAmmo ?? 24,
+      isReloading: !!p.isReloading,
+      reloadTimer: p.reloadTimer ?? 0,
+      maxReloadTimer: p.maxReloadTimer ?? 2.0,
+      dashCooldown: p.dashCooldown ?? 0,
+      isRolling: false,
       isGhost: !!p.isGhost, isHidden: !!p.isHidden,
       isMe, catColor: p.catColor || 0,
       name: p.name || "Gato",
@@ -1089,8 +1908,9 @@ export class MainScene extends Phaser.Scene {
       lastShdRatio: 0,
       lastAimRot: p.rotation || 0,
       lastBuff: "",
-      lastWeapon: p.equippedWeapon || "LASER",
+      lastWeapon: "",
     };
+
 
     this.drawCat(vp);
     this.redrawHp(vp, 1, 0);
@@ -1105,11 +1925,11 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
-  private spawnGhostTrail(v: VPlayer) {
+  private spawnGhostTrail(v: VPlayer, tintColor?: number) {
     const shadow = this.add.graphics().setDepth(55).setPosition(v.container.x, v.container.y);
-    shadow.fillStyle(v.isGhost ? 0x38bdf8 : 0x10b981, 0.45);
+    shadow.fillStyle(tintColor ?? (v.isGhost ? 0x38bdf8 : 0x10b981), 0.45);
     shadow.fillCircle(0, 0, 22);
-    shadow.rotation = v.tr;
+    shadow.rotation = v.container.rotation;
 
     this.tweens.add({
       targets: shadow,
@@ -1138,12 +1958,11 @@ export class MainScene extends Phaser.Scene {
   }
 
   private drawCat(v: VPlayer) {
-    const { bodyGfx, earsGfx, faceGfx, aimGfx, isGhost, catColor } = v;
+    const { bodyGfx, earsGfx, faceGfx, aimGfx, leftHandGfx, rightHandGfx, isGhost, catColor } = v;
 
     bodyGfx.clear();
     earsGfx.clear();
     faceGfx.clear();
-    aimGfx.clear();
 
     if (isGhost) {
       bodyGfx.fillStyle(0x38bdf8, 0.45);
@@ -1151,116 +1970,258 @@ export class MainScene extends Phaser.Scene {
       bodyGfx.lineStyle(2, 0xbae6fd, 0.9);
       bodyGfx.strokeCircle(0, 0, 22);
 
+      // Orejas espectrales hacia atrás (-X)
       earsGfx.fillStyle(0x38bdf8, 0.55);
-      earsGfx.fillTriangle(-14, -12, -22, -30, -6, -20);
-      earsGfx.fillTriangle(14, -12, 22, -30, 6, -20);
+      earsGfx.fillTriangle(-8, -14, -20, -22, -2, -18);
+      earsGfx.fillTriangle(-8, 14, -20, 22, -2, 18);
 
+      // Ojos espectrales mirando hacia adelante (+X)
       faceGfx.fillStyle(0xffffff, 0.9);
-      faceGfx.fillCircle(-6, -4, 4);
-      faceGfx.fillCircle(6, -4, 4);
+      faceGfx.fillCircle(6, -6, 4);
+      faceGfx.fillCircle(6, 6, 4);
       faceGfx.fillStyle(0x0284c7, 1);
-      faceGfx.fillCircle(-6, -4, 2);
-      faceGfx.fillCircle(6, -4, 2);
+      faceGfx.fillCircle(7, -6, 2);
+      faceGfx.fillCircle(7, 6, 2);
+
+      aimGfx.clear();
+      leftHandGfx.clear();
+      rightHandGfx.clear();
       return;
     }
 
     const colorTable = [
-      { main: 0x10b981, inner: 0x6ee7b7, earInner: 0xf472b6, stroke: 0xffffff },
-      { main: 0xef4444, inner: 0xfca5a5, earInner: 0xf43f5e, stroke: 0xffffff },
-      { main: 0x8b5cf6, inner: 0xc4b5fd, earInner: 0xf472b6, stroke: 0xffffff },
-      { main: 0xf97316, inner: 0xfed7aa, earInner: 0xfb7185, stroke: 0xffffff },
-      { main: 0x06b6d4, inner: 0x67e8f9, earInner: 0xf472b6, stroke: 0xffffff },
-      { main: 0xeab308, inner: 0xfef08a, earInner: 0xf43f5e, stroke: 0xffffff },
+      { main: 0x10b981, inner: 0x6ee7b7, earInner: 0xf472b6, stroke: 0x1e293b },
+      { main: 0xef4444, inner: 0xfca5a5, earInner: 0xf43f5e, stroke: 0x1e293b },
+      { main: 0x8b5cf6, inner: 0xc4b5fd, earInner: 0xf472b6, stroke: 0x1e293b },
+      { main: 0xf97316, inner: 0xfed7aa, earInner: 0xfb7185, stroke: 0x1e293b },
+      { main: 0x06b6d4, inner: 0x67e8f9, earInner: 0xf472b6, stroke: 0x1e293b },
+      { main: 0xeab308, inner: 0xfef08a, earInner: 0xf43f5e, stroke: 0x1e293b },
     ];
 
     const c = colorTable[catColor % colorTable.length];
 
-    bodyGfx.fillStyle(c.main, 0.2);
-    bodyGfx.fillCircle(0, 0, 30);
+    // Aura suave exterior
+    bodyGfx.fillStyle(c.main, 0.15);
+    bodyGfx.fillCircle(0, 0, 27);
 
+    // Orejas felinas hacia atrás/laterales (-X, ±Y) con contorno oscuro Suroi
     earsGfx.fillStyle(c.main, 1);
-    earsGfx.fillTriangle(-12, -12, -22, -28, -4, -18);
-    earsGfx.fillTriangle(12, -12, 22, -28, 4, -18);
-    earsGfx.lineStyle(2, c.stroke, 0.9);
-    earsGfx.strokeTriangle(-12, -12, -22, -28, -4, -18);
-    earsGfx.strokeTriangle(12, -12, 22, -28, 4, -18);
+    earsGfx.fillTriangle(-6, -13, -19, -23, 2, -18);
+    earsGfx.fillTriangle(-6, 13, -19, 23, 2, 18);
+    earsGfx.lineStyle(2.2, 0x1e293b, 1);
+    earsGfx.strokeTriangle(-6, -13, -19, -23, 2, -18);
+    earsGfx.strokeTriangle(-6, 13, -19, 23, 2, 18);
 
+    // Interior rosado de las orejas
     earsGfx.fillStyle(c.earInner, 1);
-    earsGfx.fillTriangle(-11, -13, -19, -25, -6, -18);
-    earsGfx.fillTriangle(11, -13, 19, -25, 6, -18);
+    earsGfx.fillTriangle(-7, -14, -17, -21, 0, -17);
+    earsGfx.fillTriangle(-7, 14, -17, 21, 0, 17);
 
+    // Cuerpo circular del gato con contorno oscuro de 2.5px estilo Suroi
     bodyGfx.fillStyle(c.main, 1);
     bodyGfx.fillCircle(0, 0, 20);
-    bodyGfx.lineStyle(3, c.stroke, 1);
+    bodyGfx.lineStyle(2.5, 0x1e293b, 1);
     bodyGfx.strokeCircle(0, 0, 20);
 
+    // Ojos felinos mirando hacia adelante (+X)
     faceGfx.fillStyle(0xffffff, 1);
-    faceGfx.fillEllipse(-7, -4, 5, 7);
-    faceGfx.fillEllipse(7, -4, 5, 7);
+    faceGfx.fillEllipse(5, -6, 6, 4.5);
+    faceGfx.fillEllipse(5, 6, 6, 4.5);
+    faceGfx.lineStyle(1, 0x1e293b, 0.5);
+    faceGfx.strokeEllipse(5, -6, 6, 4.5);
+    faceGfx.strokeEllipse(5, 6, 6, 4.5);
 
+    // Pupilas
     faceGfx.fillStyle(0x0f172a, 1);
-    faceGfx.fillCircle(-7, -4, 3);
-    faceGfx.fillCircle(7, -4, 3);
+    faceGfx.fillCircle(6, -6, 2.8);
+    faceGfx.fillCircle(6, 6, 2.8);
 
+    // Brillos de ojos
     faceGfx.fillStyle(0xffffff, 1);
-    faceGfx.fillCircle(-8, -6, 1.5);
-    faceGfx.fillCircle(6, -6, 1.5);
+    faceGfx.fillCircle(7, -7, 1.2);
+    faceGfx.fillCircle(7, 5, 1.2);
 
+    // Naricita rosada al frente
     faceGfx.fillStyle(0xf472b6, 1);
-    faceGfx.fillTriangle(0, 4, -3, 1, 3, 1);
+    faceGfx.fillTriangle(13, 0, 9, -2.5, 9, 2.5);
 
-    faceGfx.lineStyle(1.5, 0xffffff, 0.85);
-    faceGfx.moveTo(-12, 1); faceGfx.lineTo(-24, -1);
-    faceGfx.moveTo(-12, 4); faceGfx.lineTo(-24, 6);
-    faceGfx.moveTo(12, 1);  faceGfx.lineTo(24, -1);
-    faceGfx.moveTo(12, 4);  faceGfx.lineTo(24, 6);
+    // Bigotes laterales
+    faceGfx.lineStyle(1.5, 0xffffff, 0.9);
+    faceGfx.moveTo(4, -11); faceGfx.lineTo(1, -22);
+    faceGfx.moveTo(8, -10); faceGfx.lineTo(7, -22);
+    faceGfx.moveTo(4, 11);  faceGfx.lineTo(1, 22);
+    faceGfx.moveTo(8, 10);  faceGfx.lineTo(7, 22);
     faceGfx.strokePath();
 
-    this.redrawAim(v);
+    this.redrawAim(v, true);
   }
 
-  private redrawAim(v: VPlayer) {
-    if (Math.abs(v.tr - v.lastAimRot) < 0.015 && !v.isGhost && v.equippedWeapon === v.lastWeapon) return;
-    v.lastAimRot = v.tr;
+  private redrawAim(v: VPlayer, forceRedraw = false) {
+    if (!forceRedraw && v.equippedWeapon === v.lastWeapon && v.aimGfx.visible) return;
     v.lastWeapon = v.equippedWeapon;
 
-    const { aimGfx, tr, isGhost, equippedWeapon } = v;
+    const { aimGfx, leftHandGfx, rightHandGfx, isGhost, equippedWeapon, catColor } = v;
     aimGfx.clear();
-    if (isGhost) return;
+    leftHandGfx.clear();
+    rightHandGfx.clear();
 
-    let barrelLen = 24;
-    let barrelColor = 0xf472b6;
-    let barrelWidth = 3;
-
-    if (equippedWeapon === "SHOTGUN") {
-      barrelLen = 22;
-      barrelColor = 0xef4444;
-      barrelWidth = 6;
-    } else if (equippedWeapon === "SNIPER") {
-      barrelLen = 32;
-      barrelColor = 0x06b6d4;
-      barrelWidth = 4;
-    } else if (equippedWeapon === "GRENADE") {
-      barrelLen = 18;
-      barrelColor = 0x84cc16;
-      barrelWidth = 5;
-    } else if (equippedWeapon === "MELEE") {
-      barrelLen = 16;
-      barrelColor = 0xfbbf24;
-      barrelWidth = 4;
+    if (isGhost) {
+      aimGfx.setVisible(false);
+      leftHandGfx.setVisible(false);
+      rightHandGfx.setVisible(false);
+      return;
     }
 
-    const bx = Math.cos(tr) * barrelLen;
-    const by = Math.sin(tr) * barrelLen;
+    aimGfx.setVisible(true);
+    leftHandGfx.setVisible(true);
+    rightHandGfx.setVisible(true);
 
-    aimGfx.lineStyle(6, 0x1e293b, 1);
-    aimGfx.lineBetween(0, 0, bx, by);
-    aimGfx.lineStyle(barrelWidth, barrelColor, 1);
-    aimGfx.lineBetween(bx * 0.3, by * 0.3, bx, by);
+    const colorTable = [
+      { main: 0x10b981, inner: 0x6ee7b7, earInner: 0xf472b6, stroke: 0x1e293b },
+      { main: 0xef4444, inner: 0xfca5a5, earInner: 0xf43f5e, stroke: 0x1e293b },
+      { main: 0x8b5cf6, inner: 0xc4b5fd, earInner: 0xf472b6, stroke: 0x1e293b },
+      { main: 0xf97316, inner: 0xfed7aa, earInner: 0xfb7185, stroke: 0x1e293b },
+      { main: 0x06b6d4, inner: 0x67e8f9, earInner: 0xf472b6, stroke: 0x1e293b },
+      { main: 0xeab308, inner: 0xfef08a, earInner: 0xf43f5e, stroke: 0x1e293b },
+    ];
+    const c = colorTable[catColor % colorTable.length];
 
-    aimGfx.fillStyle(0xffffff, 1);
-    aimGfx.fillCircle(bx, by, 3);
+    // Posiciones relativas de las manos según el arma empuñada
+    let lx = 16, ly = -10;
+    let rx = 16, ry = 10;
+
+    if (equippedWeapon === "SHOTGUN") {
+      // Escopeta táctica estilo Suroi
+      aimGfx.fillStyle(0x1e293b, 1);
+      aimGfx.fillRect(8, -4, 20, 8);
+      aimGfx.lineStyle(2, 0x0f172a, 1);
+      aimGfx.strokeRect(8, -4, 20, 8);
+
+      aimGfx.fillStyle(0x334155, 1);
+      aimGfx.fillRect(20, -3.5, 12, 3);
+      aimGfx.fillRect(20, 0.5, 12, 3);
+      aimGfx.lineStyle(1.5, 0x0f172a, 1);
+      aimGfx.strokeRect(20, -3.5, 12, 3);
+      aimGfx.strokeRect(20, 0.5, 12, 3);
+
+      // Guardamanos de madera bombeable
+      aimGfx.fillStyle(0x854d0e, 1);
+      aimGfx.fillRoundedRect(17, -4.5, 8, 9, 2);
+      aimGfx.lineStyle(1.5, 0x451a03, 1);
+      aimGfx.strokeRoundedRect(17, -4.5, 8, 9, 2);
+
+      rx = 11; ry = 6.5;
+      lx = 21.5; ly = 0;
+
+    } else if (equippedWeapon === "SNIPER") {
+      // Rifle francotirador de precisión (Largo alcance)
+      aimGfx.fillStyle(0x0f172a, 1);
+      aimGfx.fillRect(6, -3, 24, 6);
+      aimGfx.lineStyle(2, 0x020617, 1);
+      aimGfx.strokeRect(6, -3, 24, 6);
+
+      aimGfx.fillStyle(0x06b6d4, 1);
+      aimGfx.fillRect(24, -2, 17, 4);
+      aimGfx.lineStyle(1.5, 0x083344, 1);
+      aimGfx.strokeRect(24, -2, 17, 4);
+
+      aimGfx.fillStyle(0x1e293b, 1);
+      aimGfx.fillRect(41, -3, 4, 6);
+
+      // Mira telescópica con reflejo
+      aimGfx.fillStyle(0x1e293b, 1);
+      aimGfx.fillRect(10, -8, 14, 4);
+      aimGfx.lineStyle(1.5, 0x020617, 1);
+      aimGfx.strokeRect(10, -8, 14, 4);
+      aimGfx.fillStyle(0x38bdf8, 1);
+      aimGfx.fillRect(23, -7.5, 2, 3);
+      aimGfx.fillRect(9, -7.5, 2, 3);
+
+      rx = 11; ry = 6.5;
+      lx = 26; ly = -1.5;
+
+    } else if (equippedWeapon === "GRENADE") {
+      // Granada táctica fragmentaria
+      aimGfx.fillStyle(0x365314, 1);
+      aimGfx.fillCircle(18, 5, 7);
+      aimGfx.lineStyle(2, 0x14532d, 1);
+      aimGfx.strokeCircle(18, 5, 7);
+
+      aimGfx.lineStyle(1.5, 0x4d7c0f, 1);
+      aimGfx.lineBetween(14, 5, 22, 5);
+      aimGfx.lineBetween(18, 1, 18, 9);
+
+      aimGfx.fillStyle(0x94a3b8, 1);
+      aimGfx.fillRect(13, 2, 4, 3);
+      aimGfx.lineStyle(1.5, 0xfacc15, 1);
+      aimGfx.strokeCircle(12, 1, 3);
+
+      rx = 17; ry = 6;
+      lx = 13; ly = -12;
+
+    } else if (equippedWeapon === "MELEE") {
+      // Garras felinas afiladas listas para el combate
+      rx = 18; ry = 13;
+      lx = 18; ly = -13;
+
+      // Destellos de garras
+      aimGfx.lineStyle(2, 0xffffff, 0.85);
+      aimGfx.lineBetween(rx + 5, ry - 3, rx + 10, ry - 5);
+      aimGfx.lineBetween(rx + 6, ry, rx + 12, ry);
+      aimGfx.lineBetween(rx + 5, ry + 3, rx + 10, ry + 5);
+
+      aimGfx.lineBetween(lx + 5, ly - 3, lx + 10, ly - 5);
+      aimGfx.lineBetween(lx + 6, ly, lx + 12, ry ? -12 : -12);
+      aimGfx.lineBetween(lx + 5, ly + 3, lx + 10, ly - 1);
+
+    } else {
+      // LASER / Pistola táctica estándar Suroi
+      aimGfx.fillStyle(0x1e293b, 1);
+      aimGfx.fillRect(9, -3.5, 17, 7);
+      aimGfx.lineStyle(2, 0x0f172a, 1);
+      aimGfx.strokeRect(9, -3.5, 17, 7);
+
+      aimGfx.fillStyle(0x334155, 1);
+      aimGfx.fillRect(14, -2.5, 14, 5);
+      aimGfx.lineStyle(1.5, 0x10b981, 1);
+      aimGfx.lineBetween(12, 0, 24, 0);
+
+      aimGfx.fillStyle(0x10b981, 1);
+      aimGfx.fillCircle(27, 0, 2);
+
+      rx = 12; ry = 6.5;
+      lx = 17; ly = -4;
+    }
+
+    // Dibujar las Manos / Garras circulares estilo Suroi con borde oscuro (r = 6.2px)
+    const drawPaw = (handGfx: Phaser.GameObjects.Graphics) => {
+      handGfx.clear();
+      handGfx.fillStyle(c.main, 1);
+      handGfx.fillCircle(0, 0, 6.2);
+      handGfx.lineStyle(2, 0x1e293b, 1);
+      handGfx.strokeCircle(0, 0, 6.2);
+
+      // Almohadilla plantar rosada central
+      handGfx.fillStyle(c.earInner, 0.95);
+      handGfx.fillCircle(0, 0, 2.8);
+
+      // 3 deditos
+      handGfx.fillCircle(3.2, -2.5, 1.2);
+      handGfx.fillCircle(4.2, 0, 1.2);
+      handGfx.fillCircle(3.2, 2.5, 1.2);
+    };
+
+    drawPaw(leftHandGfx);
+    leftHandGfx.setData("baseX", lx);
+    leftHandGfx.setData("baseY", ly);
+    leftHandGfx.setPosition(lx, ly);
+
+    drawPaw(rightHandGfx);
+    rightHandGfx.setData("baseX", rx);
+    rightHandGfx.setData("baseY", ry);
+    rightHandGfx.setPosition(rx, ry);
   }
+
 
   private redrawHp(v: VPlayer, ratio: number, shdRatio: number) {
     const { hpFill, shdFill } = v;
@@ -1293,6 +2254,23 @@ export class MainScene extends Phaser.Scene {
     v.shield = p.shield ?? v.shield;
     v.maxShield = p.maxShield ?? v.maxShield;
     v.equippedWeapon = p.equippedWeapon || "LASER";
+    v.ammo = p.ammo ?? v.ammo ?? 12;
+    v.maxAmmo = p.maxAmmo ?? v.maxAmmo ?? 12;
+    v.reserveAmmo = p.reserveAmmo ?? v.reserveAmmo ?? 24;
+    v.isReloading = !!p.isReloading;
+    v.reloadTimer = p.reloadTimer ?? 0;
+    v.maxReloadTimer = p.maxReloadTimer ?? 2.0;
+    v.dashCooldown = p.dashCooldown ?? v.dashCooldown ?? 0;
+
+    // Barra de progreso de recarga overhead
+    v.reloadBarGfx.clear();
+    if (v.isReloading && v.maxReloadTimer > 0 && !v.isGhost) {
+      const reloadPct = Math.max(0, Math.min(1, 1 - (v.reloadTimer / v.maxReloadTimer)));
+      v.reloadBarGfx.fillStyle(0x020617, 0.85);
+      v.reloadBarGfx.fillRoundedRect(-22, -62, 44, 5, 2);
+      v.reloadBarGfx.fillStyle(0xfbbf24, 1);
+      v.reloadBarGfx.fillRoundedRect(-21, -61, 42 * reloadPct, 3, 2);
+    }
 
     const newGhost = !!p.isGhost;
     const newHidden = !!p.isHidden;
@@ -1322,8 +2300,11 @@ export class MainScene extends Phaser.Scene {
 
     if (!v.isMe) {
       v.container.setVisible(!v.isHidden);
+      v.uiContainer.setVisible(!v.isHidden);
     } else {
-      v.container.setAlpha(v.isHidden && !v.isGhost ? 0.5 : (v.isGhost ? 0.5 : 1));
+      const alphaVal = v.isHidden && !v.isGhost ? 0.5 : (v.isGhost ? 0.5 : 1);
+      v.container.setAlpha(alphaVal);
+      v.uiContainer.setAlpha(alphaVal);
       if (v.isHidden !== this.wasInBush) {
         soundManager.playBush();
         this.createLeavesFX(v.container.x, v.container.y);
@@ -1338,16 +2319,19 @@ export class MainScene extends Phaser.Scene {
         v.shdFill.setVisible(false);
         v.label.setText((v.isMe ? "TÚ" : v.name) + " 👻");
         v.container.setAlpha(0.5);
+        v.uiContainer.setAlpha(0.7);
       } else {
         v.hpBg.setVisible(true);
         v.hpFill.setVisible(true);
         v.shdFill.setVisible(true);
         v.label.setText(v.isMe ? "TÚ 🐾" : v.name);
         v.container.setAlpha(1);
+        v.uiContainer.setAlpha(1);
       }
       v.lastGhost = v.isGhost;
       this.drawCat(v);
     }
+
 
     if (v.isMe) {
       emit("player", {
@@ -1356,6 +2340,12 @@ export class MainScene extends Phaser.Scene {
         shield: v.shield,
         maxShield: v.maxShield,
         equippedWeapon: v.equippedWeapon,
+        ammo: v.ammo,
+        maxAmmo: v.maxAmmo,
+        reserveAmmo: v.reserveAmmo,
+        isReloading: v.isReloading,
+        reloadTimer: v.reloadTimer,
+        maxReloadTimer: v.maxReloadTimer,
         isGhost: v.isGhost,
         isHidden: v.isHidden,
         dashCooldown: p.dashCooldown ?? 0,
@@ -1371,8 +2361,10 @@ export class MainScene extends Phaser.Scene {
     const v = this.players.get(id);
     if (!v) return;
     v.container.destroy();
+    v.uiContainer.destroy();
     this.players.delete(id);
   }
+
 
   /* ── Proyectiles ─────────────────────────────────────────── */
   private createProj(id: string, p: Projectile) {
@@ -1410,6 +2402,10 @@ export class MainScene extends Phaser.Scene {
       vx: p.vx || 0,
       vy: p.vy || 0,
       projType: type,
+      targetX: p.targetX || 0,
+      targetY: p.targetY || 0,
+      isArmed: !!p.isArmed,
+      blinkTimer: 0,
     });
   }
 
@@ -1462,6 +2458,7 @@ export class MainScene extends Phaser.Scene {
   }
 
   private createSparksFX(x: number, y: number, color = 0x10b981) {
+    if (!this.isInCameraView(x, y, 80)) return;
     for (let i = 0; i < 6; i++) {
       const p = this.add.graphics().setDepth(80).setPosition(x, y);
       p.fillStyle(color, 1);
@@ -1482,6 +2479,7 @@ export class MainScene extends Phaser.Scene {
   }
 
   private createLeavesFX(x: number, y: number) {
+    if (!this.isInCameraView(x, y, 80)) return;
     for (let i = 0; i < 5; i++) {
       const leaf = this.add.graphics().setDepth(85).setPosition(x, y);
       leaf.fillStyle(0x34d399, 0.9);
@@ -1503,7 +2501,134 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
-  private createExplosionFX(x: number, y: number) {
+  public showGraphicClawSlash(x: number, y: number, angle: number) {
+    soundManager.playClawSlash();
+    this.cameras.main.shake(70, 0.006);
+
+    // Contenedor rotado en la dirección del zarpazo
+    const slashCont = this.add.container(x, y).setDepth(85).setRotation(angle);
+    const slashGfx = this.add.graphics();
+    slashCont.add(slashGfx);
+
+    // 3 marcas de garra felina afiladas y curvadas (arañazo gráfico)
+    const offsets = [-14, 0, 14];
+    offsets.forEach((offY, idx) => {
+      const len = idx === 1 ? 52 : 42;
+      const startX = -len * 0.5;
+      const endX = len * 0.5;
+
+      // Resplandor exterior carmesí / sangre felina
+      slashGfx.lineStyle(5, 0xef4444, 0.9);
+      slashGfx.beginPath();
+      slashGfx.moveTo(startX, offY - 6);
+      slashGfx.lineTo(0, offY);
+      slashGfx.lineTo(endX, offY + 6);
+      slashGfx.strokePath();
+
+      // Centro ardiente afilado amarillo relámpago
+      slashGfx.lineStyle(2, 0xfef08a, 1);
+      slashGfx.beginPath();
+      slashGfx.moveTo(startX + 3, offY - 6);
+      slashGfx.lineTo(0, offY);
+      slashGfx.lineTo(endX - 3, offY + 6);
+      slashGfx.strokePath();
+    });
+
+    slashCont.setScale(0.3, 0.3);
+    slashCont.setAlpha(1);
+
+    this.tweens.add({
+      targets: slashCont,
+      scaleX: 1.3,
+      scaleY: 1.3,
+      alpha: 0,
+      duration: 250,
+      ease: "Quad.easeOut",
+      onComplete: () => slashCont.destroy(),
+    });
+
+    // Salpicaduras de arañazo (chispas y gotas rojas)
+    for (let i = 0; i < 8; i++) {
+      const sp = this.add.graphics().setDepth(86).setPosition(x, y);
+      const col = i % 2 === 0 ? 0xfbbf24 : 0xef4444;
+      sp.fillStyle(col, 1);
+      sp.fillCircle(0, 0, Math.random() * 2.5 + 1.5);
+
+      const pAngle = angle + (Math.random() - 0.5) * 1.3;
+      const pDist = 20 + Math.random() * 45;
+      this.tweens.add({
+        targets: sp,
+        x: x + Math.cos(pAngle) * pDist,
+        y: y + Math.sin(pAngle) * pDist,
+        alpha: 0,
+        scaleX: 0.2,
+        scaleY: 0.2,
+        duration: 220 + Math.random() * 100,
+        ease: "Quad.easeOut",
+        onComplete: () => sp.destroy(),
+      });
+    }
+  }
+
+  private createExplosionFX(x: number, y: number, isGrenade = false, outerR = 140, innerR = 70) {
+    if (!this.isInCameraView(x, y, 160)) return;
+    if (isGrenade) {
+      // Explosión de Granada con circunferencia el doble de grande y 2 zonas
+      // Zona interna: fuego blanco y núcleo amarillo cegador (100 dmg)
+      const innerGfx = this.add.graphics().setDepth(92).setPosition(x, y);
+      innerGfx.fillStyle(0xfef08a, 0.95);
+      innerGfx.fillCircle(0, 0, 16);
+      innerGfx.lineStyle(4, 0xfacc15, 1);
+      innerGfx.strokeCircle(0, 0, 16);
+
+      this.tweens.add({
+        targets: innerGfx,
+        scaleX: Math.max(2, innerR / 16),
+        scaleY: Math.max(2, innerR / 16),
+        alpha: 0,
+        duration: 500,
+        ease: "Cubic.easeOut",
+        onComplete: () => innerGfx.destroy(),
+      });
+
+      // Zona externa: onda expansiva masiva el doble de grande (70 dmg)
+      const outerGfx = this.add.graphics().setDepth(91).setPosition(x, y);
+      outerGfx.lineStyle(6, 0xef4444, 0.95);
+      outerGfx.strokeCircle(0, 0, 20);
+
+      this.tweens.add({
+        targets: outerGfx,
+        scaleX: Math.max(3, outerR / 20),
+        scaleY: Math.max(3, outerR / 20),
+        alpha: 0,
+        duration: 650,
+        ease: "Quad.easeOut",
+        onComplete: () => outerGfx.destroy(),
+      });
+
+      // Ráfaga masiva de fuego y humo
+      for (let i = 0; i < 20; i++) {
+        const p = this.add.graphics().setDepth(93).setPosition(x, y);
+        const col = i % 3 === 0 ? 0xffffff : i % 2 === 0 ? 0xfacc15 : 0xef4444;
+        p.fillStyle(col, 1);
+        p.fillCircle(0, 0, Math.random() * 4 + 2);
+
+        const a = Math.random() * Math.PI * 2;
+        const dist = 30 + Math.random() * (outerR * 0.85);
+        this.tweens.add({
+          targets: p,
+          x: x + Math.cos(a) * dist,
+          y: y + Math.sin(a) * dist,
+          alpha: 0,
+          scaleX: 0.2,
+          scaleY: 0.2,
+          duration: 400 + Math.random() * 250,
+          onComplete: () => p.destroy(),
+        });
+      }
+      return;
+    }
+
     const shock = this.add.graphics().setDepth(90).setPosition(x, y);
     shock.lineStyle(4, 0xef4444, 1);
     shock.strokeCircle(0, 0, 10);
@@ -1541,13 +2666,35 @@ export class MainScene extends Phaser.Scene {
 
       // Rotación 0ms ultra reactiva (Responsive Rotation estilo Suroi)
       me.tr = rot;
-      me.container.rotation = rot;
+      if (!me.isRolling) {
+        me.container.rotation = rot;
+      }
+
+      if (typeof me.dashCooldown === "number" && me.dashCooldown > 0) {
+        me.dashCooldown = Math.max(0, me.dashCooldown - delta / 1000);
+      }
+
+      if (this.localShootCooldown > 0) {
+        this.localShootCooldown = Math.max(0, this.localShootCooldown - delta / 1000);
+      }
+
+      // Auto-Disparo Continuo y Fluido al sostener clic izquierdo presionado (Suroi Auto-Fire)
+      if (
+        this.input.activePointer.isDown &&
+        this.input.activePointer.leftButtonDown() &&
+        !me.isGhost &&
+        this.localShootCooldown <= 0
+      ) {
+        this.executeLocalShoot(me);
+      }
 
       const mag = Math.hypot(dx, dy);
       if (mag > 0) {
         const ndx = dx / mag;
         const ndy = dy / mag;
         let baseSpeed = isGhost ? 280 : 220;
+        if (!isGhost && me.equippedWeapon === "MELEE") baseSpeed *= 1.15; // +15% de velocidad al usar las garras felinas
+        if (me.lastBuff === "SPEED") baseSpeed *= 1.4;
 
         // Fricción de agua si camina por el río (0.75x velocidad estilo Suroi)
         const inRiver = !isGhost && this.checkInRiver(me.container.x, me.container.y);
@@ -1574,8 +2721,8 @@ export class MainScene extends Phaser.Scene {
           });
         }
 
-        me.container.x = Math.max(30, Math.min(2000 - 30, nextX));
-        me.container.y = Math.max(30, Math.min(2000 - 30, nextY));
+        me.container.x = Math.max(30, Math.min(4800 - 30, nextX));
+        me.container.y = Math.max(30, Math.min(4800 - 30, nextY));
 
         // Partículas de pasos y chapoteo de agua
         const stepDist = Math.hypot(me.container.x - this.lastPlayerPos.x, me.container.y - this.lastPlayerPos.y);
@@ -1596,24 +2743,27 @@ export class MainScene extends Phaser.Scene {
 
       // Cámara Dinámica con Anticipación de Ratón (Suroi Mouse Look-Ahead)
       const mouseDist = Phaser.Math.Distance.Between(me.container.x, me.container.y, wp.x, wp.y);
-      const leadDist = Math.min(85, mouseDist * 0.22);
+      const isSniper = me.equippedWeapon === "SNIPER";
+      const maxLead = isSniper ? 180 : 105;
+      const leadRatio = isSniper ? 0.35 : 0.24;
+      const leadDist = Math.min(maxLead, mouseDist * leadRatio);
       const desiredCamX = me.container.x + Math.cos(rot) * leadDist;
       const desiredCamY = me.container.y + Math.sin(rot) * leadDist;
 
-      this.camTarget.x = Phaser.Math.Linear(this.camTarget.x, desiredCamX, 0.12);
-      this.camTarget.y = Phaser.Math.Linear(this.camTarget.y, desiredCamY, 0.12);
+      this.camTarget.x = Phaser.Math.Linear(this.camTarget.x, desiredCamX, 0.14);
+      this.camTarget.y = Phaser.Math.Linear(this.camTarget.y, desiredCamY, 0.14);
       this.camTargetDummy.setPosition(this.camTarget.x, this.camTarget.y);
 
       // Renderizar Retícula (Crosshair) y Arco de Apuntado si NO es fantasma
       this.drawAimArcAndCrosshair(me, wp.x, wp.y);
 
-      // Enviar movimiento al servidor con rate limiting y posición predicha validada
+      // Enviar movimiento al servidor a 60 FPS con posición predicha validada
       const rotDiff = Math.abs(rot - this.lastSentRot);
       if (
         dx !== this.lastSentDx ||
         dy !== this.lastSentDy ||
-        rotDiff > 0.025 ||
-        time - this.lastMoveSendTime > 33
+        rotDiff > 0.02 ||
+        time - this.lastMoveSendTime >= 16
       ) {
         this.net.sendMove(dx, dy, rot, me.container.x, me.container.y);
         this.lastSentDx = dx;
@@ -1638,40 +2788,135 @@ export class MainScene extends Phaser.Scene {
       this.updateLootInteraction(me, time);
     }
 
-    // 2. Interpolación Suave (Lerp) para Jugadores Remotos y Reconciliación Arquitectura Suroi
+    // 2. Interpolación Suave (Lerp) para Jugadores Remotos y Frustum Culling
     this.players.forEach(v => {
-      if (v.isMe) {
+      const isLocal = v.isMe;
+      const inCam = isLocal || this.isInCameraView(v.container.x, v.container.y, 120);
+
+      if (isLocal) {
+        v.uiContainer.setPosition(v.container.x, v.container.y);
+        v.uiContainer.setRotation(0);
+
         const dist = Math.hypot(v.container.x - v.tx, v.container.y - v.ty);
-        // En Suroi, la posición del cliente local es la verdad visual inmediata.
-        // Solo reconciliar si hay desvío crítico (> 140px como teleport o caída de paquete)
-        if (dist > 140) {
+        if (dist > 160) {
           v.container.x = v.tx;
           v.container.y = v.ty;
-        } else if (dist > 70) {
-          // Micro-amortiguación suave sin tirones perceptibles
-          v.container.x = Phaser.Math.Linear(v.container.x, v.tx, 0.04);
-          v.container.y = Phaser.Math.Linear(v.container.y, v.ty, 0.04);
+        } else if (dist > 80) {
+          v.container.x = Phaser.Math.Linear(v.container.x, v.tx, 0.02);
+          v.container.y = Phaser.Math.Linear(v.container.y, v.ty, 0.02);
         }
+        this.redrawAim(v);
       } else {
-        // Interpolación fluida a 60 FPS para otros jugadores y bots
+        // Interpolación física para mantener coordenadas sincronizadas
         v.container.x = Phaser.Math.Linear(v.container.x, v.tx, 0.38);
         v.container.y = Phaser.Math.Linear(v.container.y, v.ty, 0.38);
 
-        // Giro por el camino angular más corto (sin giros de 360 grados)
         const angleDiff = Phaser.Math.Angle.Wrap(v.tr - v.container.rotation);
         v.container.rotation += angleDiff * 0.35;
+
+        if (!inCam) {
+          // Fuera de vista de cámara: ocultar y pausar redraws
+          if (v.container.visible) v.container.setVisible(false);
+          if (v.uiContainer.visible) v.uiContainer.setVisible(false);
+        } else {
+          // Dentro de vista de cámara: mostrar y sincronizar visuales
+          if (!v.container.visible) {
+            v.container.setVisible(true);
+            this.redrawAim(v, true);
+          }
+          if (!v.uiContainer.visible) v.uiContainer.setVisible(true);
+
+          v.uiContainer.setPosition(v.container.x, v.container.y);
+          v.uiContainer.setRotation(0);
+          this.redrawAim(v);
+        }
       }
-      this.redrawAim(v);
     });
 
-    // Interpolación de proyectiles basada en velocidad + corrección continua
+    // 2.1 Interpolación de proyectiles de red con Culling
     const dtSecProj = Math.min(0.04, delta / 1000);
     this.projs.forEach(v => {
       v.g.x += v.vx * dtSecProj;
       v.g.y += v.vy * dtSecProj;
       v.g.x = Phaser.Math.Linear(v.g.x, v.tx, 0.25);
       v.g.y = Phaser.Math.Linear(v.g.y, v.ty, 0.25);
+
+      const inCam = this.isInCameraView(v.g.x, v.g.y, 80);
+      if (!inCam) {
+        if (v.g.visible) v.g.setVisible(false);
+        if (v.trail.visible) {
+          v.trail.clear();
+          v.trail.setVisible(false);
+        }
+        return;
+      }
+
+      if (!v.g.visible) v.g.setVisible(true);
+      if (!v.trail.visible) v.trail.setVisible(true);
+
+      if (v.projType === "GRENADE") {
+        // Si está en el suelo (armada o velocidad de vuelo casi nula): titilará 2 segundos antes de explotar
+        if (v.isArmed || Math.hypot(v.vx, v.vy) < 15) {
+          const prevPhase = Math.floor((v.blinkTimer || 0) / 180);
+          v.blinkTimer = (v.blinkTimer || 0) + delta;
+          const currPhase = Math.floor(v.blinkTimer / 180);
+          const isBlink = currPhase % 2 === 0;
+          if (currPhase > prevPhase) {
+            soundManager.playGrenadeTick();
+          }
+
+          v.trail.clear();
+          // Onda de pulso de peligro expansiva en el suelo
+          const pulseR = 16 + Math.sin(v.blinkTimer / 60) * 6;
+          v.trail.lineStyle(2, isBlink ? 0xef4444 : 0xfacc15, 0.9);
+          v.trail.strokeCircle(v.g.x, v.g.y, pulseR);
+
+          // Resplandor de titilado de la granada
+          v.g.clear();
+          v.g.fillStyle(isBlink ? 0xef4444 : 0x84cc16, 1);
+          v.g.fillCircle(0, 0, 9);
+          v.g.lineStyle(2, isBlink ? 0xffffff : 0x365314, 1);
+          v.g.strokeCircle(0, 0, 9);
+          v.g.fillStyle(isBlink ? 0xffffff : 0xfacc15, 1);
+          v.g.fillCircle(0, 0, 4);
+        }
+      }
     });
+
+    // 2.2 Simulación y Frustum Culling del Object Pool de Balas Locales (200 máx)
+    const dtSecBullet = Math.min(0.04, delta / 1000);
+    const pooledBullets = this.bulletPool.getChildren() as VisualBullet[];
+    for (let i = 0; i < pooledBullets.length; i++) {
+      const b = pooledBullets[i];
+      if (!b.active) continue;
+
+      b.life -= dtSecBullet;
+      if (b.life <= 0) {
+        b.deactivate();
+        continue;
+      }
+
+      const prevX = b.x;
+      const prevY = b.y;
+      b.x += b.vx * dtSecBullet;
+      b.y += b.vy * dtSecBullet;
+
+      const inCam = this.isInCameraView(b.x, b.y, 80);
+      if (!inCam) {
+        if (b.visible) b.setVisible(false);
+        if (b.trailGfx.visible) {
+          b.trailGfx.clear();
+          b.trailGfx.setVisible(false);
+        }
+      } else {
+        if (!b.visible) b.setVisible(true);
+        if (!b.trailGfx.visible) b.trailGfx.setVisible(true);
+
+        b.trailGfx.clear();
+        b.trailGfx.lineStyle(b.radius * 1.4, b.color, 0.45);
+        b.trailGfx.lineBetween(prevX - b.vx * 0.025, prevY - b.vy * 0.025, b.x, b.y);
+      }
+    }
 
 
     // Zona de Tinta Circular Perfecta
@@ -1727,10 +2972,10 @@ export class MainScene extends Phaser.Scene {
           stats = `${it.itemType} (Munición Máxima)`;
         } else {
           title = `[F] CAMBIAR POR ${it.itemType}`;
-          if (it.itemType === "SHOTGUN") stats = "Daño: 13x5 | Rango: Corto | Dispersión";
-          else if (it.itemType === "SNIPER") stats = "Daño: 52 | Rango: Máximo | Precisión";
-          else if (it.itemType === "GRENADE") stats = "Daño: 55 | Radio: 140 | Área";
-          else stats = "Daño: 25 | Cadencia: Rápida";
+          if (it.itemType === "SHOTGUN") stats = "Daño: 15x5 (75) | 2/8 Balas | Cadencia: 1.0s | Recarga: 2.5s";
+          else if (it.itemType === "SNIPER") stats = "Daño: 50 | 5/5 Balas | Cadencia: 0.5s | Recarga: 3.0s";
+          else if (it.itemType === "GRENADE") stats = "Daño: 100/70 | x3 Granadas | Retardo: 2.0s | Área x2";
+          else stats = "Daño: 20 | 12/24 Balas | Cadencia: 0.3s | Recarga: 2.0s";
         }
       } else {
         if (it.itemType === "MEDKIT") { title = "[F] BOTIQUÍN MÉDICO"; stats = "+40 Salud Instantánea"; }
@@ -1774,54 +3019,93 @@ export class MainScene extends Phaser.Scene {
     cg.lineBetween(wx, wy - 14, wx, wy - 6);
     cg.lineBetween(wx, wy + 6, wx, wy + 14);
 
-    // Arco o abanico de disparo según arma equipada
+    // Arco o abanico de disparo según arma equipada (El alcance coincide exactamente con el límite de las balas)
     const weapon = me.equippedWeapon;
     const px = me.container.x;
     const py = me.container.y;
     const rot = me.tr;
 
     if (weapon === "SHOTGUN") {
-      const range = 320;
-      const angleHalf = 0.26;
-      ag.fillStyle(0xef4444, 0.15);
-      ag.lineStyle(1.5, 0xef4444, 0.5);
+      // Escopeta: Alcance exacto de 310px
+      const range = 310;
+      const angleHalf = 0.28;
+      ag.fillStyle(0xef4444, 0.16);
+      ag.lineStyle(2, 0xef4444, 0.7);
       ag.slice(px, py, range, rot - angleHalf, rot + angleHalf, false);
       ag.fillPath();
       ag.strokePath();
+
+      // Perdigones proyectados en el arco
+      for (let i = 0; i < 5; i++) {
+        const off = (i - 2) * (0.28 / 2);
+        const ex = px + Math.cos(rot + off) * range;
+        const ey = py + Math.sin(rot + off) * range;
+        ag.lineStyle(1.5, 0xfca5a5, 0.4);
+        ag.lineBetween(px, py, ex, ey);
+        ag.fillStyle(0xef4444, 0.8);
+        ag.fillCircle(ex, ey, 2.5);
+      }
     } else if (weapon === "SNIPER") {
-      const range = 900;
+      // Sniper: Alcance exacto de 980px con retícula láser de precisión
+      const range = 980;
       const endX = px + Math.cos(rot) * range;
       const endY = py + Math.sin(rot) * range;
-      ag.lineStyle(2, 0x06b6d4, 0.4);
+      ag.lineStyle(2, 0x06b6d4, 0.6);
       ag.lineBetween(px, py, endX, endY);
-      ag.fillStyle(0x06b6d4, 0.6);
+      ag.fillStyle(0x06b6d4, 0.85);
       ag.fillCircle(endX, endY, 5);
+      ag.lineStyle(1.5, 0xffffff, 0.9);
+      ag.strokeCircle(endX, endY, 9);
     } else if (weapon === "GRENADE") {
-      const dist = Math.min(380, Math.hypot(wx - px, wy - py));
+      // Granada: Se dirige y se queda justo donde se apunta con el cursor (clamped a 400px máx)
+      const dist = Math.min(400, Math.hypot(wx - px, wy - py));
       const targetX = px + Math.cos(rot) * dist;
       const targetY = py + Math.sin(rot) * dist;
-      ag.lineStyle(1.5, 0x84cc16, 0.4);
+
+      // Línea de trayectoria
+      ag.lineStyle(2, 0x84cc16, 0.55);
       ag.lineBetween(px, py, targetX, targetY);
-      ag.fillStyle(0x84cc16, 0.2);
-      ag.fillCircle(targetX, targetY, 45);
-      ag.lineStyle(2, 0x84cc16, 0.8);
-      ag.strokeCircle(targetX, targetY, 45);
+
+      // Zona interna de explosión (140px radio - 100 de daño)
+      ag.fillStyle(0xef4444, 0.14);
+      ag.fillCircle(targetX, targetY, 140);
+      ag.lineStyle(2, 0xef4444, 0.7);
+      ag.strokeCircle(targetX, targetY, 140);
+
+      // Zona externa de explosión (280px radio - 70 de daño, doble de grande)
+      ag.fillStyle(0xf59e0b, 0.07);
+      ag.fillCircle(targetX, targetY, 280);
+      ag.lineStyle(1.5, 0xf59e0b, 0.45);
+      ag.strokeCircle(targetX, targetY, 280);
+
+      // Marcador del punto de caída
+      ag.fillStyle(0x84cc16, 0.95);
+      ag.fillCircle(targetX, targetY, 6);
     } else if (weapon === "MELEE") {
-      const range = 65;
-      const angleHalf = 0.5;
-      ag.fillStyle(0xfbbf24, 0.2);
-      ag.lineStyle(2, 0xfbbf24, 0.6);
+      // Garras: Alcance exacto de 75px
+      const range = 75;
+      const angleHalf = 0.55;
+      ag.fillStyle(0xfbbf24, 0.22);
+      ag.lineStyle(2.5, 0xfbbf24, 0.8);
       ag.slice(px, py, range, rot - angleHalf, rot + angleHalf, false);
       ag.fillPath();
       ag.strokePath();
     } else {
-      const range = 500;
-      const angleHalf = 0.1;
-      ag.fillStyle(0x10b981, 0.12);
-      ag.lineStyle(1, 0x10b981, 0.4);
+      // Pistola Láser: Alcance exacto de 480px
+      const range = 480;
+      const angleHalf = 0.12;
+      ag.fillStyle(0x10b981, 0.15);
+      ag.lineStyle(1.5, 0x10b981, 0.6);
       ag.slice(px, py, range, rot - angleHalf, rot + angleHalf, false);
       ag.fillPath();
       ag.strokePath();
+
+      const endX = px + Math.cos(rot) * range;
+      const endY = py + Math.sin(rot) * range;
+      ag.lineStyle(2, 0x34d399, 0.75);
+      ag.lineBetween(px, py, endX, endY);
+      ag.fillStyle(0x10b981, 0.9);
+      ag.fillCircle(endX, endY, 4);
     }
   }
 
@@ -1835,17 +3119,23 @@ export class MainScene extends Phaser.Scene {
     const { x, y, r } = this.zone;
     g.clear();
 
-    // Suroi-style completa niebla roja de tormenta tóxica
-    // Un anillo exterior masivo de 1800px cubre todas las 4 esquinas del mapa sin artefactos
-    const thickness = 1800;
-    g.lineStyle(thickness, 0x881337, 0.45);
-    g.strokeCircle(x, y, r + thickness / 2);
+    // Suroi-style niebla roja de tormenta tóxica optimizada para 60 FPS
+    g.fillStyle(0x881337, 0.45);
+    if (y - r > 0) g.fillRect(0, 0, 4800, y - r);
+    if (y + r < 4800) g.fillRect(0, y + r, 4800, 4800 - (y + r));
+    if (x - r > 0) g.fillRect(0, Math.max(0, y - r), x - r, Math.min(4800, 2 * r));
+    if (x + r < 4800) g.fillRect(x + r, Math.max(0, y - r), 4800 - (x + r), Math.min(4800, 2 * r));
+
+    // Anillo suave para cubrir esquinas de la cámara sin sobrecarga de GPU
+    const ringThickness = Math.min(600, Math.max(60, 4800 - r));
+    g.lineStyle(ringThickness, 0x881337, 0.45);
+    g.strokeCircle(x, y, r + ringThickness / 2);
 
     // Borde de peligro neón
-    g.lineStyle(7, 0xef4444, 0.95);
+    g.lineStyle(6, 0xef4444, 0.95);
     g.strokeCircle(x, y, r);
-    g.lineStyle(3, 0xfca5a5, 0.85);
-    g.strokeCircle(x, y, r - 4);
+    g.lineStyle(2, 0xfca5a5, 0.85);
+    g.strokeCircle(x, y, r - 3);
   }
 
   /* ── Minimapa con Orografía de Isla Suroi.io ───────────────── */
@@ -1857,7 +3147,7 @@ export class MainScene extends Phaser.Scene {
     const PAD = 20;
     const mx = this.scale.width - SIZE - PAD;
     const my = this.scale.height - SIZE - PAD;
-    const sc = SIZE / 2000;
+    const sc = SIZE / 4800;
 
     // 1. Océano del minimapa
     g.fillStyle(0x1a4a7a, 0.9);
@@ -1867,21 +3157,21 @@ export class MainScene extends Phaser.Scene {
 
     // 2. Playa de arena del minimapa
     g.fillStyle(0xc4a96b, 0.85);
-    g.fillRoundedRect(mx + 90 * sc, my + 90 * sc, 1820 * sc, 1820 * sc, 6);
+    g.fillRoundedRect(mx + 200 * sc, my + 200 * sc, 4400 * sc, 4400 * sc, 6);
 
     // 3. Hierba central del minimapa
     g.fillStyle(0x56893b, 0.9);
-    g.fillRoundedRect(mx + 150 * sc, my + 150 * sc, 1700 * sc, 1700 * sc, 4);
+    g.fillRoundedRect(mx + 360 * sc, my + 360 * sc, 4080 * sc, 4080 * sc, 4);
 
     // 4. Río del minimapa
     g.lineStyle(4, 0x2869ad, 0.85);
     const riverPts = [
-      { x: 1000, y: 0 },
-      { x: 1050, y: 400 },
-      { x: 1000, y: 800 },
-      { x: 950, y: 1200 },
-      { x: 1100, y: 1600 },
-      { x: 1200, y: 2000 },
+      { x: 2400, y: 0 },
+      { x: 2520, y: 900 },
+      { x: 2360, y: 1900 },
+      { x: 2260, y: 2900 },
+      { x: 2580, y: 3900 },
+      { x: 2480, y: 4800 },
     ];
     g.beginPath();
     g.moveTo(mx + riverPts[0].x * sc, my + riverPts[0].y * sc);

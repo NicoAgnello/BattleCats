@@ -75,6 +75,48 @@ export class SSEManager {
         } catch {}
       });
 
+      this.es.addEventListener("tick", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          window.dispatchEvent(new CustomEvent("sse-tick", { detail: data }));
+        } catch {}
+      });
+
+      this.es.addEventListener("playerShoot", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          window.dispatchEvent(new CustomEvent("sse-shoot", { detail: data }));
+        } catch {}
+      });
+
+      this.es.addEventListener("playerMelee", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          window.dispatchEvent(new CustomEvent("sse-melee", { detail: data }));
+        } catch {}
+      });
+
+      this.es.addEventListener("hit", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          window.dispatchEvent(new CustomEvent("sse-hit", { detail: data }));
+        } catch {}
+      });
+
+      this.es.addEventListener("playerDash", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          window.dispatchEvent(new CustomEvent("sse-dash", { detail: data }));
+        } catch {}
+      });
+
+      this.es.addEventListener("explosion", (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          window.dispatchEvent(new CustomEvent("sse-explosion", { detail: data }));
+        } catch {}
+      });
+
       this.es.onerror = () => {
         this.telemetry.connected = false;
         this.notifyTelemetry();

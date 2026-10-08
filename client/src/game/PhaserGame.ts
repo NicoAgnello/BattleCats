@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 
-export const WORLD_W = 2000;
-export const WORLD_H = 2000;
+export const WORLD_W = 4800;
+export const WORLD_H = 4800;
 
 export function createPhaserConfig(parentId: string): Phaser.Types.Core.GameConfig {
   return {

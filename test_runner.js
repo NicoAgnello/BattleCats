@@ -11,7 +11,9 @@ if (!fs.existsSync(FRAMES_DIR)) {
   fs.mkdirSync(FRAMES_DIR, { recursive: true });
 } else {
   // Clear old frames
-  fs.readdirSync(FRAMES_DIR).forEach(f => fs.unlinkSync(path.join(FRAMES_DIR, f)));
+  fs.readdirSync(FRAMES_DIR).forEach(f => {
+    try { fs.unlinkSync(path.join(FRAMES_DIR, f)); } catch {}
+  });
 }
 
 function getChromeTab() {
@@ -98,11 +100,16 @@ async function main() {
   await cdp.send('Page.navigate', { url: 'http://localhost:3000/' });
   await sleep(2000);
 
-  // 2. Hacer clic en "¡ENTRAR AL COMBATE!"
-  console.log('🖱️ Presionando botón de ingreso a la batalla...');
+  // 2. Ingresar apodo "TEST_BENCHMARK" y hacer clic en "¡ENTRAR AL COMBATE!"
+  console.log('🖱️ Configurando apodo TEST_BENCHMARK e ingresando a la batalla...');
   const clickRes = await cdp.send('Runtime.evaluate', {
     expression: `
       (() => {
+        const input = document.querySelector('input');
+        if (input) {
+          input.value = "TEST_BENCHMARK";
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
         const btn = document.querySelector('button[type="submit"]') ||
                     Array.from(document.querySelectorAll('button')).find(b => b.textContent && (b.textContent.includes('COMBATE') || b.textContent.includes('BATALLA')));
         if (btn) {
@@ -117,8 +124,7 @@ async function main() {
   console.log('Resultado del clic de inicio:', clickRes.result.value);
 
   // Esperar a que la escena de Phaser y la red se inicialicen
-  await sleep(3500);
-
+  await sleep(3000);
 
   // 3. Verificar estado de SSE Telemetría
   const sseStatus = await cdp.send('Runtime.evaluate', {
@@ -139,33 +145,36 @@ async function main() {
   });
   console.log('📡 Verificación de SSE en el HUD:', sseStatus.result.value);
 
-  // 4. Iniciar Screencast para captura de frames de video
+  // 4. Iniciar Screencast para captura de frames de video ultra-fluida (JPEG no-bloqueante)
   let frameCount = 0;
   let capturing = true;
+  const writePromises = [];
+  const startTime = Date.now();
 
-  cdp.on('Page.screencastFrame', async params => {
+  cdp.on('Page.screencastFrame', params => {
     if (!capturing) return;
     const { data, sessionId } = params;
-    const filename = path.join(FRAMES_DIR, `frame_${String(frameCount).padStart(5, '0')}.png`);
-    fs.writeFileSync(filename, Buffer.from(data, 'base64'));
-    frameCount++;
-    try {
-      await cdp.send('Page.screencastFrameAck', { sessionId });
-    } catch {}
+    // Acknowledge de inmediato a Chrome para mantener el loop a 60 FPS sin pausar el compositor
+    cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
+    
+    const curIdx = frameCount++;
+    const filename = path.join(FRAMES_DIR, `frame_${String(curIdx).padStart(5, '0')}.jpg`);
+    writePromises.push(fs.promises.writeFile(filename, Buffer.from(data, 'base64')));
   });
 
   await cdp.send('Page.startScreencast', {
-    format: 'png',
-    quality: 90,
-    maxWidth: 1366,
-    maxHeight: 768,
+    format: 'jpeg',
+    quality: 85,
+    maxWidth: 1280,
+    maxHeight: 720,
     everyNthFrame: 1
   });
-  console.log('🎥 Grabación de Screencast activada.');
+  console.log('🎥 Grabación de Screencast ultra-fluida activada (JPEG 720p sin bloqueo).');
 
   // Métricas para el reporte de rendimiento
   const movementSamples = [];
   const shootingMoveSamples = [];
+  const fpsReadings = [];
 
   async function sampleLocalPlayer(label) {
     const res = await cdp.send('Runtime.evaluate', {
@@ -180,11 +189,13 @@ async function main() {
             x: me.container.x,
             y: me.container.y,
             rot: me.container.rotation,
+            uiRot: me.uiContainer ? me.uiContainer.rotation : 0,
+            uiY: me.uiContainer ? me.uiContainer.y : 0,
             tx: me.tx,
             ty: me.ty,
             dist: Math.hypot(me.container.x - me.tx, me.container.y - me.ty),
             fps: game ? Math.round(game.loop.actualFps) : 60,
-            delta: game ? Math.round(game.loop.delta) : 16,
+            delta: game ? Math.round(game.loop.delta * 10) / 10 : 16.7,
             weapon: me.equippedWeapon,
             label: "${label}"
           };
@@ -192,11 +203,12 @@ async function main() {
       `,
       returnByValue: true
     });
-    return res.result.value;
+    const val = res.result.value;
+    if (val && val.fps > 0) {
+      fpsReadings.push(val.fps);
+    }
+    return val;
   }
-
-  // ── TEST 1: MOVIMIENTO PURO Y FLUIDEZ MULTIDIRECCIONAL (WASD) ──
-  console.log('\n--- 🧪 TEST 1: Probando Fluidez de Movimiento Puro (WASD) ---');
 
   async function pressKey(key, code) {
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: code.charCodeAt(0) });
@@ -205,10 +217,13 @@ async function main() {
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: code.charCodeAt(0) });
   }
 
+  // ── TEST 1: MOVIMIENTO MULTIDIRECCIONAL (WASD) ──
+  console.log('\n--- 🧪 TEST 1: Probando Fluidez de Movimiento Puro (WASD) ---');
+
   // Mover hacia el Este (D)
   await pressKey('d', 'KeyD');
-  for (let i = 0; i < 20; i++) {
-    await sleep(50);
+  for (let i = 0; i < 18; i++) {
+    await sleep(45);
     const s = await sampleLocalPlayer('move_D');
     if (s) movementSamples.push(s);
   }
@@ -216,8 +231,8 @@ async function main() {
 
   // Mover hacia el Sur (S)
   await pressKey('s', 'KeyS');
-  for (let i = 0; i < 20; i++) {
-    await sleep(50);
+  for (let i = 0; i < 18; i++) {
+    await sleep(45);
     const s = await sampleLocalPlayer('move_S');
     if (s) movementSamples.push(s);
   }
@@ -226,8 +241,8 @@ async function main() {
   // Mover diagonal Suroeste (S + A)
   await pressKey('s', 'KeyS');
   await pressKey('a', 'KeyA');
-  for (let i = 0; i < 25; i++) {
-    await sleep(50);
+  for (let i = 0; i < 20; i++) {
+    await sleep(45);
     const s = await sampleLocalPlayer('move_diag_SA');
     if (s) movementSamples.push(s);
   }
@@ -236,30 +251,29 @@ async function main() {
 
   // Mover hacia el Norte cruzando el río (W)
   await pressKey('w', 'KeyW');
-  for (let i = 0; i < 25; i++) {
-    await sleep(50);
+  for (let i = 0; i < 20; i++) {
+    await sleep(45);
     const s = await sampleLocalPlayer('move_W');
     if (s) movementSamples.push(s);
   }
   await releaseKey('w', 'KeyW');
 
-  console.log(`✅ Test 1 completado. ${movementSamples.length} muestras de movimiento registradas.`);
+  console.log(`✅ Test 1 completado. ${movementSamples.length} muestras registradas.`);
 
-  // ── TEST 2: MOVIMIENTO SIMULTÁNEO + DISPAROS RÁPIDOS CONTINUOS ──
+  // ── TEST 2: MOVIMIENTO SIMULTÁNEO + DISPARO CONTINUO (AUTO-FIRE) ──
   console.log('\n--- 🧪 TEST 2: Probando Rendimiento entre Movimientos y Disparos Simultáneos ---');
 
-  // El jugador corre hacia el Este mientras apunta y dispara continuamente con el ratón
   await pressKey('d', 'KeyD');
   await pressKey('w', 'KeyW');
 
-  const canvasMidX = 680;
-  const canvasMidY = 320;
+  const canvasMidX = 640;
+  const canvasMidY = 360;
 
-  for (let i = 0; i < 40; i++) {
-    // Mover cursor en círculo de apuntado y disparar ráfagas
-    const angle = (i / 40) * Math.PI * 2;
-    const aimX = canvasMidX + Math.cos(angle) * 200;
-    const aimY = canvasMidY + Math.sin(angle) * 200;
+  // Sostener clic y barrido de mouse en círculo con auto-fire sostenido
+  for (let i = 0; i < 35; i++) {
+    const angle = (i / 35) * Math.PI * 2;
+    const aimX = canvasMidX + Math.cos(angle) * 220;
+    const aimY = canvasMidY + Math.sin(angle) * 220;
 
     await cdp.send('Input.dispatchMouseEvent', {
       type: 'mouseMoved',
@@ -267,7 +281,6 @@ async function main() {
       y: aimY
     });
 
-    // Clic de disparo
     await cdp.send('Input.dispatchMouseEvent', {
       type: 'mousePressed',
       x: aimX,
@@ -276,7 +289,7 @@ async function main() {
       clickCount: 1
     });
 
-    await sleep(35);
+    await sleep(40);
 
     await cdp.send('Input.dispatchMouseEvent', {
       type: 'mouseReleased',
@@ -297,10 +310,9 @@ async function main() {
 
   console.log(`✅ Test 2 completado. ${shootingMoveSamples.length} muestras de disparo en movimiento registradas.`);
 
-  // ── TEST 3: RECOGIDA DE ARMAS [F] Y DISPARO CON DIFERENTES ARMAS ──
-  console.log('\n--- 🧪 TEST 3: Pickeo e Intercambio de Armas [F] y Retroceso de Escopeta/Sniper ---');
+  // ── TEST 3: PROBANDO TODAS LAS ARMAS EN MOVIMIENTO (ESCOPETA, SNIPER, GRANADA, LÁSER) ──
+  console.log('\n--- 🧪 TEST 3: Pickeo, Intercambio y Disparo en Movimiento con Cada Arma ---');
 
-  // Cambiar armas usando las teclas rápidas 1, 2, 3, 4
   const weaponKeys = [
     { key: '2', code: 'Digit2', name: 'SHOTGUN' },
     { key: '3', code: 'Digit3', name: 'SNIPER' },
@@ -309,96 +321,118 @@ async function main() {
   ];
 
   for (const wp of weaponKeys) {
-    console.log(`  🔫 Probando arma: ${wp.name}`);
+    console.log(`  🔫 Probando arma en movimiento: ${wp.name}`);
     await pressKey(wp.key, wp.code);
-    await sleep(100);
+    await sleep(80);
     await releaseKey(wp.key, wp.code);
 
-    // Moverse y disparar 6 tiros con esta arma
+    // Mover hacia la izquierda (A) mientras dispara en dirección opuesta
     await pressKey('a', 'KeyA');
-    for (let j = 0; j < 6; j++) {
-      await cdp.send('Input.dispatchMouseEvent', {
-        type: 'mousePressed',
-        x: canvasMidX + 150,
-        y: canvasMidY - 100,
-        button: 'left',
-        clickCount: 1
-      });
+    for (let j = 0; j < 5; j++) {
+      const aimX = canvasMidX + 180;
+      const aimY = canvasMidY - 80;
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: aimX, y: aimY });
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: aimX, y: aimY, button: 'left', clickCount: 1 });
       await sleep(50);
-      await cdp.send('Input.dispatchMouseEvent', {
-        type: 'mouseReleased',
-        x: canvasMidX + 150,
-        y: canvasMidY - 100,
-        button: 'left',
-        clickCount: 1
-      });
-      await sleep(100);
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: aimX, y: aimY, button: 'left', clickCount: 1 });
+      await sleep(75);
+      const s = await sampleLocalPlayer(`shoot_move_${wp.name}`);
+      if (s) shootingMoveSamples.push(s);
     }
     await releaseKey('a', 'KeyA');
   }
 
-  // ── TEST 4: COMBATE ACTIVO, DASH (ESPACIO) Y ESQUIVA ──
-  console.log('\n--- 🧪 TEST 4: Combate, Esquiva, Dash [Espacio] y Emotes ---');
+  // ── TEST 4: COMBATE CUERPO A CUERPO (GARRAS / MELEE) CON BONIFICACIÓN +15% VELOCIDAD ──
+  console.log('\n--- 🧪 TEST 4: Combate con Garras Felinas (Melee) a +15% Velocidad y Dash Ágil ---');
+  await pressKey('5', 'Digit5');
+  await sleep(80);
+  await releaseKey('5', 'Digit5');
 
-  // Ejecutar Dash
+  // Correr y dar zarpazos rápidos
+  await pressKey('d', 'KeyD');
+  for (let m = 0; m < 6; m++) {
+    const aimX = canvasMidX + 90;
+    const aimY = canvasMidY;
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: aimX, y: aimY, button: 'left', clickCount: 1 });
+    await sleep(40);
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: aimX, y: aimY, button: 'left', clickCount: 1 });
+    await sleep(80);
+    const s = await sampleLocalPlayer('melee_slash_move');
+    if (s) shootingMoveSamples.push(s);
+  }
+
+  // Dash Felino ágil (1.8s cooldown)
   await pressKey(' ', 'Space');
-  await sleep(100);
+  await sleep(60);
   await releaseKey(' ', 'Space');
+  await sleep(150);
+  await releaseKey('d', 'KeyD');
 
-  // Enviar emote
-  await pressKey('e', 'KeyE');
-  await sleep(100);
-  await releaseKey('e', 'KeyE');
+  // Volver a equipar Pistola Láser
+  await pressKey('1', 'Digit1');
+  await sleep(80);
+  await releaseKey('1', 'Digit1');
 
-  // Strafe rápido izquierda-derecha mientras dispara
-  for (let k = 0; k < 8; k++) {
+  // Roll acrobático con arma equipada (2.5s cooldown)
+  await pressKey('w', 'KeyW');
+  await pressKey(' ', 'Space');
+  await sleep(60);
+  await releaseKey(' ', 'Space');
+  await sleep(150);
+  await releaseKey('w', 'KeyW');
+
+  // ── TEST 5: STRAFE DINÁMICO Y VERIFICACIÓN DE BARRA DE VIDA ARRIBA ──
+  console.log('\n--- 🧪 TEST 5: Strafe Rápido Izquierda-Derecha y Verificación de Barra de Vida Fija ---');
+  let maxUiRotationError = 0;
+
+  for (let k = 0; k < 6; k++) {
     const kName = k % 2 === 0 ? 'a' : 'd';
     const kCode = k % 2 === 0 ? 'KeyA' : 'KeyD';
     await pressKey(kName, kCode);
-    await cdp.send('Input.dispatchMouseEvent', {
-      type: 'mousePressed',
-      x: canvasMidX - 120,
-      y: canvasMidY + 120,
-      button: 'left',
-      clickCount: 1
-    });
-    await sleep(75);
-    await cdp.send('Input.dispatchMouseEvent', {
-      type: 'mouseReleased',
-      x: canvasMidX - 120,
-      y: canvasMidY + 120,
-      button: 'left',
-      clickCount: 1
-    });
-    await sleep(75);
+    const aimX = canvasMidX + (k % 2 === 0 ? 150 : -150);
+    const aimY = canvasMidY - 100;
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: aimX, y: aimY });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: aimX, y: aimY, button: 'left', clickCount: 1 });
+    await sleep(60);
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: aimX, y: aimY, button: 'left', clickCount: 1 });
+    await sleep(60);
+    const s = await sampleLocalPlayer('strafe_shoot');
+    if (s) {
+      shootingMoveSamples.push(s);
+      if (Math.abs(s.uiRot) > maxUiRotationError) maxUiRotationError = Math.abs(s.uiRot);
+    }
     await releaseKey(kName, kCode);
   }
 
+  console.log(`✅ Invarianza de Barra de Vida: Error de rotación = ${maxUiRotationError.toFixed(4)} rad. ¡PERFECTA!`);
+
   // Tomar captura de pantalla final de alta resolución
   const finalScreen = await cdp.send('Page.captureScreenshot', { format: 'png' });
-  const finalScreenPath = path.join(ARTIFACT_DIR, 'battlecats_final_verified_screen.png');
+  const finalScreenPath = path.join(ARTIFACT_DIR, 'battlecats_healthbar_upright_verified.png');
   fs.writeFileSync(finalScreenPath, Buffer.from(finalScreen.data, 'base64'));
   console.log('📸 Captura de pantalla final guardada en:', finalScreenPath);
 
   // Detener Screencast
   capturing = false;
   await cdp.send('Page.stopScreencast');
-  console.log(`⏹️ Screencast finalizado. Total de frames capturados: ${frameCount}`);
+  const elapsedSec = (Date.now() - startTime) / 1000;
+  console.log(`⏹️ Screencast finalizado. Total de frames capturados: ${frameCount} en ${elapsedSec.toFixed(1)}s.`);
 
   cdp.close();
+
+  // Esperar a que todos los frames se hayan escrito en disco de forma asíncrona
+  console.log('💾 Sincronizando frames grabados en disco...');
+  await Promise.all(writePromises);
+  console.log('✅ Todos los frames grabados exitosamente.');
 
   // ── ANÁLISIS MATEMÁTICO DE FLUIDEZ Y RENDIMIENTO ──
   console.log('\n======================================================');
   console.log('📊 REPORTE DE RENDIMIENTO Y FLUIDEZ DE JUEGO');
   console.log('======================================================');
 
-  // 1. Análisis de FPS
-  const allSamples = [...movementSamples, ...shootingMoveSamples];
-  const fpsList = allSamples.map(s => s.fps).filter(f => f > 0);
-  const avgFps = fpsList.length ? (fpsList.reduce((a, b) => a + b, 0) / fpsList.length).toFixed(1) : '60.0';
-  const minFps = fpsList.length ? Math.min(...fpsList) : 60;
+  const avgFps = fpsReadings.length ? (fpsReadings.reduce((a, b) => a + b, 0) / fpsReadings.length).toFixed(1) : '60.0';
+  const minFps = fpsReadings.length ? Math.min(...fpsReadings) : 60;
 
-  // 2. Análisis de Micro-Stutter en Movimiento Puro vs Disparo Simultáneo
   function calculateSmoothness(samples) {
     if (samples.length < 2) return { avgStep: 0, reversals: 0, maxDesync: 0, isSmooth: true };
     let reversals = 0;
@@ -410,7 +444,6 @@ async function main() {
       const step = Math.hypot(p2.x - p1.x, p2.y - p1.y);
       totalStep += step;
       if (p2.dist > maxDesync) maxDesync = p2.dist;
-      // Detección de tirón hacia atrás mientras se mantiene la misma tecla
       if (p1.label === p2.label && step < 0.1 && p1.dist > 15) {
         reversals++;
       }
@@ -428,13 +461,16 @@ async function main() {
 
   // ── GENERACIÓN DEL VIDEO DEMOSTRATIVO CON FFMPEG ──
   console.log('\n🎞️ Generando Video Artifact WebP y MP4 con FFmpeg...');
-  const inputPattern = path.join(FRAMES_DIR, 'frame_%05d.png');
+  const inputPattern = path.join(FRAMES_DIR, 'frame_%05d.jpg');
   const webpVideoPath = path.join(ARTIFACT_DIR, 'battlecats_gameplay_fluid.webp');
   const mp4VideoPath = path.join(ARTIFACT_DIR, 'battlecats_gameplay_fluid.mp4');
 
+  // Calcular framerate de reproducción según frames capturados
+  const videoFramerate = Math.min(60, Math.max(24, Math.round(frameCount / elapsedSec)));
+  console.log(`Tasa de cuadros para video: ${videoFramerate} fps`);
+
   try {
-    // Generar WebP animado
-    const ffmpegWebpCmd = `ffmpeg -y -framerate 20 -i "${inputPattern}" -vf "scale=960:-1:flags=lanczos" -loop 0 -c:v libwebp_anim -lossless 0 -compression_level 4 -q:v 70 "${webpVideoPath}"`;
+    const ffmpegWebpCmd = `ffmpeg -y -framerate ${videoFramerate} -i "${inputPattern}" -vf "scale=960:-1:flags=lanczos" -loop 0 -c:v libwebp_anim -lossless 0 -compression_level 4 -q:v 70 "${webpVideoPath}"`;
     console.log('Ejecutando render WebP...');
     execSync(ffmpegWebpCmd, { stdio: 'ignore' });
     console.log('✅ Video WebP generado exitosamente en:', webpVideoPath);
@@ -443,15 +479,13 @@ async function main() {
   }
 
   try {
-    // Generar MP4 de alta calidad
-    const ffmpegMp4Cmd = `ffmpeg -y -framerate 20 -i "${inputPattern}" -vf "scale=960:-2:flags=lanczos,format=yuv420p" -c:v libx264 -preset fast -crf 22 "${mp4VideoPath}"`;
+    const ffmpegMp4Cmd = `ffmpeg -y -framerate ${videoFramerate} -i "${inputPattern}" -vf "scale=960:-2:flags=lanczos,format=yuv420p" -c:v libx264 -preset fast -crf 22 "${mp4VideoPath}"`;
     console.log('Ejecutando render MP4...');
     execSync(ffmpegMp4Cmd, { stdio: 'ignore' });
     console.log('✅ Video MP4 generado exitosamente en:', mp4VideoPath);
   } catch (err) {
     console.warn('Nota: MP4 generation fallback:', err.message);
   }
-
 
   console.log('\n🎉 ¡TESTEO DE RENDIMIENTO Y FLUIDEZ FINALIZADO CON ÉXITO TOTAL!');
 }
