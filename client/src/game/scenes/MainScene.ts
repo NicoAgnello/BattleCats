@@ -38,6 +38,9 @@ interface VPlayer {
   label:       Phaser.GameObjects.Text;
   buffIcon:    Phaser.GameObjects.Text;
   reloadBarGfx: Phaser.GameObjects.Graphics;
+  reloadSpinnerContainer: Phaser.GameObjects.Container;
+  reloadIconSprite: Phaser.GameObjects.Image;
+  reloadProgressGfx: Phaser.GameObjects.Graphics;
   emoteGfx:    Phaser.GameObjects.Container;
   emoteText:   Phaser.GameObjects.Text;
   tx: number; ty: number; tr: number;
@@ -792,6 +795,11 @@ export class MainScene extends Phaser.Scene {
       this.showDamageText(me.container.x, me.container.y - 25, "¡SIN RESERVA!", "#f87171");
       return;
     }
+    const reloadDuration = me.equippedWeapon === "SHOTGUN" ? 2.5 : me.equippedWeapon === "SNIPER" ? 3.0 : 2.0;
+    me.isReloading = true;
+    me.reloadTimer = reloadDuration;
+    me.maxReloadTimer = reloadDuration;
+
     this.net.sendReload();
     soundManager.playReload();
     this.showDamageText(me.container.x, me.container.y - 25, "RECARGANDO...", "#fbbf24");
@@ -1116,13 +1124,31 @@ export class MainScene extends Phaser.Scene {
     });
 
     this.room.onMessage("playerReloading", (d: any) => {
+      const v = this.players.get(d.id);
+      if (v) {
+        v.isReloading = true;
+        const dur = d.maxReloadTimer || (v.equippedWeapon === "SHOTGUN" ? 2.5 : v.equippedWeapon === "SNIPER" ? 3.0 : 2.0);
+        v.maxReloadTimer = dur;
+        v.reloadTimer = dur;
+      }
       if (d.id === this.myId) {
         soundManager.playReload();
       }
     });
 
-    this.room.onMessage("playerReloadComplete", (_d: any) => {
-      // Reload complete event
+    this.room.onMessage("playerReloadComplete", (d: any) => {
+      const v = this.players.get(d.id);
+      if (v) {
+        v.isReloading = false;
+        v.reloadTimer = 0;
+        v.reloadSpinnerContainer.setVisible(false);
+        v.reloadProgressGfx.clear();
+        v.ammo = d.ammo ?? v.ammo;
+        v.reserveAmmo = d.reserveAmmo ?? v.reserveAmmo;
+        if (v.isMe) {
+          this.showDamageText(v.container.x, v.container.y - 25, "¡LISTO!", "#10b981");
+        }
+      }
     });
 
     this.room.onMessage("explosion", (d: any) => {
@@ -1916,6 +1942,72 @@ export class MainScene extends Phaser.Scene {
         can.refresh();
       }
     }
+
+    // 7. Símbolo de Recarga Giratorio Táctico (48x48)
+    {
+      const size = 48;
+      const can = this.textures.createCanvas("tex_reload_icon", size, size);
+      if (can) {
+        const ctx = can.getContext();
+        const cx = size / 2, cy = size / 2, r = 10.5;
+
+        // Doble flecha circular curva estilo Suroi / Vectorial
+        ctx.strokeStyle = "#facc15"; // Amarillo ámbar brillante
+        ctx.lineWidth = 3.2;
+        ctx.lineCap = "round";
+
+        // Flecha 1 (Arco superior)
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0.35, Math.PI * 0.88);
+        ctx.stroke();
+
+        // Cabeza de flecha 1
+        const tip1X = cx + Math.cos(Math.PI * 0.88) * r;
+        const tip1Y = cy + Math.sin(Math.PI * 0.88) * r;
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.moveTo(tip1X + 4.5, tip1Y - 4.5);
+        ctx.lineTo(tip1X - 2, tip1Y);
+        ctx.lineTo(tip1X + 4.5, tip1Y + 4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = "#1e293b";
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+
+        // Flecha 2 (Arco inferior)
+        ctx.strokeStyle = "#facc15";
+        ctx.lineWidth = 3.2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, Math.PI + 0.35, Math.PI * 1.88);
+        ctx.stroke();
+
+        // Cabeza de flecha 2
+        const tip2X = cx + Math.cos(Math.PI * 1.88) * r;
+        const tip2Y = cy + Math.sin(Math.PI * 1.88) * r;
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.moveTo(tip2X - 4.5, tip2Y + 4.5);
+        ctx.lineTo(tip2X + 2, tip2Y);
+        ctx.lineTo(tip2X - 4.5, tip2Y - 4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = "#1e293b";
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+
+        // Centro: cartucho/núcleo brillante
+        ctx.fillStyle = "#fef08a";
+        ctx.beginPath();
+        ctx.arc(cx, cy, 2.8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#0f172a";
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+
+        can.refresh();
+      }
+    }
   }
 
   private drawBush(b: Bush) {
@@ -2242,19 +2334,31 @@ export class MainScene extends Phaser.Scene {
     const leftHandGfx = this.add.graphics();
     const rightHandGfx = this.add.graphics();
 
+    // Símbolo de Recarga Giratorio Táctico (posicionado arriba del personaje a y = -64px)
+    const reloadSpinnerContainer = this.add.container(0, -64).setVisible(false);
+    const reloadBg = this.add.graphics();
+    reloadBg.fillStyle(0x020617, 0.88);
+    reloadBg.fillCircle(0, 0, 15);
+    reloadBg.lineStyle(1.5, 0x334155, 1);
+    reloadBg.strokeCircle(0, 0, 15);
+
+    const reloadProgressGfx = this.add.graphics();
+    const reloadIconSprite = this.add.image(0, 0, "tex_reload_icon").setDisplaySize(20, 20);
+    reloadSpinnerContainer.add([reloadBg, reloadProgressGfx, reloadIconSprite]);
+
     // El contenedor de visuales del gato rota con la dirección de apuntado (cuerpo + manos + arma)
     container.add([bodyGfx, earsGfx, faceGfx, aimGfx, leftHandGfx, rightHandGfx]);
 
     // El contenedor de interfaz de usuario SOBRE EL PERSONAJE (HUD Billboard)
     // NUNCA rota, siempre permanece horizontal arriba del personaje (y = -42px)
-    uiContainer.add([hpBg, hpFill, shdFill, label, buffIcon, emoteGfx, reloadBarGfx]);
+    uiContainer.add([hpBg, hpFill, shdFill, label, buffIcon, emoteGfx, reloadBarGfx, reloadSpinnerContainer]);
     uiContainer.setRotation(0);
 
     const vp: VPlayer = {
       container, uiContainer, bodyGfx, earsGfx, faceGfx, aimGfx, leftHandGfx, rightHandGfx,
       punchAlternator: 0,
       hpBg, hpFill, shdFill, label, buffIcon,
-      reloadBarGfx, emoteGfx, emoteText,
+      reloadBarGfx, reloadSpinnerContainer, reloadIconSprite, reloadProgressGfx, emoteGfx, emoteText,
       tx: px, ty: py, tr: p.rotation || 0,
       hp: p.hp ?? 100, maxHp: p.maxHp ?? 100,
       shield: p.shield ?? 0, maxShield: p.maxShield ?? 50,
@@ -2623,19 +2727,15 @@ export class MainScene extends Phaser.Scene {
     v.ammo = p.ammo ?? v.ammo ?? 12;
     v.maxAmmo = p.maxAmmo ?? v.maxAmmo ?? 12;
     v.reserveAmmo = p.reserveAmmo ?? v.reserveAmmo ?? 24;
+    const prevReloading = v.isReloading;
     v.isReloading = !!p.isReloading;
     v.reloadTimer = p.reloadTimer ?? 0;
     v.maxReloadTimer = p.maxReloadTimer ?? 2.0;
     v.dashCooldown = p.dashCooldown ?? v.dashCooldown ?? 0;
 
-    // Barra de progreso de recarga overhead
-    v.reloadBarGfx.clear();
-    if (v.isReloading && v.maxReloadTimer > 0 && !v.isGhost) {
-      const reloadPct = Math.max(0, Math.min(1, 1 - (v.reloadTimer / v.maxReloadTimer)));
-      v.reloadBarGfx.fillStyle(0x020617, 0.85);
-      v.reloadBarGfx.fillRoundedRect(-22, -62, 44, 5, 2);
-      v.reloadBarGfx.fillStyle(0xfbbf24, 1);
-      v.reloadBarGfx.fillRoundedRect(-21, -61, 42 * reloadPct, 3, 2);
+    if (!v.isReloading && prevReloading) {
+      v.reloadSpinnerContainer.setVisible(false);
+      v.reloadProgressGfx.clear();
     }
 
     const newGhost = !!p.isGhost;
@@ -3232,6 +3332,48 @@ export class MainScene extends Phaser.Scene {
           v.uiContainer.setPosition(v.container.x, v.container.y);
           v.uiContainer.setRotation(0);
           this.redrawAim(v);
+        }
+      }
+
+      // Animación continua del símbolo de recarga girando arriba del personaje
+      if (v.isReloading && !v.isGhost && inCam) {
+        if (!v.reloadSpinnerContainer.visible) {
+          v.reloadSpinnerContainer.setVisible(true);
+          v.reloadSpinnerContainer.setScale(0.2);
+          this.tweens.killTweensOf(v.reloadSpinnerContainer);
+          this.tweens.add({
+            targets: v.reloadSpinnerContainer,
+            scale: 1,
+            duration: 160,
+            ease: "Back.easeOut",
+          });
+        }
+
+        // Rotación continua fluida del ícono de recarga (~1.4 vueltas por segundo)
+        v.reloadIconSprite.rotation += (delta / 1000) * 8.8;
+
+        // Cuenta regresiva suave de recarga en cliente
+        if (v.reloadTimer > 0) {
+          v.reloadTimer = Math.max(0, v.reloadTimer - delta / 1000);
+        }
+        const maxTime = Math.max(0.1, v.maxReloadTimer || 2.0);
+        const progress = Math.max(0, Math.min(1, 1 - (v.reloadTimer / maxTime)));
+
+        // Dibujar anillo de progreso alrededor del símbolo
+        v.reloadProgressGfx.clear();
+        v.reloadProgressGfx.lineStyle(2, 0x1e293b, 0.7);
+        v.reloadProgressGfx.strokeCircle(0, 0, 13);
+
+        if (progress > 0.01) {
+          v.reloadProgressGfx.lineStyle(2.5, 0xfacc15, 1);
+          v.reloadProgressGfx.beginPath();
+          v.reloadProgressGfx.arc(0, 0, 13, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2, false);
+          v.reloadProgressGfx.strokePath();
+        }
+      } else {
+        if (v.reloadSpinnerContainer.visible) {
+          v.reloadSpinnerContainer.setVisible(false);
+          v.reloadProgressGfx.clear();
         }
       }
     });
