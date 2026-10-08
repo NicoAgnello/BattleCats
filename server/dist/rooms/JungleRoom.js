@@ -5,6 +5,7 @@ const colyseus_1 = require("colyseus");
 const GameState_1 = require("./schema/GameState");
 const sse_1 = require("../sse");
 const SpatialHashGrid_1 = require("../spatial/SpatialHashGrid");
+const structures_1 = require("./structures");
 exports.WEAPON_CONFIGS = {
     LASER: {
         name: "Pistola Láser",
@@ -62,8 +63,8 @@ class JungleRoom extends colyseus_1.Room {
     constructor() {
         super(...arguments);
         this.maxClients = 16;
-        /** Sistema de partición espacial para colisiones O(1) en mapa gigante de 4800x4800 */
-        this.spatialGrid = new SpatialHashGrid_1.SpatialHashGrid(500, 4800, 4800);
+        /** Sistema de partición espacial para colisiones O(1) en mapa gigante de 8000x8000 */
+        this.spatialGrid = new SpatialHashGrid_1.SpatialHashGrid(500, 8000, 8000);
         this.projectileIdCounter = 0;
         this.trapIdCounter = 0;
         this.obstacleIdCounter = 0;
@@ -71,8 +72,8 @@ class JungleRoom extends colyseus_1.Room {
         this.zonePhaseDuration = 35; // seconds per safe phase (plenty of time for exploration)
         this.zoneShrinkDuration = 22; // seconds per shrink transition
         this.zoneShrinkTimer = 0;
-        this.startRadius = 2300;
-        this.targetRadius = 2300;
+        this.startRadius = 3850;
+        this.targetRadius = 3850;
         this.sseTickCounter = 0;
         this.playerWeaponAmmo = new Map();
         this.botControllers = new Map();
@@ -168,6 +169,7 @@ class JungleRoom extends colyseus_1.Room {
             }
             player.x = Math.max(30, Math.min(this.state.worldWidth - 30, newX));
             player.y = Math.max(30, Math.min(this.state.worldHeight - 30, newY));
+            player.isHidden = this.checkIsHidden(player.x, player.y);
             // Actualizar registro en la grilla espacial
             this.spatialGrid.update({
                 id: player.id,
@@ -337,8 +339,8 @@ class JungleRoom extends colyseus_1.Room {
         this.setSimulationInterval((deltaTime) => this.update(deltaTime / 1000), 1000 / 60);
     }
     resetZone() {
-        this.startRadius = 2300;
-        this.targetRadius = 2300;
+        this.startRadius = 3850;
+        this.targetRadius = 3850;
         this.zoneShrinkTimer = 0;
         this.state.zone.x = this.state.worldWidth / 2;
         this.state.zone.y = this.state.worldHeight / 2;
@@ -726,7 +728,7 @@ class JungleRoom extends colyseus_1.Room {
             this.initPlayerWeapons(botId);
             this.applyWeaponToPlayer(bot, botWeapons[i % botWeapons.length]);
             const angle = (i / this.botNames.length) * Math.PI * 2;
-            const dist = 1100 + Math.random() * 850;
+            const dist = 1200 + Math.random() * 2000;
             bot.x = this.state.zone.x + Math.cos(angle) * dist;
             bot.y = this.state.zone.y + Math.sin(angle) * dist;
             bot.rotation = angle + Math.PI;
@@ -777,7 +779,7 @@ class JungleRoom extends colyseus_1.Room {
             player.catColor = skinColor;
         }
         const angle = Math.random() * Math.PI * 2;
-        const dist = 700 + Math.random() * 1100;
+        const dist = 800 + Math.random() * 2200;
         player.x = this.state.zone.x + Math.cos(angle) * dist;
         player.y = this.state.zone.y + Math.sin(angle) * dist;
         player.rotation = 0;
@@ -873,8 +875,8 @@ class JungleRoom extends colyseus_1.Room {
                     player.activeBuff = "";
                 }
             }
-            // Check Bush Overlap
-            player.isHidden = this.checkInBush(player.x, player.y);
+            // Check Bush or Structure Overlap (Ocultamiento en edificios y arbustos)
+            player.isHidden = this.checkIsHidden(player.x, player.y);
             // Zone Damage to Alive Players outside safe circle
             if (!player.isGhost) {
                 const distFromZoneCenter = Math.hypot(player.x - this.state.zone.x, player.y - this.state.zone.y);
@@ -1230,22 +1232,22 @@ class JungleRoom extends colyseus_1.Room {
     checkInRiver(x, y) {
         // 3 puentes de madera proporcionan cruce seguro sin fricción de agua
         // Puente 1 (Norte)
-        if (x >= 2440 && x <= 2600 && y >= 1110 && y <= 1210)
+        if (x >= 4100 && x <= 4260 && y >= 1950 && y <= 2050)
             return false;
         // Puente 2 (Centro)
-        if (x >= 2230 && x <= 2390 && y >= 2350 && y <= 2450)
+        if (x >= 3770 && x <= 3930 && y >= 3950 && y <= 4050)
             return false;
         // Puente 3 (Sur)
-        if (x >= 2460 && x <= 2620 && y >= 3550 && y <= 3650)
+        if (x >= 4120 && x <= 4280 && y >= 5950 && y <= 6050)
             return false;
-        // Río serpenteante que cruza la isla de Norte a Sur (0 a 4800)
+        // Río serpenteante que cruza la isla de Norte a Sur (0 a 8000)
         const pts = [
-            { x: 2400, y: 0 },
-            { x: 2520, y: 900 },
-            { x: 2360, y: 1900 },
-            { x: 2260, y: 2900 },
-            { x: 2580, y: 3900 },
-            { x: 2480, y: 4800 },
+            { x: 4000, y: 0 },
+            { x: 4200, y: 1500 },
+            { x: 3900, y: 3100 },
+            { x: 3800, y: 4900 },
+            { x: 4300, y: 6500 },
+            { x: 4100, y: 8000 },
         ];
         for (let i = 0; i < pts.length - 1; i++) {
             const p1 = pts[i];
@@ -1259,10 +1261,22 @@ class JungleRoom extends colyseus_1.Room {
             t = Math.max(0, Math.min(1, t));
             const px = p1.x + t * dx;
             const py = p1.y + t * dy;
-            if (Math.hypot(x - px, y - py) < 55)
+            if (Math.hypot(x - px, y - py) < 65)
                 return true;
         }
         return false;
+    }
+    checkInStructure(px, py) {
+        for (const s of structures_1.STRUCTURES) {
+            const minX = s.x - s.width / 2 + 15;
+            const maxX = s.x + s.width / 2 - 15;
+            const minY = s.y - s.height / 2 + 15;
+            const maxY = s.y + s.height / 2 - 15;
+            if (px >= minX && px <= maxX && py >= minY && py <= maxY) {
+                return s;
+            }
+        }
+        return null;
     }
     handlePlayerInteract(player, requestedItemId) {
         let targetItem = null;
@@ -1551,41 +1565,65 @@ class JungleRoom extends colyseus_1.Room {
         });
         return inBush;
     }
+    checkIsHidden(px, py) {
+        return this.checkInBush(px, py) || this.checkInStructure(px, py) !== null;
+    }
     createStaticBushes() {
         const bushData = [
-            // Cuadrante Noroeste (NW)
-            { id: "bush_1", x: 900, y: 900, width: 220, height: 160 },
-            { id: "bush_2", x: 1400, y: 700, width: 240, height: 170 },
-            { id: "bush_3", x: 1700, y: 1200, width: 200, height: 150 },
-            { id: "bush_4", x: 800, y: 1600, width: 250, height: 180 },
-            { id: "bush_5", x: 1300, y: 1800, width: 260, height: 190 },
-            { id: "bush_6", x: 1800, y: 1900, width: 210, height: 150 },
-            // Cuadrante Noreste (NE)
-            { id: "bush_7", x: 3100, y: 800, width: 240, height: 170 },
-            { id: "bush_8", x: 3700, y: 900, width: 220, height: 160 },
-            { id: "bush_9", x: 4100, y: 1400, width: 230, height: 160 },
-            { id: "bush_10", x: 3300, y: 1400, width: 250, height: 180 },
-            { id: "bush_11", x: 3700, y: 1800, width: 270, height: 190 },
-            { id: "bush_12", x: 3000, y: 1900, width: 210, height: 150 },
-            // Riberas del Río y Puentes
-            { id: "bush_13", x: 2350, y: 1050, width: 200, height: 150 },
-            { id: "bush_14", x: 2680, y: 1280, width: 210, height: 150 },
-            { id: "bush_15", x: 2180, y: 2300, width: 220, height: 160 },
-            { id: "bush_16", x: 2420, y: 2500, width: 220, height: 160 },
-            { id: "bush_17", x: 2380, y: 3480, width: 200, height: 150 },
-            { id: "bush_18", x: 2680, y: 3720, width: 210, height: 150 },
-            // Cuadrante Suroeste (SW)
-            { id: "bush_19", x: 900, y: 3100, width: 240, height: 170 },
-            { id: "bush_20", x: 1500, y: 3200, width: 220, height: 160 },
-            { id: "bush_21", x: 800, y: 3900, width: 250, height: 180 },
-            { id: "bush_22", x: 1300, y: 4100, width: 260, height: 190 },
-            { id: "bush_23", x: 1800, y: 3800, width: 210, height: 150 },
-            // Cuadrante Sureste (SE)
-            { id: "bush_24", x: 3200, y: 3100, width: 240, height: 170 },
-            { id: "bush_25", x: 3800, y: 3200, width: 230, height: 160 },
-            { id: "bush_26", x: 4200, y: 3700, width: 220, height: 150 },
-            { id: "bush_27", x: 3300, y: 4000, width: 250, height: 180 },
-            { id: "bush_28", x: 3900, y: 4100, width: 260, height: 190 },
+            // ── Alrededores de Estructuras (Zonas Tácticas de Emboscada) ──
+            // Mansión Central
+            { id: "bush_m_1", x: 3600, y: 3100, width: 260, height: 180 },
+            { id: "bush_m_2", x: 4400, y: 3100, width: 260, height: 180 },
+            { id: "bush_m_3", x: 3600, y: 3700, width: 280, height: 190 },
+            { id: "bush_m_4", x: 4450, y: 3700, width: 280, height: 190 },
+            // Búnker NW
+            { id: "bush_bk_1", x: 1700, y: 1700, width: 240, height: 170 },
+            { id: "bush_bk_2", x: 2300, y: 1750, width: 240, height: 170 },
+            { id: "bush_bk_3", x: 2000, y: 2350, width: 260, height: 180 },
+            // Almacén SE
+            { id: "bush_wh_1", x: 5600, y: 5700, width: 250, height: 180 },
+            { id: "bush_wh_2", x: 6400, y: 5750, width: 260, height: 180 },
+            { id: "bush_wh_3", x: 6000, y: 6350, width: 270, height: 190 },
+            // Laboratorio NE
+            { id: "bush_lb_1", x: 5700, y: 1700, width: 240, height: 170 },
+            { id: "bush_lb_2", x: 6300, y: 1750, width: 240, height: 170 },
+            { id: "bush_lb_3", x: 6000, y: 2350, width: 260, height: 180 },
+            // Fuerte SW
+            { id: "bush_ft_1", x: 1700, y: 5700, width: 240, height: 170 },
+            { id: "bush_ft_2", x: 2300, y: 5750, width: 240, height: 170 },
+            { id: "bush_ft_3", x: 2000, y: 6350, width: 260, height: 180 },
+            // Cabañas N, S, W, E
+            { id: "bush_cb_n", x: 4250, y: 1400, width: 200, height: 150 },
+            { id: "bush_cb_s", x: 3750, y: 6600, width: 200, height: 150 },
+            { id: "bush_cb_w", x: 1400, y: 4250, width: 200, height: 150 },
+            { id: "bush_cb_e", x: 6600, y: 3750, width: 200, height: 150 },
+            // ── Cuadrante Noroeste (NW) ──
+            { id: "bush_nw_1", x: 1200, y: 1200, width: 240, height: 180 },
+            { id: "bush_nw_2", x: 2600, y: 1100, width: 250, height: 180 },
+            { id: "bush_nw_3", x: 2800, y: 2400, width: 260, height: 190 },
+            { id: "bush_nw_4", x: 1400, y: 2800, width: 240, height: 170 },
+            // ── Cuadrante Noreste (NE) ──
+            { id: "bush_ne_1", x: 5000, y: 1200, width: 240, height: 180 },
+            { id: "bush_ne_2", x: 6800, y: 1100, width: 250, height: 180 },
+            { id: "bush_ne_3", x: 5200, y: 2500, width: 260, height: 190 },
+            { id: "bush_ne_4", x: 6800, y: 2800, width: 240, height: 170 },
+            // ── Riberas del Río y Puentes ──
+            { id: "bush_rv_1", x: 3950, y: 1850, width: 220, height: 160 },
+            { id: "bush_rv_2", x: 4400, y: 2150, width: 220, height: 160 },
+            { id: "bush_rv_3", x: 3650, y: 3850, width: 240, height: 170 },
+            { id: "bush_rv_4", x: 4050, y: 4150, width: 240, height: 170 },
+            { id: "bush_rv_5", x: 4050, y: 5850, width: 220, height: 160 },
+            { id: "bush_rv_6", x: 4450, y: 6150, width: 220, height: 160 },
+            // ── Cuadrante Suroeste (SW) ──
+            { id: "bush_sw_1", x: 1200, y: 5000, width: 240, height: 180 },
+            { id: "bush_sw_2", x: 2600, y: 5100, width: 250, height: 180 },
+            { id: "bush_sw_3", x: 2800, y: 6800, width: 260, height: 190 },
+            { id: "bush_sw_4", x: 1400, y: 6900, width: 240, height: 170 },
+            // ── Cuadrante Sureste (SE) ──
+            { id: "bush_se_1", x: 5000, y: 5000, width: 240, height: 180 },
+            { id: "bush_se_2", x: 6800, y: 5100, width: 250, height: 180 },
+            { id: "bush_se_3", x: 5200, y: 6800, width: 260, height: 190 },
+            { id: "bush_se_4", x: 6800, y: 6900, width: 240, height: 170 },
         ];
         bushData.forEach((b) => {
             const bush = new GameState_1.Bush();
@@ -1598,108 +1636,96 @@ class JungleRoom extends colyseus_1.Room {
         });
     }
     createStaticObstacles() {
-        const obstacleData = [
-            // ── Cajas de Madera Destructibles (Drop Loot) ──
-            // NW
-            { type: "CRATE", x: 900, y: 900, hp: 60, r: 30 },
-            { type: "CRATE", x: 960, y: 900, hp: 60, r: 30 },
-            { type: "CRATE", x: 1400, y: 800, hp: 60, r: 30 },
-            { type: "CRATE", x: 800, y: 1600, hp: 60, r: 30 },
-            { type: "CRATE", x: 1500, y: 1500, hp: 60, r: 30 },
-            { type: "CRATE", x: 1100, y: 1100, hp: 60, r: 30 },
-            { type: "CRATE", x: 1300, y: 1300, hp: 60, r: 30 },
-            // NE
-            { type: "CRATE", x: 3300, y: 800, hp: 60, r: 30 },
-            { type: "CRATE", x: 3360, y: 800, hp: 60, r: 30 },
-            { type: "CRATE", x: 3900, y: 900, hp: 60, r: 30 },
-            { type: "CRATE", x: 3200, y: 1500, hp: 60, r: 30 },
-            { type: "CRATE", x: 3800, y: 1600, hp: 60, r: 30 },
-            { type: "CRATE", x: 3500, y: 1200, hp: 60, r: 30 },
-            { type: "CRATE", x: 3600, y: 1400, hp: 60, r: 30 },
-            // Centro / Puentes
-            { type: "CRATE", x: 2360, y: 1160, hp: 60, r: 30 },
-            { type: "CRATE", x: 2680, y: 1160, hp: 60, r: 30 },
-            { type: "CRATE", x: 2160, y: 2400, hp: 60, r: 30 },
-            { type: "CRATE", x: 2460, y: 2400, hp: 60, r: 30 },
-            { type: "CRATE", x: 2380, y: 3600, hp: 60, r: 30 },
-            { type: "CRATE", x: 2700, y: 3600, hp: 60, r: 30 },
-            { type: "CRATE", x: 2200, y: 2150, hp: 60, r: 30 },
-            { type: "CRATE", x: 2450, y: 2650, hp: 60, r: 30 },
-            // SW
-            { type: "CRATE", x: 800, y: 3300, hp: 60, r: 30 },
-            { type: "CRATE", x: 860, y: 3300, hp: 60, r: 30 },
-            { type: "CRATE", x: 1400, y: 3200, hp: 60, r: 30 },
-            { type: "CRATE", x: 900, y: 4000, hp: 60, r: 30 },
-            { type: "CRATE", x: 1500, y: 4100, hp: 60, r: 30 },
-            { type: "CRATE", x: 1200, y: 3600, hp: 60, r: 30 },
-            // SE
-            { type: "CRATE", x: 3400, y: 3300, hp: 60, r: 30 },
-            { type: "CRATE", x: 3460, y: 3300, hp: 60, r: 30 },
-            { type: "CRATE", x: 4000, y: 3200, hp: 60, r: 30 },
-            { type: "CRATE", x: 3300, y: 4100, hp: 60, r: 30 },
-            { type: "CRATE", x: 3900, y: 4000, hp: 60, r: 30 },
-            { type: "CRATE", x: 3650, y: 3600, hp: 60, r: 30 },
-            // ── Barriles Explosivos (Peligro Ambiental y Detonaciones) ──
-            { type: "BARREL", x: 1100, y: 950, hp: 40, r: 26 },
-            { type: "BARREL", x: 1500, y: 1350, hp: 40, r: 26 },
-            { type: "BARREL", x: 3500, y: 950, hp: 40, r: 26 },
-            { type: "BARREL", x: 3700, y: 1450, hp: 40, r: 26 },
-            { type: "BARREL", x: 2420, y: 1260, hp: 40, r: 26 },
-            { type: "BARREL", x: 2620, y: 1260, hp: 40, r: 26 },
-            { type: "BARREL", x: 2180, y: 2500, hp: 40, r: 26 },
-            { type: "BARREL", x: 2440, y: 2300, hp: 40, r: 26 },
-            { type: "BARREL", x: 2420, y: 3700, hp: 40, r: 26 },
-            { type: "BARREL", x: 2620, y: 3700, hp: 40, r: 26 },
-            { type: "BARREL", x: 950, y: 3450, hp: 40, r: 26 },
-            { type: "BARREL", x: 1350, y: 3950, hp: 40, r: 26 },
-            { type: "BARREL", x: 3450, y: 3450, hp: 40, r: 26 },
-            { type: "BARREL", x: 3850, y: 3950, hp: 40, r: 26 },
-            { type: "BARREL", x: 1800, y: 2400, hp: 40, r: 26 },
-            { type: "BARREL", x: 3000, y: 2400, hp: 40, r: 26 },
-            // ── Rocas / Boulders (Cobertura Indestructible) ──
-            { type: "BOULDER", x: 700, y: 1100, hp: 9999, r: 44 },
-            { type: "BOULDER", x: 1600, y: 700, hp: 9999, r: 42 },
-            { type: "BOULDER", x: 1200, y: 1800, hp: 9999, r: 46 },
-            { type: "BOULDER", x: 3100, y: 1000, hp: 9999, r: 44 },
-            { type: "BOULDER", x: 4100, y: 800, hp: 9999, r: 42 },
-            { type: "BOULDER", x: 3600, y: 1800, hp: 9999, r: 46 },
-            { type: "BOULDER", x: 2000, y: 1900, hp: 9999, r: 44 },
-            { type: "BOULDER", x: 2700, y: 1900, hp: 9999, r: 44 },
-            { type: "BOULDER", x: 1950, y: 2850, hp: 9999, r: 44 },
-            { type: "BOULDER", x: 2750, y: 2850, hp: 9999, r: 44 },
-            { type: "BOULDER", x: 700, y: 3600, hp: 9999, r: 44 },
-            { type: "BOULDER", x: 1600, y: 3500, hp: 9999, r: 42 },
-            { type: "BOULDER", x: 1300, y: 4300, hp: 9999, r: 46 },
-            { type: "BOULDER", x: 3100, y: 3600, hp: 9999, r: 44 },
-            { type: "BOULDER", x: 4100, y: 3700, hp: 9999, r: 42 },
-            { type: "BOULDER", x: 3600, y: 4300, hp: 9999, r: 46 },
-            { type: "BOULDER", x: 1900, y: 2300, hp: 9999, r: 42 },
-            { type: "BOULDER", x: 2800, y: 2500, hp: 9999, r: 42 },
-            // ── Árboles Frondosos (Cobertura Natural) ──
-            { type: "TREE", x: 500, y: 600, hp: 9999, r: 38 },
-            { type: "TREE", x: 1800, y: 500, hp: 9999, r: 38 },
-            { type: "TREE", x: 500, y: 1800, hp: 9999, r: 38 },
-            { type: "TREE", x: 1800, y: 1800, hp: 9999, r: 38 },
-            { type: "TREE", x: 3000, y: 500, hp: 9999, r: 38 },
-            { type: "TREE", x: 4300, y: 600, hp: 9999, r: 38 },
-            { type: "TREE", x: 3000, y: 1800, hp: 9999, r: 38 },
-            { type: "TREE", x: 4300, y: 1800, hp: 9999, r: 38 },
-            { type: "TREE", x: 500, y: 3000, hp: 9999, r: 38 },
-            { type: "TREE", x: 1800, y: 3000, hp: 9999, r: 38 },
-            { type: "TREE", x: 500, y: 4300, hp: 9999, r: 38 },
-            { type: "TREE", x: 1800, y: 4300, hp: 9999, r: 38 },
-            { type: "TREE", x: 3000, y: 3000, hp: 9999, r: 38 },
-            { type: "TREE", x: 4300, y: 3000, hp: 9999, r: 38 },
-            { type: "TREE", x: 3000, y: 4300, hp: 9999, r: 38 },
-            { type: "TREE", x: 4300, y: 4300, hp: 9999, r: 38 },
-            { type: "TREE", x: 2200, y: 600, hp: 9999, r: 38 },
-            { type: "TREE", x: 2600, y: 600, hp: 9999, r: 38 },
-            { type: "TREE", x: 2100, y: 4200, hp: 9999, r: 38 },
-            { type: "TREE", x: 2700, y: 4200, hp: 9999, r: 38 },
-            { type: "TREE", x: 1600, y: 2400, hp: 9999, r: 38 },
-            { type: "TREE", x: 3200, y: 2400, hp: 9999, r: 38 },
+        const obstacleList = [];
+        // 1. Muros Perimetrales Autoritativos para las Estructuras (Con Puertas Abiertas)
+        structures_1.STRUCTURES.forEach((struct) => {
+            const minX = struct.x - struct.width / 2;
+            const maxX = struct.x + struct.width / 2;
+            const minY = struct.y - struct.height / 2;
+            const maxY = struct.y + struct.height / 2;
+            const step = 32;
+            const isDoorway = (px, py) => {
+                for (const dw of struct.doorways) {
+                    const dwMinX = dw.x - dw.width / 2 - 8;
+                    const dwMaxX = dw.x + dw.width / 2 + 8;
+                    const dwMinY = dw.y - dw.height / 2 - 8;
+                    const dwMaxY = dw.y + dw.height / 2 + 8;
+                    if (px >= dwMinX && px <= dwMaxX && py >= dwMinY && py <= dwMaxY) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            // Muro Norte
+            for (let x = minX; x <= maxX; x += step) {
+                if (!isDoorway(x, minY)) {
+                    obstacleList.push({ type: "WALL", x, y: minY, hp: 9999, r: 18 });
+                }
+            }
+            // Muro Sur
+            for (let x = minX; x <= maxX; x += step) {
+                if (!isDoorway(x, maxY)) {
+                    obstacleList.push({ type: "WALL", x, y: maxY, hp: 9999, r: 18 });
+                }
+            }
+            // Muro Oeste
+            for (let y = minY + step; y <= maxY - step; y += step) {
+                if (!isDoorway(minX, y)) {
+                    obstacleList.push({ type: "WALL", x: minX, y, hp: 9999, r: 18 });
+                }
+            }
+            // Muro Este
+            for (let y = minY + step; y <= maxY - step; y += step) {
+                if (!isDoorway(maxX, y)) {
+                    obstacleList.push({ type: "WALL", x: maxX, y, hp: 9999, r: 18 });
+                }
+            }
+            // Cajas de botín y barriles tácticos interiores en la estructura
+            obstacleList.push({ type: "CRATE", x: struct.x - struct.width * 0.28, y: struct.y - struct.height * 0.22, hp: 60, r: 28 });
+            obstacleList.push({ type: "CRATE", x: struct.x + struct.width * 0.28, y: struct.y - struct.height * 0.22, hp: 60, r: 28 });
+            obstacleList.push({ type: "BARREL", x: struct.x - struct.width * 0.28, y: struct.y + struct.height * 0.22, hp: 40, r: 26 });
+            obstacleList.push({ type: "CRATE", x: struct.x + struct.width * 0.28, y: struct.y + struct.height * 0.22, hp: 60, r: 28 });
+        });
+        // 2. Obstáculos Naturales y Tácticos alrededor del mapa 8000x8000
+        // Cajas de madera exteriores
+        const crates = [
+            { x: 3800, y: 3950 }, { x: 4200, y: 3950 }, { x: 3850, y: 4050 }, { x: 4150, y: 4050 },
+            { x: 1500, y: 1500 }, { x: 2500, y: 1500 }, { x: 1500, y: 2500 }, { x: 2500, y: 2500 },
+            { x: 5500, y: 1500 }, { x: 6500, y: 1500 }, { x: 5500, y: 2500 }, { x: 6500, y: 2500 },
+            { x: 1500, y: 5500 }, { x: 2500, y: 5500 }, { x: 1500, y: 6500 }, { x: 2500, y: 6500 },
+            { x: 5500, y: 5500 }, { x: 6500, y: 5500 }, { x: 5500, y: 6500 }, { x: 6500, y: 6500 },
+            { x: 4100, y: 1950 }, { x: 4260, y: 2050 }, { x: 4120, y: 5950 }, { x: 4280, y: 6050 },
         ];
-        obstacleData.forEach((d) => {
+        crates.forEach(c => obstacleList.push({ type: "CRATE", x: c.x, y: c.y, hp: 60, r: 30 }));
+        // Barriles explosivos
+        const barrels = [
+            { x: 3600, y: 4000 }, { x: 4400, y: 4000 },
+            { x: 1800, y: 1600 }, { x: 2200, y: 2400 },
+            { x: 5800, y: 1600 }, { x: 6200, y: 2400 },
+            { x: 1800, y: 5600 }, { x: 2200, y: 6400 },
+            { x: 5800, y: 5600 }, { x: 6200, y: 6400 },
+            { x: 4180, y: 1850 }, { x: 4200, y: 6150 },
+        ];
+        barrels.forEach(b => obstacleList.push({ type: "BARREL", x: b.x, y: b.y, hp: 40, r: 26 }));
+        // Rocas / Boulders
+        const boulders = [
+            { x: 1100, y: 1800, r: 46 }, { x: 2700, y: 1200, r: 44 }, { x: 1900, y: 3100, r: 44 },
+            { x: 5200, y: 1600, r: 46 }, { x: 6900, y: 1700, r: 44 }, { x: 6100, y: 3100, r: 44 },
+            { x: 1100, y: 6200, r: 46 }, { x: 2700, y: 6800, r: 44 }, { x: 1900, y: 4900, r: 44 },
+            { x: 5200, y: 6400, r: 46 }, { x: 6900, y: 6300, r: 44 }, { x: 6100, y: 4900, r: 44 },
+            { x: 3400, y: 2400, r: 46 }, { x: 4600, y: 2400, r: 46 }, { x: 3400, y: 5600, r: 46 }, { x: 4600, y: 5600, r: 46 },
+        ];
+        boulders.forEach(bd => obstacleList.push({ type: "BOULDER", x: bd.x, y: bd.y, hp: 9999, r: bd.r }));
+        // Árboles frondosos
+        const trees = [
+            { x: 900, y: 900 }, { x: 3100, y: 900 }, { x: 4900, y: 900 }, { x: 7100, y: 900 },
+            { x: 900, y: 3100 }, { x: 3100, y: 3100 }, { x: 4900, y: 3100 }, { x: 7100, y: 3100 },
+            { x: 900, y: 4900 }, { x: 3100, y: 4900 }, { x: 4900, y: 4900 }, { x: 7100, y: 4900 },
+            { x: 900, y: 7100 }, { x: 3100, y: 7100 }, { x: 4900, y: 7100 }, { x: 7100, y: 7100 },
+            { x: 3500, y: 1500 }, { x: 4500, y: 1500 }, { x: 3500, y: 6500 }, { x: 4500, y: 6500 },
+        ];
+        trees.forEach(t => obstacleList.push({ type: "TREE", x: t.x, y: t.y, hp: 9999, r: 38 }));
+        obstacleList.forEach((d) => {
             const obs = new GameState_1.Obstacle();
             obs.id = `obs_${++this.obstacleIdCounter}`;
             obs.x = d.x;
@@ -1721,49 +1747,32 @@ class JungleRoom extends colyseus_1.Room {
         });
     }
     createItemPickups() {
-        const itemsData = [
-            // Cuadrante NW
-            { id: "item_nw_1", x: 800, y: 800, type: "MEDKIT" },
-            { id: "item_nw_2", x: 1300, y: 750, type: "SHOTGUN" },
-            { id: "item_nw_3", x: 1000, y: 1200, type: "SHIELD" },
-            { id: "item_nw_4", x: 1600, y: 1100, type: "SNIPER" },
-            { id: "item_nw_5", x: 900, y: 1700, type: "GRENADE" },
-            { id: "item_nw_6", x: 1500, y: 1700, type: "SPEED" },
-            { id: "item_nw_7", x: 1200, y: 1400, type: "TRIPLE" },
-            // Cuadrante NE
-            { id: "item_ne_1", x: 3200, y: 750, type: "MEDKIT" },
-            { id: "item_ne_2", x: 3800, y: 850, type: "SHOTGUN" },
-            { id: "item_ne_3", x: 3500, y: 1100, type: "SHIELD" },
-            { id: "item_ne_4", x: 4000, y: 1300, type: "SNIPER" },
-            { id: "item_ne_5", x: 3100, y: 1600, type: "GRENADE" },
-            { id: "item_ne_6", x: 3700, y: 1700, type: "SPEED" },
-            { id: "item_ne_7", x: 3400, y: 1500, type: "TRIPLE" },
-            // Río Central y Puentes
-            { id: "item_ctr_1", x: 2520, y: 1160, type: "SNIPER" },
-            { id: "item_ctr_2", x: 2310, y: 2400, type: "SHOTGUN" },
-            { id: "item_ctr_3", x: 2540, y: 3600, type: "SNIPER" },
-            { id: "item_ctr_4", x: 2400, y: 2200, type: "MEDKIT" },
-            { id: "item_ctr_5", x: 2400, y: 2600, type: "SHIELD" },
-            { id: "item_ctr_6", x: 2200, y: 2400, type: "GRENADE" },
-            { id: "item_ctr_7", x: 2600, y: 2400, type: "SPEED" },
-            { id: "item_ctr_8", x: 2400, y: 1800, type: "TRIPLE" },
-            // Cuadrante SW
-            { id: "item_sw_1", x: 800, y: 3200, type: "MEDKIT" },
-            { id: "item_sw_2", x: 1300, y: 3100, type: "SHOTGUN" },
-            { id: "item_sw_3", x: 1000, y: 3700, type: "SHIELD" },
-            { id: "item_sw_4", x: 1600, y: 3600, type: "SNIPER" },
-            { id: "item_sw_5", x: 900, y: 4200, type: "GRENADE" },
-            { id: "item_sw_6", x: 1500, y: 4200, type: "SPEED" },
-            { id: "item_sw_7", x: 1200, y: 3400, type: "TRIPLE" },
-            // Cuadrante SE
-            { id: "item_se_1", x: 3300, y: 3200, type: "MEDKIT" },
-            { id: "item_se_2", x: 3900, y: 3100, type: "SHOTGUN" },
-            { id: "item_se_3", x: 3500, y: 3700, type: "SHIELD" },
-            { id: "item_se_4", x: 4100, y: 3600, type: "SNIPER" },
-            { id: "item_se_5", x: 3200, y: 4200, type: "GRENADE" },
-            { id: "item_se_6", x: 3800, y: 4200, type: "SPEED" },
-            { id: "item_se_7", x: 3600, y: 3400, type: "TRIPLE" },
+        const itemsData = [];
+        // Botín estratégico garantizado dentro de cada estructura
+        structures_1.STRUCTURES.forEach((s, idx) => {
+            const gun = s.type === "BUNKER" ? "SNIPER" : s.type === "WAREHOUSE" ? "SHOTGUN" : s.type === "LAB" ? "LASER" : s.type === "OUTPOST" ? "GRENADE" : "SNIPER";
+            itemsData.push({ id: `loot_st_${idx}_1`, x: s.x, y: s.y, type: gun });
+            itemsData.push({ id: `loot_st_${idx}_2`, x: s.x - s.width * 0.15, y: s.y, type: "MEDKIT" });
+            itemsData.push({ id: `loot_st_${idx}_3`, x: s.x + s.width * 0.15, y: s.y, type: "SHIELD" });
+            itemsData.push({ id: `loot_st_${idx}_4`, x: s.x, y: s.y - s.height * 0.15, type: "SPEED" });
+        });
+        // Botín disperso por biomas y puentes
+        const wildernessLoot = [
+            { x: 3850, y: 4000, type: "SNIPER" },
+            { x: 4180, y: 2000, type: "SHOTGUN" },
+            { x: 4200, y: 6000, type: "GRENADE" },
+            { x: 1200, y: 1200, type: "MEDKIT" },
+            { x: 2800, y: 1800, type: "SHIELD" },
+            { x: 5200, y: 1800, type: "TRIPLE" },
+            { x: 6800, y: 1200, type: "SPEED" },
+            { x: 1200, y: 6800, type: "SHOTGUN" },
+            { x: 2800, y: 5200, type: "MEDKIT" },
+            { x: 5200, y: 5200, type: "SHIELD" },
+            { x: 6800, y: 6800, type: "SNIPER" },
         ];
+        wildernessLoot.forEach((wl, idx) => {
+            itemsData.push({ id: `loot_wd_${idx}`, x: wl.x, y: wl.y, type: wl.type });
+        });
         itemsData.forEach((d) => {
             const item = new GameState_1.ItemPickup();
             item.id = d.id;

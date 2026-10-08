@@ -133,7 +133,7 @@ Ubicados en [`/server/src/rooms/schema/GameState.ts`](file:///home/luca/Escritor
    - **Con Garras Felinas**: Realiza un **Dash Felino Veloz** de 160px con estelas doradas y cooldown ágil de 1.8s.
    - **Dirección**: Se ejecuta hacia el vector de movimiento de WASD; si el personaje está quieto, hacia el cursor.
 
-5. **Mundo Vasto - Mapa 4800 x 4800 px (Estilo Suroi.io)**:
+5. **Mundo Mega-Escala - Mapa 8000 x 8000 px con Estructuras Tácticas (Estilo Suroi.io)**:
    - Superficie masiva de **4800 x 4800 px** (~5.76 veces más espacioso), permitiendo fases iniciales de exploración táctica, farmeo de cofres y tensión en avistamientos lejanos.
    - **Orografía**:
      - Océano perimetral exterior y costa de arena dorada (`0xc4a96b`).
@@ -146,7 +146,7 @@ Ubicados en [`/server/src/rooms/schema/GameState.ts`](file:///home/luca/Escritor
    - **Minimap HUD Reactivo**: Proyecta la orografía completa en tiempo real a escala `sc = 136 / 4800` con marcadores direccionales y círculo de tormenta.
 
 6. **Zona Segura y Tormenta Tóxica (Battle Royale Circle)**:
-   - Radio inicial de **2300 px** centrado en `(2400, 2400)`.
+   - Radio inicial de **3850 px** centrado en `(4000, 4000)`.
    - Ciclos de 35s de fase segura y 22s de encogimiento progresivo hacia el epicentro.
    - Renderizado con halo masivo de 4800px en Phaser 3 que cubre íntegramente las 4 esquinas de la pantalla.
 
@@ -251,6 +251,7 @@ Basado en el análisis en vivo de [https://suroi.io/](https://suroi.io/) y su re
 4. **Cámara Dinámica con Anticipación de Ratón (Look-Ahead)**:
    - Interpolación LERP suave (0.14) hacia el cursor del ratón con distancia anticipada dinámica, extendiéndose aún más con el rifle Sniper para mayor alcance de visión.
 
-5. **Artefactos Demostrativos Grabados en Vivo**:
-   - Video MP4: [`battlecats_suroi_showcase.mp4`](file:///C:/Users/lucam/.gemini/antigravity-ide/brain/58af40b1-2bb0-427f-9c8b-72a6f493b83b/battlecats_suroi_showcase.mp4)
-   - Video WebP: [`battlecats_suroi_showcase.webp`](file:///C:/Users/lucam/.gemini/antigravity-ide/brain/58af40b1-2bb0-427f-9c8b-72a6f493b83b/battlecats_suroi_showcase.webp)
+8. **Pantalla de Inicio Estilo Diep.io con Gameplay en Vivo y Armario de Skins**:
+   - **Fondo de Gameplay en Vivo (`GameplayBackground.tsx`)**: Simulación autónoma a 60 FPS con bots de gatos desplazándose, apuntando, disparando y esquivando obstáculos sobre una cuadrícula sutil estilo diep.io, con soporte opcional de video en bucle.
+   - **Estética Diep.io**: Logotipo `BATTLECATS.io` en relieve con orejitas felinas, selectores de Game Mode y Región con ping local en tiempo real, input de apodo de alto contraste y botón `PLAY!` con bisel 3D inferior.
+   - **Selector y Armario de Skins**: Carrusel de personajes en tarjeta blueprint con previsualización 3D, selección rápida por paleta de colores y modal de tienda/armario completo con rarezas (`Común`, `Rara`, `Épica`, `Legendaria`).

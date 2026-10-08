@@ -480,8 +480,8 @@ class GameState extends schema_1.Schema {
         this.obstacles = new schema_1.MapSchema();
         this.items = new schema_1.MapSchema();
         this.zone = new ZoneState();
-        this.worldWidth = 4800;
-        this.worldHeight = 4800;
+        this.worldWidth = 8000;
+        this.worldHeight = 8000;
         this.status = "PLAYING"; // WAITING, PLAYING, VICTORY
         this.aliveCount = 1;
         this.winnerId = "";

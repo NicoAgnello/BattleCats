@@ -3,14 +3,14 @@
  * SpatialHashGrid.ts
  * Sistema de Partición Espacial (Spatial Partitioning) para MMO Top-Down Battle Royale.
  *
- * Divide el mundo masivo (4800x4800) en una grilla uniforme de celdas (ej. 500x500px).
+ * Divide el mundo masivo (8000x8000) en una grilla uniforme de celdas (ej. 500x500px).
  * Permite inserción, actualización, eliminación y consultas por radio en O(1) celdas promedio,
  * reduciendo la complejidad de detección de colisiones autoritativas de O(N^2) a O(1) vecinos.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SpatialHashGrid = void 0;
 class SpatialHashGrid {
-    constructor(cellSize = 500, worldWidth = 4800, worldHeight = 4800) {
+    constructor(cellSize = 500, worldWidth = 8000, worldHeight = 8000) {
         /** Celdas de la grilla mapeadas por clave "col:row" -> Conjunto de entidades */
         this.cells = new Map();
         /** Registro rápido de entidad -> lista de claves de celdas donde está registrada */

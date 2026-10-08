@@ -212,8 +212,8 @@ export class GameState extends Schema {
   @type({ map: Obstacle }) obstacles = new MapSchema<Obstacle>();
   @type({ map: ItemPickup }) items = new MapSchema<ItemPickup>();
   @type(ZoneState) zone = new ZoneState();
-  @type("number") worldWidth: number = 4800;
-  @type("number") worldHeight: number = 4800;
+  @type("number") worldWidth: number = 8000;
+  @type("number") worldHeight: number = 8000;
   @type("string") status: string = "PLAYING"; // WAITING, PLAYING, VICTORY
   @type("number") aliveCount: number = 1;
   @type("string") winnerId: string = "";

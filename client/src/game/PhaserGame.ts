@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 
-export const WORLD_W = 4800;
-export const WORLD_H = 4800;
+export const WORLD_W = 8000;
+export const WORLD_H = 8000;
 
 export function createPhaserConfig(parentId: string): Phaser.Types.Core.GameConfig {
   return {
@@ -22,11 +22,11 @@ export function createPhaserConfig(parentId: string): Phaser.Types.Core.GameConf
       smoothStep: true,          // Delta suavizado para evitar micro-stutters
     },
     render: {
-      antialias: false,          // OFF: reduce carga GPU en gráficos vectoriales
-      roundPixels: true,         // Elimina subpixel jitter visual
+      antialias: true,           // ON: bordes y curvas ultra suaves
+      roundPixels: false,        // OFF: precisión subpixel para fluidez de cámara perfecta estilo Suroi
       powerPreference: "high-performance",
-      batchSize: 2048,           // Más objetos por batch de WebGL
-      mipmapFilter: "NEAREST",
+      batchSize: 4096,           // Más sprites por draw call de WebGL
+      mipmapFilter: "LINEAR",
     },
     input: {
       activePointers: 2,

@@ -4,6 +4,14 @@ import { NetworkClient } from "../NetworkManager";
 import { GameState, Player, Projectile, Trap, Bush, ItemPickup, Obstacle } from "../schema/GameState";
 import { soundManager } from "../SoundManager";
 import { sseManager } from "../SSEClient";
+import { STRUCTURES, StructureDef } from "../structures";
+
+interface VStructure {
+  def: StructureDef;
+  interiorContainer: Phaser.GameObjects.Container;
+  roofContainer: Phaser.GameObjects.Container;
+  isInside: boolean;
+}
 
 const WEAPON_CONFIGS: Record<string, { shootCooldown: number; speed: number; range: number; pellets?: number }> = {
   LASER:   { shootCooldown: 0.3, speed: 800, range: 480 },
@@ -74,13 +82,71 @@ interface VTrap {
   ring: Phaser.GameObjects.Graphics;
 }
 
+/* ─── Grilla Espacial de Cliente para Consultas O(1) y Culling ─ */
+export class ClientSpatialGrid<T extends { x: number; y: number }> {
+  private cellSize: number;
+  private cells = new Map<string, Set<T>>();
+
+  constructor(cellSize = 400) {
+    this.cellSize = cellSize;
+  }
+
+  private getKey(col: number, row: number): string {
+    return `${col}:${row}`;
+  }
+
+  public insert(item: T): void {
+    const col = Math.floor(item.x / this.cellSize);
+    const row = Math.floor(item.y / this.cellSize);
+    const key = this.getKey(col, row);
+    let cell = this.cells.get(key);
+    if (!cell) {
+      cell = new Set<T>();
+      this.cells.set(key, cell);
+    }
+    cell.add(item);
+  }
+
+  public remove(item: T): void {
+    const col = Math.floor(item.x / this.cellSize);
+    const row = Math.floor(item.y / this.cellSize);
+    const cell = this.cells.get(this.getKey(col, row));
+    if (cell) cell.delete(item);
+  }
+
+  public queryNear(x: number, y: number, radius = 100): T[] {
+    const minCol = Math.floor((x - radius) / this.cellSize);
+    const maxCol = Math.floor((x + radius) / this.cellSize);
+    const minRow = Math.floor((y - radius) / this.cellSize);
+    const maxRow = Math.floor((y + radius) / this.cellSize);
+
+    const result: T[] = [];
+    for (let c = minCol; c <= maxCol; c++) {
+      for (let r = minRow; r <= maxRow; r++) {
+        const cell = this.cells.get(this.getKey(c, r));
+        if (cell) {
+          for (const item of cell) {
+            result.push(item);
+          }
+        }
+      }
+    }
+    return result;
+  }
+}
+
 interface VObstacle {
+  id: string;
   container: Phaser.GameObjects.Container;
-  gfx: Phaser.GameObjects.Graphics;
+  sprite: Phaser.GameObjects.Image;
+  hpGfx?: Phaser.GameObjects.Graphics;
   obsType: string;
   radius: number;
-  hp: number; maxHp: number;
+  hp: number;
+  maxHp: number;
   destroyed: boolean;
+  x: number;
+  y: number;
 }
 
 interface VItem {
@@ -155,6 +221,16 @@ export class MainScene extends Phaser.Scene {
   private traps   = new Map<string, VTrap>();
   private obstacles = new Map<string, VObstacle>();
   private items   = new Map<string, VItem>();
+  private vStructures: VStructure[] = [];
+
+  // Grillas espaciales de cliente O(1) y optimizaciones de frustum
+  private obstacleSpatialGrid = new ClientSpatialGrid<VObstacle>(400);
+  private treeSpatialGrid = new ClientSpatialGrid<VObstacle>(400);
+  private itemSpatialGrid = new ClientSpatialGrid<VItem>(400);
+  private bushList: Phaser.GameObjects.Container[] = [];
+  private minimapBaseGfx!: Phaser.GameObjects.Graphics;
+  private cullingTimer = 0;
+  private currentFadedTree: VObstacle | null = null;
 
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
   private zoneGfx!: Phaser.GameObjects.Graphics;
@@ -162,7 +238,7 @@ export class MainScene extends Phaser.Scene {
   private crosshairGfx!: Phaser.GameObjects.Graphics;
   private aimConeGfx!: Phaser.GameObjects.Graphics;
 
-  private zone = { x: 2400, y: 2400, r: 2300 };
+  private zone = { x: 4000, y: 4000, r: 3850 };
 
   private styleScore = 0;
   private wasInBush = false;
@@ -174,7 +250,7 @@ export class MainScene extends Phaser.Scene {
 
   // Suroi-style dynamic camera target & look-ahead
   private camTargetDummy!: Phaser.GameObjects.Arc;
-  private camTarget = { x: 2400, y: 2400 };
+  private camTarget = { x: 4000, y: 4000 };
 
   // Suroi-style interaction prompt & loot beacon
   private interactPromptGfx!: Phaser.GameObjects.Container;
@@ -185,7 +261,7 @@ export class MainScene extends Phaser.Scene {
 
   // Footsteps & water movement tracking
   private lastFootstepDist = 0;
-  private lastPlayerPos = { x: 2400, y: 2400 };
+  private lastPlayerPos = { x: 4000, y: 4000 };
 
   // Dirty flags & throttle
   private zoneDirty = true;
@@ -202,12 +278,23 @@ export class MainScene extends Phaser.Scene {
   create() {
     this.game.canvas.addEventListener("contextmenu", e => e.preventDefault());
 
-    this.physics.world.setBounds(0, 0, 4800, 4800);
-    this.cameras.main.setBounds(0, 0, 4800, 4800);
-    this.cameras.main.centerOn(2400, 2400);
+    this.physics.world.setBounds(0, 0, 8000, 8000);
+    this.cameras.main.setBounds(0, 0, 8000, 8000);
+    this.cameras.main.centerOn(4000, 4000);
 
-    // 1. Mapa de batalla estilo Suroi.io
+    // 0. Pre-renderizado de texturas para WebGL Sprite Batching de 60 FPS
+    this.initObjectTextures();
+
+    // 1. Mapa de batalla estilo Suroi.io (8000x8000 px)
     this.buildMap();
+
+    // 1.1 Estructuras y Complejos Tácticos (Oclusión de Techo & Sigilo)
+    this.buildStructures();
+
+    // 1.2 Minimapa base pre-renderizado (Zero-Redraw)
+    this.minimapBaseGfx = this.add.graphics().setDepth(199).setScrollFactor(0);
+    this.drawMinimapBase();
+    this.scale.on("resize", () => this.drawMinimapBase());
 
     // 2. Gráficos de Zona de Tinta y Beacons de Loot
     this.zoneGfx = this.add.graphics().setDepth(8);
@@ -249,7 +336,7 @@ export class MainScene extends Phaser.Scene {
     this.minimapGfx = this.add.graphics().setDepth(200).setScrollFactor(0);
 
     // 5.1 Dummy para Cámara Dinámica con Anticipación (Mouse Look-Ahead)
-    this.camTargetDummy = this.add.circle(2400, 2400, 2, 0x000000, 0).setDepth(0);
+    this.camTargetDummy = this.add.circle(4000, 4000, 2, 0x000000, 0).setDepth(0);
     this.cameras.main.startFollow(this.camTargetDummy, true, 0.12, 0.12);
 
     // 5.2 Prompt de Interacción Flotante Estilo Suroi ([F] Recoger / Cambiar)
@@ -781,8 +868,8 @@ export class MainScene extends Phaser.Scene {
         }
       });
     }
-    destX = Math.max(30, Math.min(4800 - 30, destX));
-    destY = Math.max(30, Math.min(4800 - 30, destY));
+    destX = Math.max(30, Math.min(8000 - 30, destX));
+    destY = Math.max(30, Math.min(8000 - 30, destY));
 
     // Estelas doradas rápidas
     for (let i = 0; i < 4; i++) {
@@ -830,8 +917,8 @@ export class MainScene extends Phaser.Scene {
         }
       });
     }
-    destX = Math.max(30, Math.min(4800 - 30, destX));
-    destY = Math.max(30, Math.min(4800 - 30, destY));
+    destX = Math.max(30, Math.min(8000 - 30, destX));
+    destY = Math.max(30, Math.min(8000 - 30, destY));
 
     // Partículas de polvo al rodar
     this.createDustPuffFX(v.container.x, v.container.y);
@@ -921,14 +1008,23 @@ export class MainScene extends Phaser.Scene {
     s.obstacles.onAdd((obs: Obstacle, id: string) => this.createObstacle(id, obs));
     s.obstacles.onRemove((_: Obstacle, id: string) => {
       const v = this.obstacles.get(id);
-      if (v) { v.container.destroy(); this.obstacles.delete(id); }
+      if (v) {
+        this.obstacleSpatialGrid.remove(v);
+        if (v.obsType === "TREE") this.treeSpatialGrid.remove(v);
+        v.container.destroy();
+        this.obstacles.delete(id);
+      }
     });
 
     // Items
     s.items.onAdd((item: ItemPickup, id: string) => this.createItem(id, item));
     s.items.onRemove((_: ItemPickup, id: string) => {
       const v = this.items.get(id);
-      if (v) { v.container.destroy(); this.items.delete(id); }
+      if (v) {
+        this.itemSpatialGrid.remove(v);
+        v.container.destroy();
+        this.items.delete(id);
+      }
     });
 
     // Safe Zone
@@ -1111,12 +1207,153 @@ export class MainScene extends Phaser.Scene {
     emit("style", { score: this.styleScore, reason });
   }
 
+  /* ── Estructuras Tácticas y Oclusión de Techos (Stealth & Hiding) ── */
+  private buildStructures() {
+    this.vStructures = [];
+
+    STRUCTURES.forEach(def => {
+      // 1. Contenedor de Interior (depth: 3, bajo jugadores/obstáculos, sobre tilemap)
+      const interiorContainer = this.add.container(def.x, def.y).setDepth(3);
+      const floorGfx = this.add.graphics();
+      interiorContainer.add(floorGfx);
+
+      const hw = def.width / 2;
+      const hh = def.height / 2;
+
+      // Sombra exterior sutil del edificio
+      floorGfx.fillStyle(0x000000, 0.35);
+      floorGfx.fillRect(-hw + 8, -hh + 8, def.width, def.height);
+
+      // Suelo interior arquitectónico según tipo
+      floorGfx.fillStyle(def.floorColor, 1);
+      floorGfx.fillRect(-hw, -hh, def.width, def.height);
+
+      // Patrón de piso temático
+      if (def.type === "MANSION") {
+        // Baldosas de mármol en damero
+        floorGfx.lineStyle(1.5, 0x1e293b, 0.35);
+        const step = 52;
+        for (let x = -hw; x <= hw; x += step) floorGfx.lineBetween(x, -hh, x, hh);
+        for (let y = -hh; y <= hh; y += step) floorGfx.lineBetween(-hw, y, hw, y);
+      } else if (def.type === "BUNKER") {
+        // Placas de acero reforzado con franjas amarillas de peligro
+        floorGfx.lineStyle(2, 0x334155, 0.6);
+        const step = 60;
+        for (let x = -hw; x <= hw; x += step) floorGfx.lineBetween(x, -hh, x, hh);
+        for (let y = -hh; y <= hh; y += step) floorGfx.lineBetween(-hw, y, hw, y);
+        floorGfx.lineStyle(6, 0xfacc15, 0.7);
+        floorGfx.lineBetween(-hw + 30, -hh + 40, -hw + 30, hh - 40);
+        floorGfx.lineBetween(hw - 30, -hh + 40, hw - 30, hh - 40);
+      } else if (def.type === "WAREHOUSE") {
+        // Losa industrial de hormigón y bahías de carga
+        floorGfx.lineStyle(2, 0x475569, 0.45);
+        for (let x = -hw; x <= hw; x += 80) floorGfx.lineBetween(x, -hh, x, hh);
+        floorGfx.lineStyle(4, 0xf59e0b, 0.55);
+        floorGfx.strokeRect(-hw + 25, -hh + 25, def.width - 50, def.height - 50);
+      } else if (def.type === "LAB") {
+        // Baldosas asépticas de laboratorio con reflejos cian
+        floorGfx.lineStyle(1.5, 0x0ea5e9, 0.35);
+        const step = 40;
+        for (let x = -hw; x <= hw; x += step) floorGfx.lineBetween(x, -hh, x, hh);
+        for (let y = -hh; y <= hh; y += step) floorGfx.lineBetween(-hw, y, hw, y);
+      } else {
+        // Madera / cabañas / fuertes
+        floorGfx.lineStyle(2, 0x451a03, 0.45);
+        const step = 28;
+        for (let y = -hh; y <= hh; y += step) floorGfx.lineBetween(-hw, y, hw, y);
+      }
+
+      // Marcadores en umbrales de puertas (doorway thresholds)
+      floorGfx.fillStyle(0x0f172a, 0.85);
+      def.doorways.forEach(d => {
+        const relX = d.x - def.x;
+        const relY = d.y - def.y;
+        floorGfx.fillRect(relX - d.width / 2, relY - d.height / 2, d.width, d.height);
+      });
+
+      // Rótulo interior táctico en el suelo
+      const floorLabel = this.add.text(0, 0, def.name.toUpperCase(), {
+        fontFamily: "Outfit, Inter, sans-serif",
+        fontSize: "15px",
+        fontStyle: "bold",
+        color: "rgba(255, 255, 255, 0.22)",
+      }).setOrigin(0.5);
+      interiorContainer.add(floorLabel);
+
+      // 2. Contenedor de Techo Oclusivo (depth: 75, por encima de jugadores y loot para sigilo)
+      const roofContainer = this.add.container(def.x, def.y).setDepth(75);
+      const roofGfx = this.add.graphics();
+      roofContainer.add(roofGfx);
+
+      // Sombra proyectada del tejado
+      roofGfx.fillStyle(0x000000, 0.45);
+      roofGfx.fillRect(-hw + 14, -hh + 14, def.width + 8, def.height + 8);
+
+      // Bloque principal del tejado
+      roofGfx.fillStyle(def.roofColor, 1);
+      roofGfx.fillRect(-hw - 4, -hh - 4, def.width + 8, def.height + 8);
+
+      // Borde y bisel de la estructura exterior
+      roofGfx.lineStyle(4, 0x0f172a, 1);
+      roofGfx.strokeRect(-hw - 4, -hh - 4, def.width + 8, def.height + 8);
+
+      // Detalles arquitectónicos en el tejado según tipo
+      if (def.type === "BUNKER" || def.type === "LAB" || def.type === "WAREHOUSE") {
+        // Conductos de ventilación y paneles mecánicos
+        roofGfx.fillStyle(0x1e293b, 1);
+        roofGfx.fillRoundedRect(-hw + 30, -hh + 30, 70, 44, 4);
+        roofGfx.lineStyle(2, 0x475569, 1);
+        roofGfx.strokeRoundedRect(-hw + 30, -hh + 30, 70, 44, 4);
+
+        roofGfx.fillRoundedRect(hw - 100, hh - 74, 70, 44, 4);
+        roofGfx.strokeRoundedRect(hw - 100, hh - 74, 70, 44, 4);
+
+        // Aspas de ventilador en conducto
+        roofGfx.lineStyle(2, 0x94a3b8, 0.8);
+        roofGfx.strokeCircle(-hw + 65, -hh + 52, 14);
+        roofGfx.lineBetween(-hw + 55, -hh + 52, -hw + 75, -hh + 52);
+        roofGfx.lineBetween(-hw + 65, -hh + 42, -hw + 65, -hh + 62);
+      } else {
+        // Línea de cumbrera y claraboyas para cabañas / mansión
+        roofGfx.lineStyle(4, 0x1f2937, 0.7);
+        roofGfx.lineBetween(0, -hh - 4, 0, hh + 4);
+        roofGfx.fillStyle(0x38bdf8, 0.4);
+        roofGfx.fillRoundedRect(-24, -30, 48, 60, 4);
+        roofGfx.lineStyle(2, 0x0284c7, 0.8);
+        roofGfx.strokeRoundedRect(-24, -30, 48, 60, 4);
+      }
+
+      // Placa / Letrero táctico visible en el tejado con icono
+      const roofSignBg = this.add.graphics();
+      roofSignBg.fillStyle(0x090d16, 0.85);
+      roofSignBg.fillRoundedRect(-120, -18, 240, 36, 8);
+      roofSignBg.lineStyle(2, 0x10b981, 0.8);
+      roofSignBg.strokeRoundedRect(-120, -18, 240, 36, 8);
+      roofContainer.add(roofSignBg);
+
+      const roofLabel = this.add.text(0, 0, `🏠 ${def.name.toUpperCase()}`, {
+        fontFamily: "Outfit, Inter, sans-serif",
+        fontSize: "13px",
+        fontStyle: "bold",
+        color: "#f8fafc",
+      }).setOrigin(0.5);
+      roofContainer.add(roofLabel);
+
+      this.vStructures.push({
+        def,
+        interiorContainer,
+        roofContainer,
+        isInside: false,
+      });
+    });
+  }
+
   /* ── Mapa y Vegetación Optimizado (Phaser 3 Tilemap + Culling) ─── */
   private buildMap() {
     const tileW = 80;
     const tileH = 80;
-    const numCols = 60; // 4800 / 80
-    const numRows = 60; // 4800 / 80
+    const numCols = 100; // 8000 / 80
+    const numRows = 100; // 8000 / 80
     const totalTileTypes = 10;
 
     // 1. Textura procedural para el Tileset oficial
@@ -1221,14 +1458,14 @@ export class MainScene extends Phaser.Scene {
 
     canvasTex.refresh();
 
-    // 2. Generación matricial del mapa 60x60
+    // 2. Generación matricial del mapa 100x100 (8000x8000)
     const riverPoints = [
-      { x: 2400, y: 0 },
-      { x: 2520, y: 900 },
-      { x: 2360, y: 1900 },
-      { x: 2260, y: 2900 },
-      { x: 2580, y: 3900 },
-      { x: 2480, y: 4800 },
+      { x: 4000, y: 0 },
+      { x: 4200, y: 1500 },
+      { x: 3900, y: 3100 },
+      { x: 3800, y: 4900 },
+      { x: 4300, y: 6500 },
+      { x: 4100, y: 8000 },
     ];
 
     const distToRiver = (x: number, y: number): number => {
@@ -1251,29 +1488,34 @@ export class MainScene extends Phaser.Scene {
     };
 
     const isBridge = (x: number, y: number): boolean => {
-      if (x >= 2440 && x <= 2600 && y >= 1110 && y <= 1210) return true;
-      if (x >= 2230 && x <= 2390 && y >= 2350 && y <= 2450) return true;
-      if (x >= 2460 && x <= 2620 && y >= 3550 && y <= 3650) return true;
+      if (x >= 4100 && x <= 4260 && y >= 1950 && y <= 2050) return true;
+      if (x >= 3770 && x <= 3930 && y >= 3950 && y <= 4050) return true;
+      if (x >= 4120 && x <= 4280 && y >= 5950 && y <= 6050) return true;
       return false;
     };
 
     const clearings = [
-      { x: 1200, y: 1100, rx: 260, ry: 180 },
-      { x: 3600, y: 1200, rx: 280, ry: 190 },
-      { x: 1300, y: 3500, rx: 270, ry: 180 },
-      { x: 3500, y: 3600, rx: 260, ry: 190 },
-      { x: 2400, y: 2400, rx: 320, ry: 240 },
-      { x: 2400, y: 700,  rx: 200, ry: 150 },
-      { x: 2400, y: 4100, rx: 200, ry: 150 },
+      { x: 2000, y: 2000, rx: 440, ry: 360 }, // Búnker NW
+      { x: 6000, y: 2000, rx: 440, ry: 360 }, // Lab NE
+      { x: 2000, y: 6000, rx: 440, ry: 360 }, // Fuerte SW
+      { x: 6000, y: 6000, rx: 460, ry: 380 }, // Almacén SE
+      { x: 4000, y: 3400, rx: 560, ry: 460 }, // Mansión Central
+      { x: 4000, y: 1400, rx: 320, ry: 260 }, // Cabaña N
+      { x: 4000, y: 6600, rx: 320, ry: 260 }, // Cabaña S
+      { x: 1400, y: 4000, rx: 320, ry: 260 }, // Cabaña W
+      { x: 6600, y: 4000, rx: 320, ry: 260 }, // Cabaña E
+      { x: 4000, y: 4000, rx: 400, ry: 300 }, // Cruce de puente central
     ];
 
     const densePatches = [
-      { x: 800,  y: 1800, rx: 220, ry: 170 },
-      { x: 3900, y: 2000, rx: 230, ry: 160 },
-      { x: 900,  y: 2800, rx: 240, ry: 160 },
-      { x: 3800, y: 2900, rx: 220, ry: 170 },
-      { x: 1700, y: 2400, rx: 250, ry: 180 },
-      { x: 3100, y: 2400, rx: 250, ry: 180 },
+      { x: 1200, y: 2800, rx: 400, ry: 320 },
+      { x: 6800, y: 2800, rx: 400, ry: 320 },
+      { x: 1200, y: 5200, rx: 400, ry: 320 },
+      { x: 6800, y: 5200, rx: 400, ry: 320 },
+      { x: 2800, y: 4000, rx: 380, ry: 300 },
+      { x: 5200, y: 4000, rx: 380, ry: 300 },
+      { x: 3000, y: 2200, rx: 360, ry: 280 },
+      { x: 5000, y: 5800, rx: 360, ry: 280 },
     ];
 
     const mapData: number[][] = [];
@@ -1286,11 +1528,11 @@ export class MainScene extends Phaser.Scene {
         let tile = 3; // Hierba por defecto
 
         // Océano y Playa en los bordes
-        if (wx < 120 || wx > 4680 || wy < 120 || wy > 4680) {
+        if (wx < 180 || wx > 7820 || wy < 180 || wy > 7820) {
           tile = 0; // Océano profundo
-        } else if (wx < 220 || wx > 4580 || wy < 220 || wy > 4580) {
+        } else if (wx < 340 || wx > 7660 || wy < 340 || wy > 7660) {
           tile = 1; // Océano costero
-        } else if (wx < 360 || wx > 4440 || wy < 360 || wy > 4440) {
+        } else if (wx < 540 || wx > 7460 || wy < 540 || wy > 7460) {
           tile = 2; // Playa de arena
         } else {
           // Puente de madera prioritario
@@ -1298,15 +1540,15 @@ export class MainScene extends Phaser.Scene {
             tile = 9;
           } else {
             const rDist = distToRiver(wx, wy);
-            if (rDist < 42) {
+            if (rDist < 52) {
               tile = 8; // Agua de río
-            } else if (rDist < 65) {
+            } else if (rDist < 80) {
               tile = 7; // Orilla de lodo
-            } else if (Math.abs(wy - 2400) <= 32 && wx >= 400 && wx <= 4400) {
+            } else if (Math.abs(wy - 4000) <= 36 && wx >= 600 && wx <= 7400) {
               tile = 6; // Carretera central E-O
-            } else if (wx >= 2490 && wx <= 2550 && wy >= 400 && wy <= 1160) {
+            } else if (wx >= 4150 && wx <= 4210 && wy >= 600 && wy <= 1950) {
               tile = 6; // Conector puente norte
-            } else if (wx >= 2510 && wx <= 2570 && wy >= 3600 && wy <= 4400) {
+            } else if (wx >= 4170 && wx <= 4230 && wy >= 6050 && wy <= 7400) {
               tile = 6; // Conector puente sur
             } else {
               // Comprobar parches de biomas
@@ -1362,16 +1604,16 @@ export class MainScene extends Phaser.Scene {
 
     // Estructuras de puente de madera con relieve para máximo contraste visual
     const bridgeGfx = this.add.graphics().setDepth(1);
-    this.drawWoodenBridge(bridgeGfx, 2520, 1160, 140, 70);
-    this.drawWoodenBridge(bridgeGfx, 2310, 2400, 140, 70);
-    this.drawWoodenBridge(bridgeGfx, 2540, 3600, 140, 70);
+    this.drawWoodenBridge(bridgeGfx, 4180, 2000, 160, 80);
+    this.drawWoodenBridge(bridgeGfx, 3850, 4000, 160, 80);
+    this.drawWoodenBridge(bridgeGfx, 4200, 6000, 160, 80);
 
     // Límites de frontera exterior decorativos
     const borderGfx = this.add.graphics().setDepth(2);
     borderGfx.lineStyle(8, 0x1c497d, 1);
-    borderGfx.strokeRect(4, 4, 4792, 4792);
+    borderGfx.strokeRect(4, 4, 7992, 7992);
     borderGfx.lineStyle(2, 0x38bdf8, 0.4);
-    borderGfx.strokeRect(12, 12, 4776, 4776);
+    borderGfx.strokeRect(12, 12, 7976, 7976);
   }
 
   private drawWoodenBridge(g: Phaser.GameObjects.Graphics, cx: number, cy: number, w: number, h: number) {
@@ -1398,18 +1640,19 @@ export class MainScene extends Phaser.Scene {
   }
 
   public checkInRiver(x: number, y: number): boolean {
-    if (x >= 2440 && x <= 2600 && y >= 1110 && y <= 1210) return false;
-    if (x >= 2230 && x <= 2390 && y >= 2350 && y <= 2450) return false;
-    if (x >= 2460 && x <= 2620 && y >= 3550 && y <= 3650) return false;
+    if (x >= 4100 && x <= 4260 && y >= 1950 && y <= 2050) return false;
+    if (x >= 3770 && x <= 3930 && y >= 3950 && y <= 4050) return false;
+    if (x >= 4120 && x <= 4280 && y >= 5950 && y <= 6050) return false;
 
     const pts = [
-      { x: 2400, y: 0 },
-      { x: 2520, y: 900 },
-      { x: 2360, y: 1900 },
-      { x: 2260, y: 2900 },
-      { x: 2580, y: 3900 },
-      { x: 2480, y: 4800 },
+      { x: 4000, y: 0 },
+      { x: 4200, y: 1500 },
+      { x: 3900, y: 3100 },
+      { x: 3800, y: 4900 },
+      { x: 4300, y: 6500 },
+      { x: 4100, y: 8000 },
     ];
+    let minDist = Infinity;
     for (let i = 0; i < pts.length - 1; i++) {
       const p1 = pts[i];
       const p2 = pts[i + 1];
@@ -1421,228 +1664,349 @@ export class MainScene extends Phaser.Scene {
       t = Math.max(0, Math.min(1, t));
       const px = p1.x + t * dx;
       const py = p1.y + t * dy;
-      if (Math.hypot(x - px, y - py) < 55) return true;
+      const d = Math.hypot(x - px, y - py);
+      if (d < minDist) minDist = d;
     }
-    return false;
+    return minDist < 52;
+  }
+
+  /* ── 0. Generación de Texturas Vectoriales para WebGL Sprite Batching ── */
+  private initObjectTextures() {
+    if (this.textures.exists("obs_crate")) return;
+
+    // 1. Crate (Regular Crate - Suroi style: 64x64)
+    {
+      const size = 64;
+      const can = this.textures.createCanvas("obs_crate", size, size);
+      if (can) {
+        const ctx = can.getContext();
+        const s = 52;
+        const off = (size - s) / 2;
+
+        ctx.fillStyle = "rgba(0, 0, 0, 0.28)";
+        ctx.fillRect(off + 4, off + 4, s, s);
+
+        ctx.fillStyle = "#674b24";
+        ctx.fillRect(off, off, s, s);
+
+        ctx.strokeStyle = "#342612";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(off + s / 3, off); ctx.lineTo(off + s / 3, off + s);
+        ctx.moveTo(off + 2 * s / 3, off); ctx.lineTo(off + 2 * s / 3, off + s);
+        ctx.stroke();
+
+        ctx.strokeStyle = "#9e7437";
+        ctx.lineWidth = 4;
+        ctx.strokeRect(off + 2, off + 2, s - 4, s - 4);
+        ctx.strokeStyle = "#3f2e16";
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(off, off, s, s);
+
+        ctx.strokeStyle = "#9e7437";
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(off + 3, off + 3); ctx.lineTo(off + s - 3, off + s - 3);
+        ctx.stroke();
+        ctx.strokeStyle = "#3f2e16";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        const rivets = [
+          [off + 6, off + 6], [off + s - 6, off + 6],
+          [off + 6, off + s - 6], [off + s - 6, off + s - 6]
+        ];
+        rivets.forEach(([rx, ry]) => {
+          ctx.fillStyle = "#94a3b8";
+          ctx.beginPath(); ctx.arc(rx, ry, 2.2, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = "#1e293b"; ctx.lineWidth = 1; ctx.stroke();
+        });
+        can.refresh();
+      }
+    }
+
+    // 1.1 Crate Destroyed
+    {
+      const size = 64;
+      const can = this.textures.createCanvas("obs_crate_destroyed", size, size);
+      if (can) {
+        const ctx = can.getContext();
+        ctx.fillStyle = "rgba(63, 46, 22, 0.4)";
+        ctx.fillRect(10, 10, 44, 44);
+        ctx.strokeStyle = "rgba(40, 28, 12, 0.5)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(10, 10, 44, 44);
+        can.refresh();
+      }
+    }
+
+    // 2. Barrel (Red explosive barrel - Suroi style: 64x64)
+    {
+      const size = 64;
+      const can = this.textures.createCanvas("obs_barrel", size, size);
+      if (can) {
+        const ctx = can.getContext();
+        const cx = size / 2, cy = size / 2, r = 24;
+
+        ctx.fillStyle = "rgba(0, 0, 0, 0.32)";
+        ctx.beginPath(); ctx.arc(cx + 4, cy + 4, r, 0, Math.PI * 2); ctx.fill();
+
+        ctx.fillStyle = "#b91c1c";
+        ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = "#1e293b"; ctx.lineWidth = 3; ctx.stroke();
+
+        ctx.fillStyle = "#7f1d1d";
+        ctx.beginPath(); ctx.arc(cx, cy, r * 0.72, 0, Math.PI * 2); ctx.fill();
+
+        ctx.strokeStyle = "#facc15"; ctx.lineWidth = 3.5;
+        ctx.beginPath(); ctx.arc(cx, cy, r * 0.52, 0, Math.PI * 2); ctx.stroke();
+
+        ctx.fillStyle = "#fef08a";
+        ctx.beginPath(); ctx.arc(cx, cy, r * 0.25, 0, Math.PI * 2); ctx.fill();
+        can.refresh();
+      }
+    }
+
+    // 2.1 Barrel Destroyed
+    {
+      const size = 64;
+      const can = this.textures.createCanvas("obs_barrel_destroyed", size, size);
+      if (can) {
+        const ctx = can.getContext();
+        ctx.fillStyle = "rgba(69, 10, 10, 0.45)";
+        ctx.beginPath(); ctx.arc(size / 2, size / 2, 18, 0, Math.PI * 2); ctx.fill();
+        can.refresh();
+      }
+    }
+
+    // 3. Wall (64x64)
+    {
+      const size = 64;
+      const can = this.textures.createCanvas("obs_wall", size, size);
+      if (can) {
+        const ctx = can.getContext();
+        const s = 56, off = (size - s) / 2;
+        ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+        ctx.fillRect(off + 3, off + 3, s, s);
+
+        ctx.fillStyle = "#334155";
+        ctx.fillRect(off, off, s, s);
+
+        ctx.strokeStyle = "#1e293b"; ctx.lineWidth = 2.5;
+        ctx.strokeRect(off, off, s, s);
+
+        ctx.fillStyle = "#64748b";
+        ctx.fillRect(off + 5, off + 5, s - 10, s - 10);
+        ctx.strokeStyle = "#475569"; ctx.lineWidth = 1;
+        ctx.strokeRect(off + 5, off + 5, s - 10, s - 10);
+        can.refresh();
+      }
+    }
+
+    // 4. Boulder / Rock (100x100)
+    {
+      const size = 100;
+      const can = this.textures.createCanvas("obs_boulder", size, size);
+      if (can) {
+        const ctx = can.getContext();
+        const cx = size / 2, cy = size / 2, r = 40;
+        const pts = [
+          { x: cx - r * 0.75, y: cy - r * 0.25 },
+          { x: cx - r * 0.40, y: cy - r * 0.85 },
+          { x: cx + r * 0.45, y: cy - r * 0.80 },
+          { x: cx + r * 0.88, y: cy - r * 0.20 },
+          { x: cx + r * 0.80, y: cy + r * 0.65 },
+          { x: cx + r * 0.10, y: cy + r * 0.90 },
+          { x: cx - r * 0.68, y: cy + r * 0.60 }
+        ];
+
+        ctx.fillStyle = "rgba(0, 0, 0, 0.28)";
+        ctx.beginPath(); ctx.arc(cx + 4, cy + 5, r, 0, Math.PI * 2); ctx.fill();
+
+        ctx.fillStyle = "#787f86";
+        ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.closePath(); ctx.fill();
+
+        ctx.fillStyle = "#555a60";
+        ctx.beginPath(); ctx.moveTo(pts[4].x, pts[4].y);
+        ctx.lineTo(pts[5].x, pts[5].y); ctx.lineTo(pts[6].x, pts[6].y);
+        ctx.lineTo(cx, cy + r * 0.2); ctx.closePath(); ctx.fill();
+
+        ctx.fillStyle = "#9ba1a8";
+        ctx.beginPath(); ctx.moveTo(pts[1].x, pts[1].y);
+        ctx.lineTo(pts[2].x, pts[2].y); ctx.lineTo(pts[3].x, pts[3].y);
+        ctx.lineTo(cx, cy - r * 0.25); ctx.closePath(); ctx.fill();
+
+        ctx.strokeStyle = "#27292c"; ctx.lineWidth = 2.8;
+        ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.closePath(); ctx.stroke();
+        can.refresh();
+      }
+    }
+
+    // 5. Tree (160x160)
+    {
+      const size = 160;
+      const can = this.textures.createCanvas("obs_tree", size, size);
+      if (can) {
+        const ctx = can.getContext();
+        const cx = size / 2, cy = size / 2, r = 58;
+
+        ctx.fillStyle = "rgba(0, 0, 0, 0.28)";
+        ctx.beginPath(); ctx.arc(cx + 5, cy + 7, r * 1.05, 0, Math.PI * 2); ctx.fill();
+
+        ctx.fillStyle = "#416631";
+        const lobes1 = [
+          [-r * 0.28, r * 0.22, r * 0.58],
+          [r * 0.28, r * 0.25, r * 0.60],
+          [r * 0.32, -r * 0.22, r * 0.55],
+          [-r * 0.25, -r * 0.28, r * 0.58]
+        ];
+        lobes1.forEach(([lx, ly, lr]) => {
+          ctx.beginPath(); ctx.arc(cx + lx, cy + ly, lr, 0, Math.PI * 2); ctx.fill();
+        });
+
+        ctx.fillStyle = "#4a7538";
+        ctx.beginPath(); ctx.arc(cx, cy, r * 0.68, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(cx - r * 0.15, cy - r * 0.12, r * 0.52, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(cx + r * 0.15, cy + r * 0.12, r * 0.52, 0, Math.PI * 2); ctx.fill();
+
+        ctx.fillStyle = "#588a42";
+        ctx.beginPath(); ctx.arc(cx - r * 0.18, cy - r * 0.25, r * 0.38, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(cx + r * 0.22, cy - r * 0.18, r * 0.35, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(cx + r * 0.12, cy + r * 0.28, r * 0.34, 0, Math.PI * 2); ctx.fill();
+
+        ctx.fillStyle = "#5c3a21";
+        ctx.beginPath(); ctx.arc(cx, cy, r * 0.22, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = "#3d2311"; ctx.lineWidth = 1.5; ctx.stroke();
+        can.refresh();
+      }
+    }
+
+    // 6. Bush (180x140)
+    {
+      const w = 180, h = 140;
+      const can = this.textures.createCanvas("obs_bush", w, h);
+      if (can) {
+        const ctx = can.getContext();
+        const cx = w / 2, cy = h / 2;
+
+        ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
+        ctx.beginPath(); ctx.ellipse(cx + 4, cy + 5, w * 0.44, h * 0.40, 0, 0, Math.PI * 2); ctx.fill();
+
+        ctx.fillStyle = "#274e22";
+        ctx.beginPath(); ctx.ellipse(cx, cy, w * 0.42, h * 0.38, 0, 0, Math.PI * 2); ctx.fill();
+
+        ctx.fillStyle = "#35632e";
+        const lobes = [
+          [-w * 0.20, -h * 0.14, h * 0.30],
+          [w * 0.20, -h * 0.12, h * 0.28],
+          [-w * 0.16, h * 0.14, h * 0.28],
+          [w * 0.16, h * 0.14, h * 0.30],
+        ];
+        lobes.forEach(([lx, ly, lr]) => {
+          ctx.beginPath(); ctx.arc(cx + lx, cy + ly, lr, 0, Math.PI * 2); ctx.fill();
+        });
+
+        ctx.fillStyle = "#44773b";
+        ctx.beginPath(); ctx.arc(cx - w * 0.08, cy - h * 0.08, h * 0.22, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(cx + w * 0.08, cy + h * 0.08, h * 0.22, 0, Math.PI * 2); ctx.fill();
+        can.refresh();
+      }
+    }
   }
 
   private drawBush(b: Bush) {
     const container = this.add.container(b.x, b.y).setDepth(20);
-    const g = this.add.graphics();
     const w = b.width || 160, h = b.height || 120;
-
-    // Sombra proyectada del arbusto
-    g.fillStyle(0x000000, 0.25);
-    g.fillEllipse(4, 5, w * 0.48, h * 0.45);
-
-    // Arbusto estilo Suroi con lóbulos verdes orgánicos
-    g.fillStyle(0x274e22, 0.92);
-    g.fillEllipse(0, 0, w * 0.46, h * 0.42);
-
-    g.fillStyle(0x35632e, 0.90);
-    g.fillCircle(-w * 0.22, -h * 0.14, h * 0.32);
-    g.fillCircle(w * 0.22, -h * 0.12, h * 0.30);
-    g.fillCircle(-w * 0.18, h * 0.14, h * 0.30);
-    g.fillCircle(w * 0.18, h * 0.14, h * 0.32);
-
-    g.fillStyle(0x44773b, 0.85);
-    g.fillCircle(-w * 0.1, -h * 0.08, h * 0.24);
-    g.fillCircle(w * 0.1, h * 0.08, h * 0.24);
-
-    container.add(g);
+    const img = this.add.image(0, 0, "obs_bush").setDisplaySize(w, h);
+    container.add(img);
+    this.bushList.push(container);
+    container.setVisible(this.isInCameraView(b.x, b.y, 140));
   }
 
-  /* ── Obstáculos Vectoriales Estilo Suroi.io ────────────────── */
+  /* ── Obstáculos con Sprite Batching & Grilla Espacial ──────── */
   private createObstacle(id: string, obs: Obstacle) {
     const container = this.add.container(obs.x, obs.y).setDepth(30);
-    const gfx = this.add.graphics();
-    container.add(gfx);
+    const texKey = this.getObstacleTextureKey(obs.obstacleType, !!obs.destroyed);
+    const sprite = this.add.image(0, 0, texKey);
+    const targetSize = (obs.radius || 30) * 2;
+    sprite.setDisplaySize(targetSize, targetSize);
+    container.add(sprite);
 
     const vo: VObstacle = {
-      container, gfx, obsType: obs.obstacleType, radius: obs.radius || 30,
-      hp: obs.hp, maxHp: obs.maxHp, destroyed: !!obs.destroyed
+      id, container, sprite, obsType: obs.obstacleType, radius: obs.radius || 30,
+      hp: obs.hp, maxHp: obs.maxHp, destroyed: !!obs.destroyed,
+      x: obs.x, y: obs.y
     };
 
-    this.drawObstacleGfx(vo);
+    if (vo.hp < vo.maxHp && vo.hp > 0) {
+      this.drawObstacleHpBar(vo);
+    }
+
     this.obstacles.set(id, vo);
+    this.obstacleSpatialGrid.insert(vo);
+    if (vo.obsType === "TREE") {
+      this.treeSpatialGrid.insert(vo);
+    }
+
+    container.setVisible(this.isInCameraView(obs.x, obs.y, 140));
 
     obs.onChange(() => {
       vo.hp = obs.hp;
+      const prevDestroyed = vo.destroyed;
       vo.destroyed = !!obs.destroyed;
-      this.drawObstacleGfx(vo);
+      if (prevDestroyed !== vo.destroyed) {
+        this.updateObstacleTexture(vo);
+      }
+      this.drawObstacleHpBar(vo);
     });
   }
 
-  private drawObstacleGfx(vo: VObstacle) {
-    const { gfx, obsType, radius, hp, maxHp, destroyed } = vo;
-    gfx.clear();
+  private getObstacleTextureKey(obsType: string, destroyed: boolean): string {
     if (destroyed) {
-      if (obsType === "CRATE") {
-        gfx.fillStyle(0x3f2e16, 0.45);
-        gfx.fillRect(-radius * 0.8, -radius * 0.8, radius * 1.6, radius * 1.6);
-      } else if (obsType === "BARREL") {
-        gfx.fillStyle(0x450a0a, 0.45);
-        gfx.fillCircle(0, 0, radius * 0.7);
+      if (obsType === "CRATE") return "obs_crate_destroyed";
+      if (obsType === "BARREL") return "obs_barrel_destroyed";
+      return "obs_crate_destroyed";
+    }
+    if (obsType === "CRATE") return "obs_crate";
+    if (obsType === "BARREL") return "obs_barrel";
+    if (obsType === "WALL") return "obs_wall";
+    if (obsType === "BOULDER") return "obs_boulder";
+    if (obsType === "TREE") return "obs_tree";
+    return "obs_crate";
+  }
+
+  private updateObstacleTexture(vo: VObstacle) {
+    const texKey = this.getObstacleTextureKey(vo.obsType, vo.destroyed);
+    vo.sprite.setTexture(texKey);
+    const targetSize = vo.radius * 2;
+    vo.sprite.setDisplaySize(targetSize, targetSize);
+  }
+
+  private drawObstacleHpBar(vo: VObstacle) {
+    if (vo.destroyed || vo.hp >= vo.maxHp || vo.hp <= 0) {
+      if (vo.hpGfx) {
+        vo.hpGfx.destroy();
+        vo.hpGfx = undefined;
       }
       return;
     }
 
-    if (obsType === "CRATE") {
-      // Caja regular estilo Suroi.io regular_crate.svg
-      const s = radius * 1.85;
-      // Sombra proyectada en el suelo
-      gfx.fillStyle(0x000000, 0.28);
-      gfx.fillRect(-s/2 + 5, -s/2 + 5, s, s);
-
-      // Fondo de tablones de madera
-      gfx.fillStyle(0x674b24, 1);
-      gfx.fillRect(-s/2, -s/2, s, s);
-
-      // Separaciones verticales entre tablones (grooves oscuros)
-      gfx.lineStyle(1.5, 0x342612, 1);
-      gfx.lineBetween(-s/6, -s/2, -s/6, s/2);
-      gfx.lineBetween(s/6, -s/2, s/6, s/2);
-
-      // Marco perimetral de madera gruesa
-      gfx.lineStyle(4, 0x9e7437, 1);
-      gfx.strokeRect(-s/2 + 2, -s/2 + 2, s - 4, s - 4);
-      gfx.lineStyle(1.5, 0x3f2e16, 1);
-      gfx.strokeRect(-s/2, -s/2, s, s);
-
-      // Travesaño diagonal central reforzado estilo Suroi
-      gfx.lineStyle(5.5, 0x9e7437, 1);
-      gfx.lineBetween(-s/2 + 3, -s/2 + 3, s/2 - 3, s/2 - 3);
-      gfx.lineStyle(1.5, 0x3f2e16, 1);
-      gfx.lineBetween(-s/2 + 3, -s/2 + 3, s/2 - 3, s/2 - 3);
-
-      // 4 Remaches esquineros metálicos con borde oscuro
-      const rivetOff = s/2 - 5;
-      const rivets = [
-        [-rivetOff, -rivetOff], [rivetOff, -rivetOff],
-        [-rivetOff, rivetOff], [rivetOff, rivetOff]
-      ];
-      rivets.forEach(([rx, ry]) => {
-        gfx.fillStyle(0x808080, 1);
-        gfx.fillCircle(rx, ry, 2.2);
-        gfx.lineStyle(1, 0x2e2e2e, 1);
-        gfx.strokeCircle(rx, ry, 2.2);
-      });
-
-    } else if (obsType === "BARREL") {
-      // Barril explosivo estilo Suroi
-      gfx.fillStyle(0x000000, 0.35);
-      gfx.fillCircle(4, 5, radius);
-
-      // Cuerpo rojo intenso
-      gfx.fillStyle(0xb91c1c, 1);
-      gfx.fillCircle(0, 0, radius);
-      gfx.lineStyle(3, 0x1f2937, 1);
-      gfx.strokeCircle(0, 0, radius);
-
-      // Aro interior metálico
-      gfx.fillStyle(0x7f1d1d, 1);
-      gfx.fillCircle(0, 0, radius * 0.72);
-
-      // Franja de peligro amarilla
-      gfx.lineStyle(3.5, 0xfacc15, 1);
-      gfx.strokeCircle(0, 0, radius * 0.52);
-
-      // Tapa central industrial
-      gfx.fillStyle(0xfef08a, 1);
-      gfx.fillCircle(0, 0, radius * 0.25);
-
-    } else if (obsType === "BOULDER") {
-      // Roca facetada estilo Suroi.io rock_1.svg
-      gfx.fillStyle(0x000000, 0.28);
-      gfx.fillCircle(4, 5, radius);
-
-      const r = radius;
-      const pts = [
-        { x: -r * 0.75, y: -r * 0.25 },
-        { x: -r * 0.40, y: -r * 0.85 },
-        { x:  r * 0.45, y: -r * 0.80 },
-        { x:  r * 0.88, y: -r * 0.20 },
-        { x:  r * 0.80, y:  r * 0.65 },
-        { x:  r * 0.10, y:  r * 0.90 },
-        { x: -r * 0.68, y:  r * 0.60 }
-      ];
-
-      // Cuerpo base
-      gfx.fillStyle(0x787f86, 1);
-      gfx.beginPath();
-      gfx.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) gfx.lineTo(pts[i].x, pts[i].y);
-      gfx.closePath();
-      gfx.fillPath();
-
-      // Faceta de sombra inferior derecha
-      gfx.fillStyle(0x555a60, 1);
-      gfx.beginPath();
-      gfx.moveTo(pts[4].x, pts[4].y);
-      gfx.lineTo(pts[5].x, pts[5].y);
-      gfx.lineTo(pts[6].x, pts[6].y);
-      gfx.lineTo(0, r * 0.2);
-      gfx.closePath();
-      gfx.fillPath();
-
-      // Faceta de luz superior izquierda
-      gfx.fillStyle(0x9ba1a8, 1);
-      gfx.beginPath();
-      gfx.moveTo(pts[1].x, pts[1].y);
-      gfx.lineTo(pts[2].x, pts[2].y);
-      gfx.lineTo(pts[3].x, pts[3].y);
-      gfx.lineTo(0, -r * 0.25);
-      gfx.closePath();
-      gfx.fillPath();
-
-      // Contorno oscuro nítido
-      gfx.lineStyle(2.8, 0x27292c, 1);
-      gfx.beginPath();
-      gfx.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) gfx.lineTo(pts[i].x, pts[i].y);
-      gfx.closePath();
-      gfx.strokePath();
-
-    } else if (obsType === "TREE") {
-      // Árbol estilo Suroi.io oak_tree_leaves_1.svg
-      gfx.fillStyle(0x000000, 0.28);
-      gfx.fillCircle(5, 7, radius * 1.05);
-
-      const r = radius;
-      // Lóbulos base oscuros
-      gfx.fillStyle(0x416631, 1);
-      gfx.fillCircle(-r * 0.28,  r * 0.22, r * 0.58);
-      gfx.fillCircle( r * 0.28,  r * 0.25, r * 0.60);
-      gfx.fillCircle( r * 0.32, -r * 0.22, r * 0.55);
-      gfx.fillCircle(-r * 0.25, -r * 0.28, r * 0.58);
-
-      // Lóbulos intermedios
-      gfx.fillStyle(0x4a7538, 0.95);
-      gfx.fillCircle(0, 0, r * 0.68);
-      gfx.fillCircle(-r * 0.15, -r * 0.12, r * 0.52);
-      gfx.fillCircle( r * 0.15,  r * 0.12, r * 0.52);
-
-      // Crestas de hojas iluminadas verde Suroi
-      gfx.fillStyle(0x588a42, 0.92);
-      gfx.fillCircle(-r * 0.18, -r * 0.25, r * 0.38);
-      gfx.fillCircle( r * 0.22, -r * 0.18, r * 0.35);
-      gfx.fillCircle( r * 0.12,  r * 0.28, r * 0.34);
-
-      // Tronco central visible entre las hojas
-      gfx.fillStyle(0x5c3a21, 1);
-      gfx.fillCircle(0, 0, r * 0.22);
-      gfx.lineStyle(1.5, 0x3d2311, 1);
-      gfx.strokeCircle(0, 0, r * 0.22);
+    if (!vo.hpGfx) {
+      vo.hpGfx = this.add.graphics();
+      vo.container.add(vo.hpGfx);
     }
 
-    if (hp < maxHp && hp > 0) {
-      const w = 42;
-      const ratio = hp / maxHp;
-      gfx.fillStyle(0x0f172a, 0.85);
-      gfx.fillRect(-w/2, -radius - 14, w, 5);
-      gfx.fillStyle(0xef4444, 1);
-      gfx.fillRect(-w/2, -radius - 14, w * ratio, 5);
-    }
+    vo.hpGfx.clear();
+    const w = 42;
+    const ratio = Math.max(0, Math.min(1, vo.hp / vo.maxHp));
+    vo.hpGfx.fillStyle(0x0f172a, 0.85);
+    vo.hpGfx.fillRect(-w / 2, -vo.radius - 14, w, 5);
+    vo.hpGfx.fillStyle(0xef4444, 1);
+    vo.hpGfx.fillRect(-w / 2, -vo.radius - 14, w * ratio, 5);
   }
 
   /* ── Pickups (Loot en el Suelo Estilo Suroi.io) ─────────────── */
@@ -1703,10 +2067,12 @@ export class MainScene extends Phaser.Scene {
       x: item.x, y: item.y
     };
     this.items.set(id, vi);
+    this.itemSpatialGrid.insert(vi);
+    container.setVisible(item.active && this.isInCameraView(item.x, item.y, 100));
 
     item.onChange(() => {
-      container.setVisible(item.active);
       vi.active = item.active;
+      container.setVisible(item.active && this.isInCameraView(item.x, item.y, 100));
     });
   }
 
@@ -1830,8 +2196,8 @@ export class MainScene extends Phaser.Scene {
   /* ── Personajes Gatos (Battle Cats) ──────────────────────── */
   private createPlayer(id: string, p: Player) {
     const isMe = id === this.myId;
-    const px = typeof p.x === "number" && p.x !== 0 ? p.x : 2400;
-    const py = typeof p.y === "number" && p.y !== 0 ? p.y : 2400;
+    const px = typeof p.x === "number" && p.x !== 0 ? p.x : 4000;
+    const py = typeof p.y === "number" && p.y !== 0 ? p.y : 4000;
 
     const container = this.add.container(px, py).setDepth(60);
     const uiContainer = this.add.container(px, py).setDepth(65);
@@ -2704,25 +3070,27 @@ export class MainScene extends Phaser.Scene {
         let nextX = me.container.x + ndx * baseSpeed * dtSec;
         let nextY = me.container.y + ndy * baseSpeed * dtSec;
 
-        // Obstacle collision response (0ms local prediction)
+        // Obstacle collision response con Grilla Espacial O(1) (0ms local prediction)
         if (!isGhost) {
           const pRadius = 22;
-          this.obstacles.forEach((obs) => {
-            if (obs.destroyed) return;
-            const dist = Math.hypot(nextX - obs.container.x, nextY - obs.container.y);
+          const nearbyObs = this.obstacleSpatialGrid.queryNear(nextX, nextY, 70);
+          for (let i = 0; i < nearbyObs.length; i++) {
+            const obs = nearbyObs[i];
+            if (obs.destroyed) continue;
+            const dist = Math.hypot(nextX - obs.x, nextY - obs.y);
             const minDist = pRadius + obs.radius;
             if (dist < minDist && dist > 0) {
               const overlap = minDist - dist;
-              const nx = (nextX - obs.container.x) / dist;
-              const ny = (nextY - obs.container.y) / dist;
+              const nx = (nextX - obs.x) / dist;
+              const ny = (nextY - obs.y) / dist;
               nextX += nx * overlap;
               nextY += ny * overlap;
             }
-          });
+          }
         }
 
-        me.container.x = Math.max(30, Math.min(4800 - 30, nextX));
-        me.container.y = Math.max(30, Math.min(4800 - 30, nextY));
+        me.container.x = Math.max(30, Math.min(8000 - 30, nextX));
+        me.container.y = Math.max(30, Math.min(8000 - 30, nextY));
 
         // Partículas de pasos y chapoteo de agua
         const stepDist = Math.hypot(me.container.x - this.lastPlayerPos.x, me.container.y - this.lastPlayerPos.y);
@@ -2772,17 +3140,52 @@ export class MainScene extends Phaser.Scene {
         this.lastMoveSendTime = time;
       }
 
-      // Transparencia Dinámica de Árboles (ver el personaje bajo copas frondosas)
-      this.obstacles.forEach((obs) => {
-        if (obs.obsType === "TREE" && !obs.destroyed) {
-          const d = Math.hypot(me.container.x - obs.container.x, me.container.y - obs.container.y);
-          if (d < obs.radius + 18) {
-            obs.container.setAlpha(0.38);
-          } else {
-            obs.container.setAlpha(1);
+      // Transparencia Dinámica de Árboles con Grilla Espacial O(1)
+      const nearbyTrees = this.treeSpatialGrid.queryNear(me.container.x, me.container.y, 110);
+      let insideTree: VObstacle | null = null;
+      for (let i = 0; i < nearbyTrees.length; i++) {
+        const tree = nearbyTrees[i];
+        if (!tree.destroyed) {
+          const d = Math.hypot(me.container.x - tree.x, me.container.y - tree.y);
+          if (d < tree.radius + 18) {
+            insideTree = tree;
+            break;
           }
         }
-      });
+      }
+      if (insideTree !== this.currentFadedTree) {
+        if (this.currentFadedTree) {
+          this.currentFadedTree.container.setAlpha(1);
+        }
+        if (insideTree) {
+          insideTree.container.setAlpha(0.38);
+        }
+        this.currentFadedTree = insideTree;
+      }
+
+      // Actualizar oclusión de tejados y sigilo dentro de estructuras
+      for (let i = 0; i < this.vStructures.length; i++) {
+        const vst = this.vStructures[i];
+        let inside = false;
+        if (!me.isGhost) {
+          const halfW = vst.def.width / 2;
+          const halfH = vst.def.height / 2;
+          inside = (
+            me.container.x >= vst.def.x - halfW &&
+            me.container.x <= vst.def.x + halfW &&
+            me.container.y >= vst.def.y - halfH &&
+            me.container.y <= vst.def.y + halfH
+          );
+        }
+        vst.isInside = inside;
+        const targetAlpha = inside ? 0.0 : 1.0;
+        vst.roofContainer.alpha = Phaser.Math.Linear(vst.roofContainer.alpha, targetAlpha, 0.16);
+
+        // Culling de vista de cámara para estructuras
+        const inCam = this.isInCameraView(vst.def.x, vst.def.y, Math.max(vst.def.width, vst.def.height) / 2 + 100);
+        vst.interiorContainer.setVisible(inCam);
+        vst.roofContainer.setVisible(inCam && vst.roofContainer.alpha > 0.02);
+      }
 
       // Sistema de Detección de Proximidad y Prompt de Loot ([F] Recoger / Cambiar)
       this.updateLootInteraction(me, time);
@@ -2919,6 +3322,39 @@ export class MainScene extends Phaser.Scene {
     }
 
 
+    // 2.3 Frustum Culling Periódico para Obstáculos, Arbustos e Items (Skip offscreen rendering)
+    this.cullingTimer += delta;
+    if (this.cullingTimer >= 60) {
+      this.cullingTimer = 0;
+      const cam = this.cameras.main.worldView;
+      const pad = 120;
+      const x1 = cam.x - pad, x2 = cam.right + pad;
+      const y1 = cam.y - pad, y2 = cam.bottom + pad;
+
+      this.obstacles.forEach((obs) => {
+        const vis = obs.x >= x1 && obs.x <= x2 && obs.y >= y1 && obs.y <= y2;
+        if (obs.container.visible !== vis) {
+          obs.container.setVisible(vis);
+        }
+      });
+
+      for (let i = 0; i < this.bushList.length; i++) {
+        const b = this.bushList[i];
+        const vis = b.x >= x1 && b.x <= x2 && b.y >= y1 && b.y <= y2;
+        if (b.visible !== vis) {
+          b.setVisible(vis);
+        }
+      }
+
+      this.items.forEach((item) => {
+        if (!item.active) return;
+        const vis = item.x >= x1 && item.x <= x2 && item.y >= y1 && item.y <= y2;
+        if (item.container.visible !== vis) {
+          item.container.setVisible(vis);
+        }
+      });
+    }
+
     // Zona de Tinta Circular Perfecta
     this.drawZone();
 
@@ -2947,14 +3383,16 @@ export class MainScene extends Phaser.Scene {
     let closest: VItem | null = null;
     let closestDist = 65;
 
-    this.items.forEach((item) => {
-      if (!item.active) return;
+    const nearbyItems = this.itemSpatialGrid.queryNear(me.container.x, me.container.y, 80);
+    for (let i = 0; i < nearbyItems.length; i++) {
+      const item = nearbyItems[i];
+      if (!item.active) continue;
       const d = Math.hypot(me.container.x - item.x, me.container.y - item.y);
       if (d < closestDist) {
         closestDist = d;
         closest = item;
       }
-    });
+    }
 
     this.nearestItem = closest;
 
@@ -3119,15 +3557,15 @@ export class MainScene extends Phaser.Scene {
     const { x, y, r } = this.zone;
     g.clear();
 
-    // Suroi-style niebla roja de tormenta tóxica optimizada para 60 FPS
+    // Suroi-style niebla roja de tormenta tóxica optimizada para 60 FPS (8000x8000)
     g.fillStyle(0x881337, 0.45);
-    if (y - r > 0) g.fillRect(0, 0, 4800, y - r);
-    if (y + r < 4800) g.fillRect(0, y + r, 4800, 4800 - (y + r));
-    if (x - r > 0) g.fillRect(0, Math.max(0, y - r), x - r, Math.min(4800, 2 * r));
-    if (x + r < 4800) g.fillRect(x + r, Math.max(0, y - r), 4800 - (x + r), Math.min(4800, 2 * r));
+    if (y - r > 0) g.fillRect(0, 0, 8000, y - r);
+    if (y + r < 8000) g.fillRect(0, y + r, 8000, 8000 - (y + r));
+    if (x - r > 0) g.fillRect(0, Math.max(0, y - r), x - r, Math.min(8000, 2 * r));
+    if (x + r < 8000) g.fillRect(x + r, Math.max(0, y - r), 8000 - (x + r), Math.min(8000, 2 * r));
 
     // Anillo suave para cubrir esquinas de la cámara sin sobrecarga de GPU
-    const ringThickness = Math.min(600, Math.max(60, 4800 - r));
+    const ringThickness = Math.min(800, Math.max(60, 8000 - r));
     g.lineStyle(ringThickness, 0x881337, 0.45);
     g.strokeCircle(x, y, r + ringThickness / 2);
 
@@ -3138,16 +3576,17 @@ export class MainScene extends Phaser.Scene {
     g.strokeCircle(x, y, r - 3);
   }
 
-  /* ── Minimapa con Orografía de Isla Suroi.io ───────────────── */
-  private drawMinimap() {
-    const g = this.minimapGfx;
+  /* ── Minimapa con Orografía de Isla Suroi.io (Base Cacheada en 1 Draw) ─ */
+  private drawMinimapBase() {
+    if (!this.minimapBaseGfx) return;
+    const g = this.minimapBaseGfx;
     g.clear();
 
     const SIZE = 136;
     const PAD = 20;
     const mx = this.scale.width - SIZE - PAD;
     const my = this.scale.height - SIZE - PAD;
-    const sc = SIZE / 4800;
+    const sc = SIZE / 8000;
 
     // 1. Océano del minimapa
     g.fillStyle(0x1a4a7a, 0.9);
@@ -3157,21 +3596,21 @@ export class MainScene extends Phaser.Scene {
 
     // 2. Playa de arena del minimapa
     g.fillStyle(0xc4a96b, 0.85);
-    g.fillRoundedRect(mx + 200 * sc, my + 200 * sc, 4400 * sc, 4400 * sc, 6);
+    g.fillRoundedRect(mx + 340 * sc, my + 340 * sc, 7320 * sc, 7320 * sc, 6);
 
     // 3. Hierba central del minimapa
     g.fillStyle(0x56893b, 0.9);
-    g.fillRoundedRect(mx + 360 * sc, my + 360 * sc, 4080 * sc, 4080 * sc, 4);
+    g.fillRoundedRect(mx + 540 * sc, my + 540 * sc, 6920 * sc, 6920 * sc, 4);
 
     // 4. Río del minimapa
-    g.lineStyle(4, 0x2869ad, 0.85);
+    g.lineStyle(3, 0x2869ad, 0.85);
     const riverPts = [
-      { x: 2400, y: 0 },
-      { x: 2520, y: 900 },
-      { x: 2360, y: 1900 },
-      { x: 2260, y: 2900 },
-      { x: 2580, y: 3900 },
-      { x: 2480, y: 4800 },
+      { x: 4000, y: 0 },
+      { x: 4200, y: 1500 },
+      { x: 3900, y: 3100 },
+      { x: 3800, y: 4900 },
+      { x: 4300, y: 6500 },
+      { x: 4100, y: 8000 },
     ];
     g.beginPath();
     g.moveTo(mx + riverPts[0].x * sc, my + riverPts[0].y * sc);
@@ -3179,6 +3618,29 @@ export class MainScene extends Phaser.Scene {
       g.lineTo(mx + riverPts[i].x * sc, my + riverPts[i].y * sc);
     }
     g.strokePath();
+
+    // 4.1 Estructuras y Complejos Tácticos en el Minimapa
+    STRUCTURES.forEach(st => {
+      const sx = mx + (st.x - st.width / 2) * sc;
+      const sy = my + (st.y - st.height / 2) * sc;
+      const sw = Math.max(3, st.width * sc);
+      const sh = Math.max(3, st.height * sc);
+      g.fillStyle(0x1e293b, 0.92);
+      g.fillRect(sx, sy, sw, sh);
+      g.lineStyle(1, 0x38bdf8, 0.8);
+      g.strokeRect(sx, sy, sw, sh);
+    });
+  }
+
+  private drawMinimap() {
+    const g = this.minimapGfx;
+    g.clear();
+
+    const SIZE = 136;
+    const PAD = 20;
+    const mx = this.scale.width - SIZE - PAD;
+    const my = this.scale.height - SIZE - PAD;
+    const sc = SIZE / 8000;
 
     // 5. Círculo de la Zona Segura y Tormenta
     const zx = mx + this.zone.x * sc;
@@ -3196,13 +3658,11 @@ export class MainScene extends Phaser.Scene {
       const py = my + p.container.y * sc;
 
       if (p.isMe) {
-        // Marcador del jugador local con flecha de orientación
         g.fillStyle(0x10b981, 1);
         g.fillCircle(px, py, 4);
         g.lineStyle(1.5, 0xffffff, 1);
         g.strokeCircle(px, py, 4);
 
-        // Pequeño puntero de dirección
         const rot = p.tr;
         g.lineStyle(2, 0xffffff, 1);
         g.lineBetween(px, py, px + Math.cos(rot) * 7, py + Math.sin(rot) * 7);

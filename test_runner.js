@@ -4,7 +4,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 const WebSocket = require(path.join(__dirname, 'server', 'node_modules', 'ws'));
 
-const ARTIFACT_DIR = 'C:\\Users\\lucam\\.gemini\\antigravity-ide\\brain\\58af40b1-2bb0-427f-9c8b-72a6f493b83b';
+const ARTIFACT_DIR = 'C:\\Users\\lucam\\.gemini\\antigravity-ide\\brain\\4af298a9-07b6-4acf-a3a8-5f90b82ed8bb';
 const FRAMES_DIR = path.join(ARTIFACT_DIR, 'scratch', 'frames');
 
 if (!fs.existsSync(FRAMES_DIR)) {
@@ -464,6 +464,8 @@ async function main() {
   const inputPattern = path.join(FRAMES_DIR, 'frame_%05d.jpg');
   const webpVideoPath = path.join(ARTIFACT_DIR, 'battlecats_gameplay_fluid.webp');
   const mp4VideoPath = path.join(ARTIFACT_DIR, 'battlecats_gameplay_fluid.mp4');
+  const publicMp4 = path.join(__dirname, 'client', 'public', 'gameplay.mp4');
+  const publicWebm = path.join(__dirname, 'client', 'public', 'gameplay.webm');
 
   // Calcular framerate de reproducción según frames capturados
   const videoFramerate = Math.min(60, Math.max(24, Math.round(frameCount / elapsedSec)));
@@ -483,6 +485,16 @@ async function main() {
     console.log('Ejecutando render MP4...');
     execSync(ffmpegMp4Cmd, { stdio: 'ignore' });
     console.log('✅ Video MP4 generado exitosamente en:', mp4VideoPath);
+
+    // Copiar a client/public para el fondo del StartScreen
+    fs.copyFileSync(mp4VideoPath, publicMp4);
+    console.log('✅ Video MP4 copiado a client/public/gameplay.mp4');
+
+    // Generar también WebM optimizado
+    try {
+      execSync(`ffmpeg -y -i "${publicMp4}" -c:v libvpx-vp9 -b:v 800k -crf 30 "${publicWebm}"`, { stdio: 'ignore' });
+      console.log('✅ Video WebM generado en client/public/gameplay.webm');
+    } catch {}
   } catch (err) {
     console.warn('Nota: MP4 generation fallback:', err.message);
   }
