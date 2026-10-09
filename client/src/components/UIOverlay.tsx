@@ -87,7 +87,9 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
   });
 
   const onConn = useCallback((e: Event) => setConn((e as CustomEvent).detail), []);
-  const onPlayer = useCallback((e: Event) => setPlayer((e as CustomEvent).detail), []);
+  // Se combina con el estado anterior: algunas actualizaciones son parciales (p.ej. al
+  // cambiar de arma) y reemplazar todo dejaba campos en undefined (pantalla en negro).
+  const onPlayer = useCallback((e: Event) => setPlayer(prev => ({ ...prev, ...(e as CustomEvent).detail })), []);
   const onZone = useCallback((e: Event) => setZone((e as CustomEvent).detail), []);
   const onAlive = useCallback((e: Event) => setAlive((e as CustomEvent).detail), []);
   const onSseTelemetry = useCallback((e: Event) => {
@@ -490,16 +492,17 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
       {/* ── BARRA MODO FANTASMA (arriba, no tapa el centro de la pantalla) ── */}
       {player.isGhost && !victory && (() => {
         const TRAP_COOLDOWN = 6.0; // igual que el servidor (JungleRoom: trapCooldown = 6.0)
-        const ready = player.trapCooldown <= 0;
-        const progress = ready ? 1 : Math.max(0, Math.min(1, 1 - player.trapCooldown / TRAP_COOLDOWN));
+        const cooldown = player.trapCooldown ?? 0;
+        const ready = cooldown <= 0;
+        const progress = ready ? 1 : Math.max(0, Math.min(1, 1 - cooldown / TRAP_COOLDOWN));
         return (
-          <div className="absolute left-1/2 -translate-x-1/2 top-32 pointer-events-auto glass-panel border border-cyan-500/40 bg-slate-950/80 px-4 py-2 rounded-xl shadow-xl flex items-center gap-3 w-[min(92vw,460px)]">
+          <div className="absolute left-1/2 -translate-x-1/2 top-32 pointer-events-auto glass-panel border border-cyan-500/40 bg-slate-950/80 px-4 py-2 rounded-xl shadow-xl flex items-center gap-3 w-[min(92vw,360px)]">
             <span className="text-cyan-400 font-black text-xs whitespace-nowrap">👻 FANTASMA</span>
             <div className="flex-1 min-w-0">
               <div className="flex justify-between text-[10px] font-bold mb-1">
-                <span className="text-cyan-200 truncate">Clic derecho: plantar trampa</span>
-                <span className={`font-mono ml-2 ${ready ? "text-emerald-400" : "text-amber-400"}`}>
-                  {ready ? "¡Trampa lista!" : `${player.trapCooldown.toFixed(1)}s`}
+                <span className="text-cyan-200 truncate">Clic der.: trampa</span>
+                <span className={`font-mono ml-2 whitespace-nowrap ${ready ? "text-emerald-400" : "text-amber-400"}`}>
+                  {ready ? "¡Trampa lista!" : `${cooldown.toFixed(1)}s`}
                 </span>
               </div>
               <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
@@ -619,8 +622,13 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
                 return (
                   <button
                     key={w.id}
+                    type="button"
+                    tabIndex={-1}
+                    // sin foco al hacer clic: evita el contorno de foco del navegador
+                    // y que la barra espaciadora (roll) "apriete" el slot
+                    onMouseDown={(e) => e.preventDefault()}
                     onClick={() => selectWeapon(w.id)}
-                    className={`px-3 py-2 rounded-xl flex flex-col items-center min-w-[54px] transition cursor-pointer border ${
+                    className={`px-3 py-2 rounded-xl flex flex-col items-center min-w-[54px] transition cursor-pointer border focus:outline-none ${
                       active
                         ? "bg-emerald-500/25 border-emerald-400 text-white scale-105 shadow-lg"
                         : "bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"

@@ -12,6 +12,9 @@ import {
   CAT_SPRITE_SCALE,
 } from "../catSprites";
 
+/** Margen inferior del minimapa: queda por encima de la barra de controles del HUD. */
+const MINIMAP_BOTTOM = 84;
+
 /** Indicadores de rango/mira en pixel art (false = versión vectorial original). */
 const PIXEL_AIM = true;
 
@@ -525,6 +528,10 @@ export class MainScene extends Phaser.Scene {
           v.tr = pState.rot;
           v.hp = pState.hp;
           v.shield = pState.shield;
+          if (typeof pState.isGhost === "boolean" && pState.isGhost !== v.isGhost) {
+            v.isGhost = pState.isGhost;
+            this.applyGhostTransition(v);
+          }
           if (pState.w && pState.w !== v.equippedWeapon) {
             v.equippedWeapon = pState.w;
             this.drawCat(v);
@@ -2784,27 +2791,7 @@ export class MainScene extends Phaser.Scene {
       }
     }
 
-    if (ghostChanged) {
-      if (v.isGhost) {
-        v.hpBg.setVisible(false);
-        v.hpFill.setVisible(false);
-        v.shdFill.setVisible(false);
-        v.label.setText((v.isMe ? "TÚ" : v.name) + " 👻");
-        v.container.setAlpha(0.5);
-        v.uiContainer.setAlpha(0.7);
-      } else {
-        v.hpBg.setVisible(true);
-        v.hpFill.setVisible(true);
-        v.shdFill.setVisible(true);
-        v.label.setText(v.isMe ? "TÚ 🐾" : v.name);
-        v.container.setAlpha(1);
-        v.uiContainer.setAlpha(1);
-      }
-      v.lastGhost = v.isGhost;
-      if (v.isGhost) this.createTomb(v);
-      else this.destroyTomb(v);
-      this.drawCat(v);
-    }
+    if (ghostChanged) this.applyGhostTransition(v);
 
 
     if (v.isMe) {
@@ -2829,6 +2816,31 @@ export class MainScene extends Phaser.Scene {
         buffTimer: p.buffTimer ?? 0,
       });
     }
+  }
+
+  /** Pasaje vivo <-> fantasma (HUD del personaje, tumba y sprite). Se llama tanto
+   *  desde la sincronización de Colyseus como desde el tick SSE: si solo dependía de
+   *  uno, un bot muerto podía seguir figurando vivo (punto rojo quieto en el minimapa). */
+  private applyGhostTransition(v: VPlayer) {
+    if (v.isGhost) {
+      v.hpBg.setVisible(false);
+      v.hpFill.setVisible(false);
+      v.shdFill.setVisible(false);
+      v.label.setText((v.isMe ? "TÚ" : v.name) + " 👻");
+      v.container.setAlpha(hasGhostSprites() ? 0.9 : 0.5);
+      v.uiContainer.setAlpha(0.7);
+    } else {
+      v.hpBg.setVisible(true);
+      v.hpFill.setVisible(true);
+      v.shdFill.setVisible(true);
+      v.label.setText(v.isMe ? "TÚ 🐾" : v.name);
+      v.container.setAlpha(1);
+      v.uiContainer.setAlpha(1);
+    }
+    v.lastGhost = v.isGhost;
+    if (v.isGhost) this.createTomb(v);
+    else this.destroyTomb(v);
+    this.drawCat(v);
   }
 
   /** Tumba pixel donde murió el jugador + gatito fantasma que la ronda.
@@ -4120,7 +4132,7 @@ export class MainScene extends Phaser.Scene {
     const SIZE = 136;
     const PAD = 20;
     const mx = this.scale.width - SIZE - PAD;
-    const my = this.scale.height - SIZE - PAD;
+    const my = this.scale.height - SIZE - MINIMAP_BOTTOM;
     const sc = SIZE / 8000;
 
     // 1. Océano del minimapa
@@ -4174,7 +4186,7 @@ export class MainScene extends Phaser.Scene {
     const SIZE = 136;
     const PAD = 20;
     const mx = this.scale.width - SIZE - PAD;
-    const my = this.scale.height - SIZE - PAD;
+    const my = this.scale.height - SIZE - MINIMAP_BOTTOM;
     const sc = SIZE / 8000;
 
     // 5. Círculo de la Zona Segura y Tormenta
