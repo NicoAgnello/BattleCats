@@ -3544,8 +3544,8 @@ export class MainScene extends Phaser.Scene {
       }
     });
 
-    // 2.1 Tumbas: el gatito fantasma ronda la tumba; los vivos no ven fantasmas ajenos
-    const meGhost = !!me?.isGhost;
+    // 2.1 Tumbas: el gatito fantasma ronda la tumba; los fantasmas ajenos no se ven
+    // nunca (tampoco siendo fantasma: los bots muertos quedaban parados sobre su tumba)
     this.players.forEach(v => {
       if (v.tomb?.kitten) {
         const t = v.tomb;
@@ -3554,7 +3554,7 @@ export class MainScene extends Phaser.Scene {
         t.kitten!.setPosition(Math.round(kx / 2) * 2, Math.round(ky / 2) * 2);
         t.kitten!.setFlipX(Math.sin(t.angle) < 0);   // mira hacia donde camina
       }
-      if (v.isGhost && !v.isMe && !meGhost) {
+      if (v.isGhost && !v.isMe) {
         if (v.container.visible) v.container.setVisible(false);
         if (v.uiContainer.visible) v.uiContainer.setVisible(false);
       }
