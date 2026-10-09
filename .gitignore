@@ -1,0 +1,20 @@
+# Dependencias (cada uno las instala con npm install)
+node_modules/
+
+# Salida de compilación (se genera con npm run build)
+dist/
+
+# Variables de entorno
+.env
+.env.*
+*.env
+!.env.example
+
+# Sistema operativo / editores
+.DS_Store
+Thumbs.db
+
+# Logs y cachés
+*.log
+npm-debug.log*
+.vite/
