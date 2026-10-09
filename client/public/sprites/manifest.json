@@ -155,5 +155,25 @@
         0
       ]
     }
+  },
+  "bullets": {
+    "SHOTGUN": "bala-perdigon",
+    "LASER": "bala-pistola",
+    "SNIPER": "bala-sniper"
+  },
+  "ghosts": [
+    "juego-fantasma-sargento",
+    "juego-fantasma-ceniza",
+    "juego-fantasma-sombra",
+    "juego-fantasma-duna",
+    "juego-fantasma-copito"
+  ],
+  "effects": {
+    "explosion": "efecto-explosion",
+    "ghost_kitten": "efecto-gatito-fantasma",
+    "trap_burst": "efecto-trampa-estallido",
+    "trap": "efecto-trampa",
+    "tomb": "efecto-tumba",
+    "claw": "efecto-zarpazo"
   }
 }

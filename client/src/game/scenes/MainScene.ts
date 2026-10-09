@@ -8,7 +8,20 @@ import { STRUCTURES, StructureDef } from "../structures";
 import {
   preloadCatSprites, createCatAnims, hasCatSprites, applyCatSkin, updateCatAnim,
   getWeaponHold, applyWeaponSprite, applyHandSprite, handPosition, muzzleOffset,
+  bulletKey, grenadeKey, applyProjectileSprite, hasGhostSprites, applyGhostSkin, playEffect, makeLoopingEffect,
+  CAT_SPRITE_SCALE,
 } from "../catSprites";
+
+/** Indicadores de rango/mira en pixel art (false = versión vectorial original). */
+const PIXEL_AIM = true;
+
+/** Estela de las balas: trazador cálido, fino y tenue (no neón). */
+const TRACER_COLOR = 0xffe08a;
+
+/** Altura visual del arco de la granada (px) según la distancia del tiro. */
+const grenadeArcHeight = (dist: number) => Math.min(60, dist * 0.22);
+/** Elevación en el instante t (0..1) de una parábola de altura h. */
+const arcLift = (h: number, t: number) => h * 4 * t * (1 - t);
 
 /** Distancia al centro del jugador a la que el SERVIDOR crea cada proyectil
  *  (JungleRoom.ts). Las balas visuales salen de la boca del arma pixel art pero
@@ -73,6 +86,7 @@ interface VPlayer {
   name: string;
   // Performance flags
   lastGhost: boolean;
+  tomb?: { box: Phaser.GameObjects.Container; kitten: Phaser.GameObjects.Sprite | null; angle: number };
   lastHpRatio: number;
   lastShdRatio: number;
   lastAimRot: number;
@@ -81,7 +95,7 @@ interface VPlayer {
 }
 
 interface VProj {
-  g: Phaser.GameObjects.Graphics;
+  g: Phaser.GameObjects.Sprite;               // bala / granada pixel art
   trail: Phaser.GameObjects.Graphics;
   tx: number; ty: number;
   vx: number; vy: number;
@@ -91,6 +105,7 @@ interface VProj {
   isArmed?: boolean;
   blinkTimer?: number;
   hideNear?: { x: number; y: number; r: number }; // oculto hasta pasar la boca del arma del tirador
+  arc?: { sx: number; sy: number; h: number; lift: number }; // granada: origen, altura del arco y elevación actual
 }
 
 interface VTrap {
@@ -179,7 +194,7 @@ interface VItem {
 }
 
 /* ─── Bala Local Pre-alocada (Object Pool de 200 Balas) ────────── */
-export class VisualBullet extends Phaser.GameObjects.Graphics {
+export class VisualBullet extends Phaser.GameObjects.Sprite {
   public vx = 0;
   public vy = 0;
   public life = 0;
@@ -188,7 +203,8 @@ export class VisualBullet extends Phaser.GameObjects.Graphics {
   public color = 0xffffff;
   public trailGfx!: Phaser.GameObjects.Graphics;
 
-  init(x: number, y: number, angle: number, speed: number, lifetime: number, radius: number, color: number) {
+  /** key: sheet pixel art de la bala (null = círculo de color de respaldo). */
+  init(x: number, y: number, angle: number, speed: number, lifetime: number, radius: number, color: number, key: string | null) {
     this.setPosition(x, y);
     this.vx = Math.cos(angle) * speed;
     this.vy = Math.sin(angle) * speed;
@@ -199,11 +215,12 @@ export class VisualBullet extends Phaser.GameObjects.Graphics {
     this.setActive(true);
     this.setVisible(true);
 
-    this.clear();
-    this.fillStyle(color, 1);
-    this.fillCircle(0, 0, radius);
-    this.fillStyle(0xffffff, 1);
-    this.fillCircle(0, 0, radius * 0.45);
+    if (key) {
+      applyProjectileSprite(this, key, angle);
+    } else {
+      this.anims.stop();
+      this.setTexture("__WHITE").setOrigin(0.5).setDisplaySize(radius * 2, radius * 2).setTint(color);
+    }
 
     if (this.trailGfx) {
       this.trailGfx.clear();
@@ -215,7 +232,7 @@ export class VisualBullet extends Phaser.GameObjects.Graphics {
   deactivate() {
     this.setActive(false);
     this.setVisible(false);
-    this.clear();
+    this.anims.stop();
     if (this.trailGfx) {
       this.trailGfx.clear();
       this.trailGfx.setActive(false);
@@ -284,6 +301,11 @@ export class MainScene extends Phaser.Scene {
   private zoneDirty = true;
   private lastZoneR = -1;
   private minimapThrottle = 0;
+
+  // Partículas pixel de superficie (tierra / agua / astillas) para dash, roll y pasos
+  private surfParticles: { x: number; y: number; vx: number; vy: number; life: number; max: number;
+                           color: number; w: number; h: number }[] = [];
+  private surfGfx!: Phaser.GameObjects.Graphics;
   private localShootCooldown = 0;
 
   // Object Pools for High FPS Zero-GC Performance
@@ -315,6 +337,7 @@ export class MainScene extends Phaser.Scene {
     this.buildStructures();
 
     // 1.2 Minimapa base pre-renderizado (Zero-Redraw)
+    this.surfGfx = this.add.graphics().setDepth(55);   // debajo de los personajes (60)
     this.minimapBaseGfx = this.add.graphics().setDepth(199).setScrollFactor(0);
     this.drawMinimapBase();
     this.scale.on("resize", () => this.drawMinimapBase());
@@ -342,7 +365,7 @@ export class MainScene extends Phaser.Scene {
       runChildUpdate: false,
     });
     for (let i = 0; i < 200; i++) {
-      const b = new VisualBullet(this);
+      const b = new VisualBullet(this, 0, 0, "__DEFAULT");
       b.trailGfx = this.add.graphics().setDepth(69);
       b.trailGfx.setActive(false).setVisible(false);
       b.setDepth(70);
@@ -580,7 +603,7 @@ export class MainScene extends Phaser.Scene {
     window.addEventListener("sse-hit", (e: any) => {
       const d = e.detail;
       if (!d) return;
-      this.showDamageText(d.x, d.y, `-${d.damage}`, "#ef4444");
+      // sin número de daño flotante: el daño se marca en la barra de vida (destello rojo)
       this.createSparksFX(d.x, d.y, 0xff4444);
       if (d.victimId === this.myId) {
         soundManager.playHit();
@@ -731,11 +754,11 @@ export class MainScene extends Phaser.Scene {
       for (let i = 0; i < pellets; i++) {
         const offset = (i - (pellets - 1) / 2) * (spread / (pellets - 1));
         const a = angle + offset;
-        this.createLocalVisualBullet(spawnX, spawnY, a, speed, travel(310) / speed, 4, 0xef4444);
+        this.createLocalVisualBullet(spawnX, spawnY, a, speed, travel(310) / speed, 4, 0xef4444, bulletKey("SHOTGUN"));
       }
     } else if (weapon === "SNIPER") {
       const speed = 1400;
-      this.createLocalVisualBullet(spawnX, spawnY, angle, speed, travel(980) / speed, 7, 0x06b6d4);
+      this.createLocalVisualBullet(spawnX, spawnY, angle, speed, travel(980) / speed, 7, 0x06b6d4, bulletKey("SNIPER"));
     } else if (weapon === "GRENADE") {
       const rawDist = Math.hypot(targetX - me.container.x, targetY - me.container.y);
       const dist = Math.min(400, rawDist);
@@ -743,18 +766,32 @@ export class MainScene extends Phaser.Scene {
       const destY = me.container.y + Math.sin(angle) * dist;
       const speed = 500;
       const flightDuration = Math.max(0.08, dist / speed);
-      const gObj = this.add.graphics().setDepth(70).setPosition(spawnX, spawnY);
-      gObj.fillStyle(0x84cc16, 1);
-      gObj.fillCircle(0, 0, 9);
-      gObj.lineStyle(2, 0xffffff, 1);
-      gObj.strokeCircle(0, 0, 9);
+      // granada pixel art girando en el aire, siguiendo el mismo arco del haz
+      const gKey = grenadeKey();
+      const gObj = this.add.sprite(spawnX, spawnY, gKey ?? "__WHITE").setDepth(70);
+      if (gKey) applyProjectileSprite(gObj, gKey, angle);
+      else gObj.setDisplaySize(18, 18).setTint(0x84cc16);
+      const shadow = this.add.ellipse(spawnX, spawnY, 14, 7, 0x000000, 0.28).setDepth(68);
+      const pathGfx = this.add.graphics().setDepth(68);   // estela de humo: por dónde ya pasó
+      const ground = { x: spawnX, y: spawnY };
+      const h = grenadeArcHeight(dist);
+      this.tweens.add({ targets: gObj, rotation: gObj.rotation + Math.PI * 4, duration: flightDuration * 1000 });
       this.tweens.add({
-        targets: gObj,
+        targets: ground,
         x: destX,
         y: destY,
         duration: flightDuration * 1000,
         ease: "Linear",
+        onUpdate: (tw) => {
+          shadow.setPosition(ground.x, ground.y);
+          gObj.setPosition(ground.x, ground.y - arcLift(h, tw.progress));
+          pathGfx.clear();
+          this.drawGrenadeSmoke(pathGfx, spawnX, spawnY, destX, destY, h, tw.progress);
+        },
         onComplete: () => {
+          gObj.setPosition(destX, destY);
+          shadow.destroy();
+          pathGfx.destroy();
           this.time.delayedCall(2200, () => {
             if (gObj && gObj.active) gObj.destroy();
           });
@@ -765,7 +802,7 @@ export class MainScene extends Phaser.Scene {
       const angles = isTriple ? [angle - 0.18, angle, angle + 0.18] : [angle];
       const speed = 800;
       for (const a of angles) {
-        this.createLocalVisualBullet(spawnX, spawnY, a, speed, travel(480) / speed, 6, 0xf472b6);
+        this.createLocalVisualBullet(spawnX, spawnY, a, speed, travel(480) / speed, 6, 0xf472b6, bulletKey("LASER"));
       }
     }
   }
@@ -780,7 +817,7 @@ export class MainScene extends Phaser.Scene {
     );
   }
 
-  private createLocalVisualBullet(x: number, y: number, angle: number, speed: number, lifetime: number, radius: number, color: number) {
+  private createLocalVisualBullet(x: number, y: number, angle: number, speed: number, lifetime: number, radius: number, color: number, key: string | null) {
     const children = this.bulletPool.getChildren() as VisualBullet[];
     let bullet: VisualBullet | null = null;
 
@@ -807,7 +844,7 @@ export class MainScene extends Phaser.Scene {
     }
 
     if (bullet) {
-      bullet.init(x, y, angle, speed, lifetime, radius, color);
+      bullet.init(x, y, angle, speed, lifetime, radius, color, key);
     }
   }
 
@@ -905,11 +942,11 @@ export class MainScene extends Phaser.Scene {
     destX = Math.max(30, Math.min(8000 - 30, destX));
     destY = Math.max(30, Math.min(8000 - 30, destY));
 
-    // Estelas doradas rápidas
-    for (let i = 0; i < 4; i++) {
-      this.time.delayedCall(i * 30, () => {
+    // Partículas pixel de la superficie (tierra / agua / astillas) a lo largo del dash
+    for (let i = 0; i < 5; i++) {
+      this.time.delayedCall(i * 28, () => {
         if (v.container && v.container.active) {
-          this.spawnGhostTrail(v, 0xfbbf24);
+          this.emitSurface(v.container.x, v.container.y, dirX, dirY, i === 0 ? 24 : 12, 1.4);
         }
       });
     }
@@ -954,11 +991,14 @@ export class MainScene extends Phaser.Scene {
     destX = Math.max(30, Math.min(8000 - 30, destX));
     destY = Math.max(30, Math.min(8000 - 30, destY));
 
-    // Partículas de polvo al rodar
-    this.createDustPuffFX(v.container.x, v.container.y);
-    this.time.delayedCall(90, () => {
-      if (v.container && v.container.active) this.createDustPuffFX(v.container.x, v.container.y);
-    });
+    // Partículas pixel de la superficie al rodar (tierra / agua / astillas)
+    for (let i = 0; i < 4; i++) {
+      this.time.delayedCall(i * 55, () => {
+        if (v.container && v.container.active) {
+          this.emitSurface(v.container.x, v.container.y, dirX, dirY, i === 0 ? 20 : 10, 1.15);
+        }
+      });
+    }
 
     // Giro acrobático 360° en la dirección del movimiento.
     // Primero se cortan los tweens previos: si se cortaran después, también
@@ -1135,7 +1175,11 @@ export class MainScene extends Phaser.Scene {
       const v = this.traps.get(id);
       if (v) {
         soundManager.playTrapExplode();
-        this.createExplosionFX(v.container.x, v.container.y);
+        // Estallido espectral chico (la trampa daña solo a quien la pisa, a < 32 px);
+        // respaldo: explosión genérica si el sprite no cargó
+        if (!playEffect(this, "trap_burst", v.container.x, v.container.y, CAT_SPRITE_SCALE, 92, false)) {
+          this.createExplosionFX(v.container.x, v.container.y);
+        }
         v.container.destroy();
         this.traps.delete(id);
       }
@@ -1143,7 +1187,7 @@ export class MainScene extends Phaser.Scene {
 
     // Server messages
     this.room.onMessage("hit", (d: any) => {
-      this.showDamageText(d.x, d.y, `-${d.damage}`, "#ef4444");
+      // sin número de daño flotante: el daño se marca en la barra de vida (destello rojo)
       this.createSparksFX(d.x, d.y, 0xff4444);
       if (d.victimId === this.myId) {
         soundManager.playHit();
@@ -1695,6 +1739,64 @@ export class MainScene extends Phaser.Scene {
       g.fillCircle(x, cy - h/2, 2.5);
       g.fillCircle(x, cy + h/2, 2.5);
     }
+  }
+
+  /** Superficie bajo un punto: puentes de madera, río o tierra/pasto. */
+  private surfaceAt(x: number, y: number): "wood" | "water" | "dirt" {
+    const bridges = [[4100, 4260, 1950, 2050], [3770, 3930, 3950, 4050], [4120, 4280, 5950, 6050]];
+    if (bridges.some(([x0, x1, y0, y1]) => x >= x0 && x <= x1 && y >= y0 && y <= y1)) return "wood";
+    return this.checkInRiver(x, y) ? "water" : "dirt";
+  }
+
+  /** Lanza partículas pixel según la superficie: tierra (terrones + polvo), agua
+   *  (gotas) o madera (astillas). dirX/dirY: hacia dónde se mueve el gato (las
+   *  partículas salen hacia atrás y a los costados). */
+  private emitSurface(x: number, y: number, dirX: number, dirY: number, count: number, power = 1) {
+    const surf = this.surfaceAt(x, y);
+    const PAL = {
+      dirt: [0x6b4a2f, 0x9a7048, 0x7a6a44, 0xc8b28a, 0xd8c690],
+      water: [0x2f63b8, 0x5d9be6, 0xa8dcf0, 0xf2fbff],
+      wood: [0x6b4a2f, 0x9a7048, 0xd8a865, 0x3d2a1e],
+    }[surf];
+    const mag = Math.hypot(dirX, dirY) || 1;
+    const bx = -dirX / mag, by = -dirY / mag;                 // hacia atrás
+    for (let i = 0; i < count && this.surfParticles.length < 450; i++) {
+      const spread = (Math.random() - 0.5) * (surf === "water" ? 2.4 : 1.8);
+      const a = Math.atan2(by, bx) + spread;
+      const sp = (40 + Math.random() * 90) * power * (surf === "water" ? 1.2 : 1);
+      const chip = surf === "wood" && Math.random() < 0.7;
+      const life = 0.3 + Math.random() * (surf === "dirt" ? 0.4 : 0.3);
+      const color = PAL[Math.floor(Math.random() * PAL.length)];
+      // polvo claro (tierra) y gotas claras (agua): bloques de 2x2 que se ven más
+      const big = (surf === "dirt" && color >= 0xc8b28a) || (surf === "water" && color >= 0xa8dcf0 && Math.random() < 0.5);
+      this.surfParticles.push({
+        x: x + (Math.random() - 0.5) * 14, y: y + (Math.random() - 0.5) * 14,
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        life, max: life,
+        color,
+        w: big ? 2 : chip ? (Math.random() < 0.5 ? 2 : 1) : 1,
+        h: big ? 2 : chip ? (Math.random() < 0.5 ? 1 : 2) : 1,
+      });
+    }
+  }
+
+  private updateSurfParticles(dt: number) {
+    const g = this.surfGfx;
+    g.clear();
+    const keep: typeof this.surfParticles = [];
+    for (const p of this.surfParticles) {
+      p.life -= dt;
+      if (p.life <= 0) continue;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vx *= 0.88;
+      p.vy *= 0.88;
+      const cx = Math.round(p.x / 3), cy = Math.round(p.y / 3);
+      g.fillStyle(p.color, Math.min(1, (p.life / p.max) * 1.4));
+      g.fillRect(cx * 3 - 1.5, cy * 3 - 1.5, p.w * 3, p.h * 3);
+      keep.push(p);
+    }
+    this.surfParticles = keep;
   }
 
   public checkInRiver(x: number, y: number): boolean {
@@ -2269,53 +2371,7 @@ export class MainScene extends Phaser.Scene {
     this.showDamageText(targetItem.x, targetItem.y - 14, `+${targetItem.itemType}`, "#34d399");
   }
 
-  private createWaterSplashFX(x: number, y: number) {
-    if (!this.isInCameraView(x, y, 60)) return;
-    const splash = this.add.graphics().setDepth(21).setPosition(x, y);
-    splash.lineStyle(2, 0x7dd3fc, 0.85);
-    splash.strokeCircle(0, 0, 8);
 
-    this.tweens.add({
-      targets: splash,
-      scaleX: 2.2,
-      scaleY: 2.2,
-      alpha: 0,
-      duration: 320,
-      onComplete: () => splash.destroy(),
-    });
-
-    for (let i = 0; i < 3; i++) {
-      const drop = this.add.graphics().setDepth(22).setPosition(x, y);
-      drop.fillStyle(0x38bdf8, 0.9);
-      drop.fillCircle(0, 0, 2);
-      const a = Math.random() * Math.PI * 2;
-      const spd = 20 + Math.random() * 25;
-      this.tweens.add({
-        targets: drop,
-        x: x + Math.cos(a) * spd,
-        y: y + Math.sin(a) * spd,
-        alpha: 0,
-        duration: 220,
-        onComplete: () => drop.destroy(),
-      });
-    }
-  }
-
-  private createDustPuffFX(x: number, y: number) {
-    if (!this.isInCameraView(x, y, 60)) return;
-    const dust = this.add.graphics().setDepth(15).setPosition(x, y);
-    dust.fillStyle(0x785532, 0.35);
-    dust.fillCircle(0, 0, 4);
-
-    this.tweens.add({
-      targets: dust,
-      scaleX: 2.4,
-      scaleY: 2.4,
-      alpha: 0,
-      duration: 260,
-      onComplete: () => dust.destroy(),
-    });
-  }
 
   /* ── Personajes Gatos (Battle Cats) ──────────────────────── */
   private createPlayer(id: string, p: Player) {
@@ -2335,10 +2391,12 @@ export class MainScene extends Phaser.Scene {
     const hpFill   = this.add.graphics();
     const shdFill  = this.add.graphics();
 
-    hpBg.fillStyle(0x0f172a, 0.9);
-    hpBg.fillRect(-26, -42, 52, 7);
-    hpBg.lineStyle(1, 0x334155, 0.8);
-    hpBg.strokeRect(-26, -42, 52, 7);
+    // Barra de vida pixel art (pixels de 2px): borde oscuro con esquinas redondeadas
+    hpBg.fillStyle(0x14101c, 0.95);
+    hpBg.fillRect(-24, -42, 48, 8);          // sin los pixels de las esquinas
+    hpBg.fillRect(-26, -40, 52, 4);
+    hpBg.fillStyle(0x3a3a44, 1);             // parte vacía
+    hpBg.fillRect(-24, -40, 48, 4);
 
     const label = this.add.text(0, -54,
       isMe ? "TÚ 🐾" : (p.name || id.slice(0, 6)),
@@ -2419,6 +2477,7 @@ export class MainScene extends Phaser.Scene {
     this.drawCat(vp);
     this.redrawHp(vp, 1, 0);
     this.players.set(id, vp);
+    if (vp.isGhost) this.createTomb(vp);
 
     if (isMe) {
       this.cameras.main.setScroll(px - this.scale.width / 2, py - this.scale.height / 2);
@@ -2429,21 +2488,6 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
-  private spawnGhostTrail(v: VPlayer, tintColor?: number) {
-    const shadow = this.add.graphics().setDepth(55).setPosition(v.container.x, v.container.y);
-    shadow.fillStyle(tintColor ?? (v.isGhost ? 0x38bdf8 : 0x10b981), 0.45);
-    shadow.fillCircle(0, 0, 22);
-    shadow.rotation = v.container.rotation;
-
-    this.tweens.add({
-      targets: shadow,
-      alpha: 0,
-      scaleX: 1.3,
-      scaleY: 1.3,
-      duration: 350,
-      onComplete: () => shadow.destroy(),
-    });
-  }
 
   private showEmoteBubble(v: VPlayer, emote: string) {
     v.emoteText.setText(emote);
@@ -2468,6 +2512,16 @@ export class MainScene extends Phaser.Scene {
     earsGfx.clear();
     faceGfx.clear();
     catSprite.setVisible(false);
+
+    // Fantasma pixel art del personaje (pulso espectral: ver update)
+    if (isGhost && hasGhostSprites()) {
+      applyGhostSkin(catSprite, catColor);
+      catSprite.setVisible(true);
+      aimGfx.setVisible(false);
+      leftHandGfx.setVisible(false);
+      rightHandGfx.setVisible(false);
+      return;
+    }
 
     if (isGhost) {
       bodyGfx.fillStyle(0x38bdf8, 0.45);
@@ -2611,20 +2665,53 @@ export class MainScene extends Phaser.Scene {
   }
 
 
+  /** Barras pixel art sobre el gato (pixels de 2px, mismo tamaño que antes):
+   *  vida de 24 pixels con brillo arriba y extremos redondeados; escudo como cápsula
+   *  celeste encima. Al perder vida, el tramo perdido destella y se apaga rápido. */
   private redrawHp(v: VPlayer, ratio: number, shdRatio: number) {
     const { hpFill, shdFill } = v;
     hpFill.clear();
     shdFill.clear();
+    const U = 2, CELLS = 24, X0 = -24;
 
-    const w = Math.max(0, 50 * ratio);
-    const col = ratio < 0.3 ? 0xef4444 : ratio < 0.6 ? 0xf59e0b : 0x10b981;
-    hpFill.fillStyle(col, 1);
-    hpFill.fillRect(-25, -41, w, 5);
+    const n = Math.round(CELLS * ratio);
+    const prevN = (hpFill.getData("cells") as number | undefined) ?? n;
+    hpFill.setData("cells", n);
+    const [light, base] = ratio < 0.3 ? [0xfca5a5, 0xef4444] : ratio < 0.6 ? [0xfde68a, 0xf59e0b] : [0x6ee7b7, 0x10b981];
+    if (n > 0) {
+      hpFill.fillStyle(light, 1);
+      hpFill.fillRect(X0, -40, n * U, U);       // brillo
+      hpFill.fillStyle(base, 1);
+      hpFill.fillRect(X0, -38, n * U, U);       // base
+      // punta redondeada: el pixel de brillo del extremo toma el color base
+      if (n < CELLS) hpFill.fillRect(X0 + (n - 1) * U, -40, U, U);
+    }
+
+    // destello rojo: solo un contorno alrededor del tramo de vida perdido; se apaga rápido
+    if (n < prevN) {
+      const flash = this.add.graphics();
+      const fx = X0 + n * U, fw = (prevN - n) * U;
+      flash.fillStyle(0xef4444, 1);
+      flash.fillRect(fx - U, -44, fw + 2 * U, U);        // arriba
+      flash.fillRect(fx - U, -34, fw + 2 * U, U);        // abajo
+      flash.fillRect(fx - U, -42, U, 8);                 // izquierda
+      flash.fillRect(fx + fw, -42, U, 8);                // derecha
+      v.uiContainer.add(flash);
+      this.tweens.add({
+        targets: flash, alpha: 0, duration: 280, ease: "Quad.easeOut",
+        onComplete: () => flash.destroy(),
+      });
+    }
 
     if (shdRatio > 0) {
-      const sw = Math.max(0, 50 * shdRatio);
-      shdFill.fillStyle(0x38bdf8, 1);
-      shdFill.fillRect(-25, -46, sw, 3);
+      const sn = Math.max(1, Math.round(CELLS * shdRatio));
+      shdFill.fillStyle(0x14101c, 0.95);        // cápsula (comparte el borde de arriba de la vida)
+      shdFill.fillRect(-24, -46, 48, 4);
+      shdFill.fillRect(-26, -44, 52, 2);
+      shdFill.fillStyle(0x1e3a5f, 1);           // vacío
+      shdFill.fillRect(X0, -44, CELLS * U, U);
+      shdFill.fillStyle(0x5dcbfa, 1);
+      shdFill.fillRect(X0, -44, sn * U, U);
     }
   }
 
@@ -2686,7 +2773,8 @@ export class MainScene extends Phaser.Scene {
       v.container.setVisible(!v.isHidden);
       v.uiContainer.setVisible(!v.isHidden);
     } else {
-      const alphaVal = v.isHidden && !v.isGhost ? 0.5 : (v.isGhost ? 0.5 : 1);
+      // fantasma pixel art: más opaco (el sprite ya es celeste espectral y pulsa)
+      const alphaVal = v.isHidden && !v.isGhost ? 0.5 : (v.isGhost ? (hasGhostSprites() ? 0.9 : 0.5) : 1);
       v.container.setAlpha(alphaVal);
       v.uiContainer.setAlpha(alphaVal);
       if (v.isHidden !== this.wasInBush) {
@@ -2713,6 +2801,8 @@ export class MainScene extends Phaser.Scene {
         v.uiContainer.setAlpha(1);
       }
       v.lastGhost = v.isGhost;
+      if (v.isGhost) this.createTomb(v);
+      else this.destroyTomb(v);
       this.drawCat(v);
     }
 
@@ -2741,9 +2831,34 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
+  /** Tumba pixel donde murió el jugador + gatito fantasma que la ronda.
+   *  Los vivos ven solo esto (el fantasma real se oculta: ver update). */
+  private createTomb(v: VPlayer) {
+    this.destroyTomb(v);
+    const box = this.add.container(v.container.x, v.container.y).setDepth(23); // debajo del botín (24)
+    const stone = makeLoopingEffect(this, "tomb", 0, 0, CAT_SPRITE_SCALE);
+    if (stone) box.add(stone);
+    else box.add(this.add.text(0, 0, "🪦", { fontSize: "28px" }).setOrigin(0.5));
+    const name = this.add.text(0, -34, v.name, {
+      fontFamily: "Outfit, Inter, sans-serif", fontSize: "10px", fontStyle: "bold",
+      color: "#cbd5e1", stroke: "#000000", strokeThickness: 3,
+    }).setOrigin(0.5).setAlpha(0.85);
+    box.add(name);
+    const kitten = makeLoopingEffect(this, "ghost_kitten", 0, -14, 2);
+    if (kitten) box.add(kitten);
+    v.tomb = { box, kitten, angle: Math.random() * Math.PI * 2 };
+  }
+
+  private destroyTomb(v: VPlayer) {
+    if (!v.tomb) return;
+    v.tomb.box.destroy();
+    v.tomb = undefined;
+  }
+
   private destroyPlayer(id: string) {
     const v = this.players.get(id);
     if (!v) return;
+    this.destroyTomb(v);
     v.container.destroy();
     v.uiContainer.destroy();
     this.players.delete(id);
@@ -2752,30 +2867,18 @@ export class MainScene extends Phaser.Scene {
 
   /* ── Proyectiles ─────────────────────────────────────────── */
   private createProj(id: string, p: Projectile) {
-    const g = this.add.graphics().setDepth(70).setPosition(p.x || 0, p.y || 0);
-    const trail = this.add.graphics().setDepth(69);
-
     const type = p.projType || "LASER";
-    if (type === "PELLET") {
-      g.fillStyle(0xef4444, 1);
-      g.fillCircle(0, 0, 4);
-    } else if (type === "SNIPER_BEAM") {
-      g.fillStyle(0x06b6d4, 1);
-      g.fillCircle(0, 0, 7);
-      g.lineStyle(2, 0xffffff, 1);
-      g.strokeCircle(0, 0, 8);
-    } else if (type === "GRENADE") {
-      g.fillStyle(0x84cc16, 1);
-      g.fillCircle(0, 0, 8);
-      g.lineStyle(2, 0x4d7c0f, 1);
-      g.strokeCircle(0, 0, 8);
+    const trail = this.add.graphics().setDepth(69);
+    const angle = Math.atan2(p.vy || 0, p.vx || 1);
+
+    // Bala / granada pixel art (con respaldo de color si el sprite no cargó)
+    const key = type === "GRENADE" ? grenadeKey() : bulletKey(PROJ_TYPE_WEAPON[type] ?? "LASER");
+    const g = this.add.sprite(p.x || 0, p.y || 0, key ?? "__WHITE").setDepth(70);
+    if (key) {
+      applyProjectileSprite(g, key, angle);
     } else {
-      g.fillStyle(0xf43f5e, 1);
-      g.fillCircle(0, 0, 6);
-      g.fillStyle(0xffffff, 1);
-      g.fillCircle(0, 0, 3);
-      g.lineStyle(2, 0xfde047, 0.9);
-      g.strokeCircle(0, 0, 7);
+      const r = type === "SNIPER_BEAM" ? 7 : type === "GRENADE" ? 8 : type === "PELLET" ? 4 : 6;
+      g.setDisplaySize(r * 2, r * 2).setTint(type === "GRENADE" ? 0x84cc16 : 0xfacc15);
     }
 
     this.projs.set(id, {
@@ -2791,6 +2894,9 @@ export class MainScene extends Phaser.Scene {
       isArmed: !!p.isArmed,
       blinkTimer: 0,
       hideNear: this.muzzleHideZone(p, type),
+      arc: type === "GRENADE"
+        ? { sx: p.x || 0, sy: p.y || 0, h: grenadeArcHeight(Math.hypot((p.targetX || 0) - (p.x || 0), (p.targetY || 0) - (p.y || 0))), lift: 0 }
+        : undefined,
     });
   }
 
@@ -2809,6 +2915,14 @@ export class MainScene extends Phaser.Scene {
     const container = this.add.container(t.x, t.y).setDepth(22);
     const g = this.add.graphics();
     const ring = this.add.graphics();
+
+    // Mina espectral pixel art (núcleo que late + anillo de pulso), en loop
+    const mine = makeLoopingEffect(this, "trap", 0, 0, CAT_SPRITE_SCALE);
+    if (mine) {
+      container.add(mine);
+      this.traps.set(id, { container, g, ring });
+      return;
+    }
 
     g.fillStyle(0x0284c7, 0.7);
     g.fillCircle(0, 0, 14);
@@ -2900,6 +3014,13 @@ export class MainScene extends Phaser.Scene {
     soundManager.playClawSlash();
     this.cameras.main.shake(70, 0.006);
 
+    // Zarpazo pixel art (3 marcas que se trazan y se apagan) en la dirección del ataque
+    const fx = playEffect(this, "claw", x, y, CAT_SPRITE_SCALE, 85, false);
+    if (fx) {
+      fx.setRotation(angle);
+      return;
+    }
+
     // Contenedor rotado en la dirección del zarpazo
     const slashCont = this.add.container(x, y).setDepth(85).setRotation(angle);
     const slashGfx = this.add.graphics();
@@ -2967,6 +3088,27 @@ export class MainScene extends Phaser.Scene {
 
   private createExplosionFX(x: number, y: number, isGrenade = false, outerR = 140, innerR = 70) {
     if (!this.isInCameraView(x, y, 160)) return;
+    // Explosión pixel art animada. El fuego del sprite llega a ~46 px de radio:
+    // la escala hace que cubra la zona de daño (granada: zona interna de 140;
+    // barril / trampa / meteorito: su radio, 140 por defecto). Escala entera = pixels nítidos.
+    const fireR = isGrenade ? innerR : outerR;
+    if (playEffect(this, "explosion", x, y, Math.max(2, Math.round(fireR / 46)))) {
+      if (isGrenade) {
+        // onda expansiva: anillo de pixels que crece hasta el alcance externo
+        const ring = this.add.graphics().setDepth(91);
+        const st = { t: 0 };
+        this.tweens.add({
+          targets: st, t: 1, duration: 420, ease: "Quad.easeOut",
+          onUpdate: () => {
+            ring.clear();
+            this.pxRing(ring, x, y, 30 + (outerR - 30) * st.t, 0xffd23f, 0.85 * (1 - st.t));
+          },
+          onComplete: () => ring.destroy(),
+        });
+        this.spawnOuterSmoke(x, y, innerR, outerR, 420);
+      }
+      return;
+    }
     if (isGrenade) {
       // Explosión de Granada con circunferencia el doble de grande y 2 zonas
       // Zona interna: fuego blanco y núcleo amarillo cegador (100 dmg)
@@ -3130,10 +3272,10 @@ export class MainScene extends Phaser.Scene {
         if (this.lastFootstepDist >= 26) {
           this.lastFootstepDist = 0;
           if (inRiver) {
-            this.createWaterSplashFX(me.container.x, me.container.y);
+            this.emitSurface(me.container.x, me.container.y, ndx, ndy, 6, 0.6);
             soundManager.playWaterSplash();
           } else {
-            this.createDustPuffFX(me.container.x, me.container.y);
+            this.emitSurface(me.container.x, me.container.y, ndx, ndy, 5, 0.5);
           }
         }
       }
@@ -3265,10 +3407,12 @@ export class MainScene extends Phaser.Scene {
       }
 
       // Sprite pixel art: walk mientras se mueve, idle cuando está quieto
-      if (inCam && !v.isGhost && v.catSprite.visible) {
+      if (inCam && v.catSprite.visible) {
         const moved = Math.hypot(v.container.x - v.lastX, v.container.y - v.lastY);
         v.walkHold = moved > 0.4 ? 120 : Math.max(0, v.walkHold - delta);
         updateCatAnim(v.catSprite, v.walkHold > 0);
+        // el fantasma "respira": pulso de transparencia (no depende de la rotación)
+        v.catSprite.setAlpha(v.isGhost ? 0.8 + 0.2 * Math.sin(time / 260) : 1);
       }
       v.lastX = v.container.x;
       v.lastY = v.container.y;
@@ -3319,6 +3463,10 @@ export class MainScene extends Phaser.Scene {
     // 2.1 Interpolación de proyectiles de red con Culling
     const dtSecProj = Math.min(0.04, delta / 1000);
     this.projs.forEach(v => {
+      if (v.arc) {                       // volver a la posición en el suelo
+        v.g.y += v.arc.lift;
+        v.arc.lift = 0;
+      }
       v.g.x += v.vx * dtSecProj;
       v.g.y += v.vy * dtSecProj;
       v.g.x = Phaser.Math.Linear(v.g.x, v.tx, 0.25);
@@ -3362,20 +3510,47 @@ export class MainScene extends Phaser.Scene {
           v.trail.lineStyle(2, isBlink ? 0xef4444 : 0xfacc15, 0.9);
           v.trail.strokeCircle(v.g.x, v.g.y, pulseR);
 
-          // Resplandor de titilado de la granada
-          v.g.clear();
-          v.g.fillStyle(isBlink ? 0xef4444 : 0x84cc16, 1);
-          v.g.fillCircle(0, 0, 9);
-          v.g.lineStyle(2, isBlink ? 0xffffff : 0x365314, 1);
-          v.g.strokeCircle(0, 0, 9);
-          v.g.fillStyle(isBlink ? 0xffffff : 0xfacc15, 1);
-          v.g.fillCircle(0, 0, 4);
+          // Titilado de la granada pixel art (rojo de peligro)
+          if (isBlink) v.g.setTintFill(0xef4444);
+          else v.g.clearTint();
+        } else {
+          v.g.rotation += (delta / 1000) * 12; // gira en el aire
+          if (v.arc) {
+            // sombra en el suelo + elevación según el avance hacia el objetivo
+            const total = Math.hypot((v.targetX ?? 0) - v.arc.sx, (v.targetY ?? 0) - v.arc.sy) || 1;
+            const left = Math.hypot((v.targetX ?? 0) - v.g.x, (v.targetY ?? 0) - v.g.y);
+            const t = Phaser.Math.Clamp(1 - left / total, 0, 1);
+            v.trail.clear();
+            // estela de por dónde ya pasó (la ven todos los jugadores)
+            this.drawGrenadeSmoke(v.trail, v.arc.sx, v.arc.sy, v.targetX ?? v.g.x, v.targetY ?? v.g.y, v.arc.h, t);
+            v.trail.fillStyle(0x000000, 0.28);
+            v.trail.fillEllipse(v.g.x, v.g.y, 14, 7);
+            v.arc.lift = arcLift(v.arc.h, t);
+            v.g.y -= v.arc.lift;
+          }
         }
+      }
+    });
+
+    // 2.1 Tumbas: el gatito fantasma ronda la tumba; los vivos no ven fantasmas ajenos
+    const meGhost = !!me?.isGhost;
+    this.players.forEach(v => {
+      if (v.tomb?.kitten) {
+        const t = v.tomb;
+        t.angle += (delta / 1000) * 1.6;
+        const kx = Math.cos(t.angle) * 24, ky = Math.sin(t.angle) * 10 - 14 + Math.sin(time / 300) * 3;
+        t.kitten!.setPosition(Math.round(kx / 2) * 2, Math.round(ky / 2) * 2);
+        t.kitten!.setFlipX(Math.sin(t.angle) < 0);   // mira hacia donde camina
+      }
+      if (v.isGhost && !v.isMe && !meGhost) {
+        if (v.container.visible) v.container.setVisible(false);
+        if (v.uiContainer.visible) v.uiContainer.setVisible(false);
       }
     });
 
     // 2.2 Simulación y Frustum Culling del Object Pool de Balas Locales (200 máx)
     const dtSecBullet = Math.min(0.04, delta / 1000);
+    this.updateSurfParticles(dtSecBullet);
     const pooledBullets = this.bulletPool.getChildren() as VisualBullet[];
     for (let i = 0; i < pooledBullets.length; i++) {
       const b = pooledBullets[i];
@@ -3403,9 +3578,10 @@ export class MainScene extends Phaser.Scene {
         if (!b.visible) b.setVisible(true);
         if (!b.trailGfx.visible) b.trailGfx.setVisible(true);
 
+        // trazador cálido y fino detrás de la bala
         b.trailGfx.clear();
-        b.trailGfx.lineStyle(b.radius * 1.4, b.color, 0.45);
-        b.trailGfx.lineBetween(prevX - b.vx * 0.025, prevY - b.vy * 0.025, b.x, b.y);
+        b.trailGfx.lineStyle(Math.max(1.5, b.radius * 0.45), TRACER_COLOR, 0.3);
+        b.trailGfx.lineBetween(prevX - b.vx * 0.03, prevY - b.vy * 0.03, b.x, b.y);
       }
     }
 
@@ -3528,15 +3704,279 @@ export class MainScene extends Phaser.Scene {
   }
 
   /* ── Retícula y Arco de Dispersión / Alcance (Aim Arc) ─────── */
-  private drawAimArcAndCrosshair(me: VPlayer, wx: number, wy: number) {
-    const cg = this.crosshairGfx;
-    const ag = this.aimConeGfx;
+  /** Arco pixel de la granada para la mira (antes de tirar), entre t = tFrom y
+   *  t = tTo (0 = mano, 1 = caída): puntos que avanzan y marcador de caída. */
+  private drawGrenadeArc(
+    gfx: Phaser.GameObjects.Graphics,
+    sx: number, sy: number, tx: number, ty: number, h: number, tFrom: number, tTo: number,
+    opts: { dot: number; alpha: number; steps?: number; marker?: number; march?: boolean },
+  ) {
+    const dist = Math.hypot(tx - sx, ty - sy);
+    const steps = opts.steps ?? Math.max(6, Math.round(dist / 16));
+    const march = opts.march ? (this.time.now / 700) % 1 : 0;
+    for (let i = 0; i < steps; i++) {
+      const t = (i + march) / steps;
+      if (t < tFrom || t > tTo) continue;
+      const a = opts.alpha;
+      const x = sx + (tx - sx) * t;
+      const y = sy + (ty - sy) * t - arcLift(h, t);
+      // alineado a la grilla de pixels (3 px): 1 pixel, 2x2 en la cima del arco
+      const cells = Math.sin(Math.PI * t) > 0.6 ? 2 : 1;
+      const gx = Math.round(x / 3 - (cells - 1) / 2), gy = Math.round(y / 3 - (cells - 1) / 2);
+      gfx.fillStyle(0x3a2a10, a * 0.5);                      // sombra: 1 pixel abajo
+      gfx.fillRect(gx * 3 - 1.5, gy * 3 - 1.5 + 3, cells * 3, cells * 3);
+      gfx.fillStyle(TRACER_COLOR, a);
+      gfx.fillRect(gx * 3 - 1.5, gy * 3 - 1.5, cells * 3, cells * 3);
+    }
+
+    if (!opts.marker) return;
+    // Marcador de caída (pixel): esquinas de un cuadrado + punto central
+    const r = opts.marker, l = Math.max(3, Math.round(r / 2));
+    gfx.fillStyle(TRACER_COLOR, opts.alpha);
+    for (const [cx, cy, dx, dy] of [[-1, -1, 1, 1], [1, -1, -1, 1], [-1, 1, 1, -1], [1, 1, -1, -1]]) {
+      const x0 = tx + cx * r, y0 = ty + cy * r;
+      gfx.fillRect(Math.min(x0, x0 + dx * l), y0 - 1, l, 2);
+      gfx.fillRect(x0 - 1, Math.min(y0, y0 + dy * l), 2, l);
+    }
+    gfx.fillRect(tx - 2, ty - 2, 4, 4);
+  }
+
+  /** Estela de humo pixel de la granada en vuelo: por dónde ya pasó (t = 0 → tNow).
+   *  Pixels de 3x3 (mismo tamaño que el pixel art de los gatos) alineados a la grilla.
+   *  Cerca de la granada: blanco y fino (1 pixel). Hacia atrás envejece: se abre a
+   *  2 pixels, se agrisa y se desvanece, con un leve zigzag. */
+  private drawGrenadeSmoke(
+    gfx: Phaser.GameObjects.Graphics,
+    sx: number, sy: number, tx: number, ty: number, h: number, tNow: number,
+  ) {
+    const P = 3; // tamaño de un pixel del sprite en el mundo
+    const dist = Math.hypot(tx - sx, ty - sy);
+    const n = Math.max(4, Math.round((dist * tNow) / P));   // una muestra cada ~1 pixel
+    const nx = -(ty - sy) / (dist || 1), ny = (tx - sx) / (dist || 1); // perpendicular
+    const seen = new Set<number>();
+    for (let i = n; i >= 0; i--) {
+      const t = (i / n) * tNow;
+      const age = 1 - t / Math.max(tNow, 0.001);              // 0 = recién salido, 1 = el más viejo
+      const jitter = ((Math.sin(i * 12.9898) * 43758.5453) % 1) * age * 1.5;
+      const x = sx + (tx - sx) * t + nx * jitter * P;
+      const y = sy + (ty - sy) * t - arcLift(h, t) + ny * jitter * P;
+      const gx = Math.round(x / P), gy = Math.round(y / P);
+      const width = age > 0.45 ? 2 : 1;
+      const color = age < 0.3 ? 0xf2f0e6 : age < 0.65 ? 0xc8c8d0 : 0x9a9aa6;
+      const alpha = 0.85 * (1 - age * 0.8);
+      for (let dx = 0; dx < width; dx++) {
+        for (let dy = 0; dy < width; dy++) {
+          const key = (gx + dx) * 100003 + (gy + dy);
+          if (seen.has(key)) continue;                         // un pixel por celda
+          seen.add(key);
+          gfx.fillStyle(color, alpha);
+          gfx.fillRect((gx + dx) * P - P / 2, (gy + dy) * P - P / 2, P, P);
+        }
+      }
+    }
+  }
+
+  /* ── Mira y rango en pixel art (pixels de 3x3 alineados a la grilla) ── */
+  private pxCell(g: Phaser.GameObjects.Graphics, cx: number, cy: number, color: number, alpha: number) {
+    g.fillStyle(color, alpha);
+    g.fillRect(cx * 3 - 1.5, cy * 3 - 1.5, 3, 3);
+  }
+
+  /** Humo residual en la zona de daño externa de la granada (entre innerR y outerR):
+   *  bocanadas de pixels (y alguna brasa) que aparecen cuando pasa la onda expansiva,
+   *  se abren hacia afuera y se disipan. Marca que ahí también hubo daño. */
+  private spawnOuterSmoke(x: number, y: number, innerR: number, outerR: number, waveMs: number) {
+    const SHAPES = [
+      [[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1], [1, 2]],
+      [[1, 0], [0, 1], [1, 1], [2, 1], [1, 2], [2, 2]],
+      [[0, 0], [1, 0], [0, 1], [1, 1], [2, 1], [1, 2], [2, 2]],
+    ];
+    const SMOKE = [0xd8d4e0, 0xb4b0bc, 0x8a8592, 0x5a5560];
+    const LIFE = 1600, SCORCH = 2600;
+    const rand = (r0: number, r1: number) => Math.sqrt(r0 * r0 + Math.random() * (r1 * r1 - r0 * r0)); // uniforme en área
+    const puffs = Array.from({ length: 55 }, () => {
+      const a = Math.random() * Math.PI * 2;
+      const d = rand(innerR, outerR);
+      const rn = Phaser.Math.Clamp((d - 30) / (outerR - 30), 0, 1);
+      return {
+        a, d,
+        appear: waveMs * (1 - Math.sqrt(1 - rn)),     // cuando la onda (Quad.easeOut) llega a d
+        drift: 8 + Math.random() * 14,
+        shape: SHAPES[Math.floor(Math.random() * SHAPES.length)],
+        ember: Math.random() < 0.25,
+        life: LIFE * (0.7 + Math.random() * 0.3),
+      };
+    });
+    // marcas de quemado en el suelo (tramadas), quedan un rato más que el humo
+    const scorch = Array.from({ length: 70 }, () => {
+      const a = Math.random() * Math.PI * 2, d = rand(innerR * 0.9, outerR);
+      return [Math.round((x + Math.cos(a) * d) / 3), Math.round((y + Math.sin(a) * d) / 3)];
+    });
+    const ground = this.add.graphics().setDepth(5);
+    const g = this.add.graphics().setDepth(90);
+    const st = { ms: 0 };
+    const total = waveMs + Math.max(LIFE, SCORCH);
+    this.tweens.add({
+      targets: st, ms: total, duration: total,
+      onUpdate: () => {
+        ground.clear();
+        const sa = 0.45 * (1 - Phaser.Math.Clamp((st.ms - waveMs) / SCORCH, 0, 1));
+        if (sa > 0) for (const [cx, cy] of scorch) {
+          this.pxCell(ground, cx, cy, 0x2a2018, sa);
+          this.pxCell(ground, cx + 1, cy, 0x3a2a1e, sa * 0.7);
+        }
+        g.clear();
+        for (const p of puffs) {
+          const t = (st.ms - p.appear) / p.life;
+          if (t < 0 || t > 1) continue;
+          const dd = p.d + p.drift * t;
+          const cx = Math.round((x + Math.cos(p.a) * dd) / 3), cy = Math.round((y + Math.sin(p.a) * dd) / 3);
+          const color = p.ember && t < 0.3 ? 0xf07a1e : SMOKE[Math.min(3, Math.floor(t * 4))];
+          const alpha = 0.9 * (1 - t * t);
+          const grow = t > 0.4 ? 1 : 0;              // la bocanada se abre al envejecer
+          for (const [ox, oy] of p.shape) {
+            this.pxCell(g, cx + ox, cy + oy, color, alpha);
+            if (grow) this.pxCell(g, cx + ox + 1, cy + oy + 1, color, alpha * 0.5);
+          }
+        }
+      },
+      onComplete: () => { g.destroy(); ground.destroy(); },
+    });
+  }
+
+  /** Anillo de pixels (circunferencia rasterizada). dash > 1 = punteado. */
+  private pxRing(g: Phaser.GameObjects.Graphics, x: number, y: number, r: number,
+                 color: number, alpha: number, dash = 1) {
+    const cx0 = x / 3, cy0 = y / 3, rc = r / 3;
+    const n = Math.max(8, Math.round(2 * Math.PI * rc));
+    let last = "";
+    for (let i = 0; i < n; i++) {
+      if (dash > 1 && Math.floor(i / dash) % 2) continue;
+      const a = (i / n) * Math.PI * 2;
+      const cx = Math.round(cx0 + Math.cos(a) * rc), cy = Math.round(cy0 + Math.sin(a) * rc);
+      const k = cx + "," + cy;
+      if (k === last) continue;
+      last = k;
+      this.pxCell(g, cx, cy, color, alpha);
+    }
+  }
+
+  /** Disco con relleno tramado (dithering: 1 pixel de cada 'step' en cuadrícula). */
+  private pxDither(g: Phaser.GameObjects.Graphics, x: number, y: number, r: number,
+                   color: number, alpha: number, step = 3) {
+    const cx0 = Math.round(x / 3), cy0 = Math.round(y / 3), R = Math.floor(r / 3);
+    for (let gy = -R; gy <= R; gy++) {
+      for (let gx = -R; gx <= R; gx++) {
+        const ax = cx0 + gx, ay = cy0 + gy;
+        if (((ax % step) + step) % step !== 0 || ((ay % step) + step) % step !== (Math.floor(ax / step) % 2 ? 0 : Math.floor(step / 2))) continue;
+        if (gx * gx + gy * gy > R * R) continue;
+        this.pxCell(g, ax, ay, color, alpha);
+      }
+    }
+  }
+
+  /** Cono (porción de círculo) rasterizado: relleno tenue + borde de pixels. */
+  private pxSlice(g: Phaser.GameObjects.Graphics, px: number, py: number, range: number,
+                  rot: number, half: number, color: number, fill: number, edge: number) {
+    const P = 3, R = Math.ceil(range / P), cx0 = Math.round(px / P), cy0 = Math.round(py / P);
+    for (let gy = -R; gy <= R; gy++) {
+      for (let gx = -R; gx <= R; gx++) {
+        const d = Math.hypot(gx, gy) * P;
+        if (d > range || d < 8) continue;
+        const da = Math.abs(Phaser.Math.Angle.Wrap(Math.atan2(gy, gx) - rot));
+        if (da > half) continue;
+        const onEdge = d > range - P || (half - da) * d < P;
+        this.pxCell(g, cx0 + gx, cy0 + gy, color, onEdge ? edge : fill);
+      }
+    }
+  }
+
+  /** Línea de pixels (paso de 1 pixel). */
+  private pxLine(g: Phaser.GameObjects.Graphics, x0: number, y0: number, x1: number, y1: number,
+                 color: number, alpha: number, gap = 1) {
+    const n = Math.max(1, Math.round(Math.hypot(x1 - x0, y1 - y0) / 3));
+    let last = "";
+    for (let i = 0; i <= n; i += gap) {
+      const cx = Math.round((x0 + (x1 - x0) * i / n) / 3), cy = Math.round((y0 + (y1 - y0) * i / n) / 3);
+      const k = cx + "," + cy;
+      if (k === last) continue;
+      last = k;
+      this.pxCell(g, cx, cy, color, alpha);
+    }
+  }
+
+  private drawAimPixel(me: VPlayer, wx: number, wy: number) {
+    const cg = this.crosshairGfx, ag = this.aimConeGfx;
     cg.clear();
     ag.clear();
+    if (me.isGhost) return;
+
+    // Retícula pixel: cruz con hueco central + punto
+    const cx = Math.round(wx / 3), cy = Math.round(wy / 3);
+    for (let i = 2; i <= 4; i++) {
+      for (const [dx, dy] of [[i, 0], [-i, 0], [0, i], [0, -i]]) this.pxCell(cg, cx + dx, cy + dy, 0xffffff, 0.95);
+    }
+    this.pxCell(cg, cx, cy, 0x10b981, 1);
+
+    const weapon = me.equippedWeapon, px = me.container.x, py = me.container.y, rot = me.tr;
+    // Línea de dirección de una bala: sale de la boca del arma (como las balas reales)
+    // y termina donde termina la bala del servidor. Tono claro y casi opaco.
+    const m = muzzleOffset(weapon) ?? [20, 0];
+    const mx0 = px + m[0] * Math.cos(rot) - m[1] * Math.sin(rot);
+    const my0 = py + m[0] * Math.sin(rot) + m[1] * Math.cos(rot);
+    const ray = (a: number, range: number, color: number) => {
+      const len = Math.max(0, (SERVER_SPAWN_DIST[weapon] ?? 28) + range - m[0]);
+      const ex = mx0 + Math.cos(a) * len, ey = my0 + Math.sin(a) * len;
+      this.pxLine(ag, mx0, my0, ex, ey, color, 0.85);
+      return [ex, ey];
+    };
+    if (weapon === "SHOTGUN") {
+      // Perdigones: igual que el disparo (5 entre -spread/2 y +spread/2, spread = 0.28)
+      const spread = 0.28, pellets = 5;
+      this.pxSlice(ag, px, py, SERVER_SPAWN_DIST.SHOTGUN + 310, rot, spread / 2 + 0.02, 0xef4444, 0.12, 0.85);
+      for (let i = 0; i < pellets; i++) {
+        const [ex, ey] = ray(rot + (i - (pellets - 1) / 2) * (spread / (pellets - 1)), 310, 0xfca5a5);
+        this.pxCell(ag, Math.round(ex / 3), Math.round(ey / 3), 0xffffff, 1);
+      }
+    } else if (weapon === "SNIPER") {
+      const [ex, ey] = ray(rot, 980, 0x67e8f9);
+      const ecx = Math.round(ex / 3), ecy = Math.round(ey / 3);
+      for (const [dx, dy] of [[0, 0], [2, 0], [-2, 0], [0, 2], [0, -2]]) this.pxCell(ag, ecx + dx, ecy + dy, 0xffffff, 0.95);
+    } else if (weapon === "GRENADE") {
+      const dist = Math.min(400, Math.hypot(wx - px, wy - py));
+      const tx = px + Math.cos(rot) * dist, ty = py + Math.sin(rot) * dist;
+      // zonas de daño: externa (anillo punteado) e interna (anillo + relleno tramado)
+      this.pxRing(ag, tx, ty, 280, 0xf59e0b, 0.5, 3);
+      this.pxDither(ag, tx, ty, 140, 0xef4444, 0.35);
+      this.pxRing(ag, tx, ty, 140, 0xef4444, 0.75);
+      // huella en el suelo + arco pixel + marcador de caída
+      const gm = muzzleOffset("GRENADE") ?? [18, 0];
+      const sx = px + gm[0] * Math.cos(rot) - gm[1] * Math.sin(rot);
+      const sy = py + gm[0] * Math.sin(rot) + gm[1] * Math.cos(rot);
+      this.pxLine(ag, sx, sy, tx, ty, 0x000000, 0.2, 2);
+      this.drawGrenadeArc(ag, sx, sy, tx, ty, grenadeArcHeight(dist), 0, 1, { dot: 3, alpha: 0.95, marker: 10, march: true });
+    } else if (weapon === "MELEE") {
+      this.pxSlice(ag, px, py, 75, rot, 0.55, 0xfbbf24, 0.2, 0.9);
+    } else {
+      // el área llega hasta la punta de las balas (salen a SERVER_SPAWN_DIST del centro)
+      this.pxSlice(ag, px, py, SERVER_SPAWN_DIST.LASER + 480, rot, 0.12, 0x10b981, 0.12, 0.85);
+      ray(rot, 480, 0x6ee7b7);
+    }
+  }
+
+  private drawAimArcAndCrosshair(me: VPlayer, wx: number, wy: number, grenadeOnly = false) {
+    if (PIXEL_AIM && !grenadeOnly) return this.drawAimPixel(me, wx, wy);
+    const cg = this.crosshairGfx;
+    const ag = this.aimConeGfx;
+    if (!grenadeOnly) {
+      cg.clear();
+      ag.clear();
+    }
 
     if (me.isGhost) return;
 
     // Retícula Crosshair en la posición del ratón
+    if (!grenadeOnly) {
     cg.lineStyle(2, 0x10b981, 0.9);
     cg.strokeCircle(wx, wy, 10);
     cg.lineStyle(1.5, 0xffffff, 1);
@@ -3544,6 +3984,7 @@ export class MainScene extends Phaser.Scene {
     cg.lineBetween(wx + 6, wy, wx + 14, wy);
     cg.lineBetween(wx, wy - 14, wx, wy - 6);
     cg.lineBetween(wx, wy + 6, wx, wy + 14);
+    }
 
     // Arco o abanico de disparo según arma equipada (El alcance coincide exactamente con el límite de las balas)
     const weapon = me.equippedWeapon;
@@ -3583,30 +4024,36 @@ export class MainScene extends Phaser.Scene {
       ag.lineStyle(1.5, 0xffffff, 0.9);
       ag.strokeCircle(endX, endY, 9);
     } else if (weapon === "GRENADE") {
-      // Granada: Se dirige y se queda justo donde se apunta con el cursor (clamped a 400px máx)
+      // Granada: cae justo donde se apunta (máx. 400px). Haz de lanzamiento:
+      // arco de puntos pixel desde la mano + huella en el suelo + marcador de caída.
       const dist = Math.min(400, Math.hypot(wx - px, wy - py));
       const targetX = px + Math.cos(rot) * dist;
       const targetY = py + Math.sin(rot) * dist;
+      const m = muzzleOffset("GRENADE") ?? [18, 0];
+      const sx = px + m[0] * Math.cos(rot) - m[1] * Math.sin(rot);
+      const sy = py + m[0] * Math.sin(rot) + m[1] * Math.cos(rot);
+      const h = grenadeArcHeight(dist);
 
-      // Línea de trayectoria
-      ag.lineStyle(2, 0x84cc16, 0.55);
-      ag.lineBetween(px, py, targetX, targetY);
-
-      // Zona interna de explosión (140px radio - 100 de daño)
-      ag.fillStyle(0xef4444, 0.14);
+      // Zonas de daño (más suaves que la trayectoria)
+      ag.fillStyle(0xf59e0b, 0.05);
+      ag.fillCircle(targetX, targetY, 280);
+      ag.lineStyle(1, 0xf59e0b, 0.3);
+      ag.strokeCircle(targetX, targetY, 280);
+      ag.fillStyle(0xef4444, 0.09);
       ag.fillCircle(targetX, targetY, 140);
-      ag.lineStyle(2, 0xef4444, 0.7);
+      ag.lineStyle(1.5, 0xef4444, 0.45);
       ag.strokeCircle(targetX, targetY, 140);
 
-      // Zona externa de explosión (280px radio - 70 de daño, doble de grande)
-      ag.fillStyle(0xf59e0b, 0.07);
-      ag.fillCircle(targetX, targetY, 280);
-      ag.lineStyle(1.5, 0xf59e0b, 0.45);
-      ag.strokeCircle(targetX, targetY, 280);
+      // Huella en el suelo (punteada y tenue)
+      const steps = Math.max(6, Math.round(dist / 16));
+      ag.fillStyle(0x000000, 0.18);
+      for (let i = 1; i < steps; i += 2) {
+        const t = i / steps;
+        ag.fillRect(sx + (targetX - sx) * t - 1.5, sy + (targetY - sy) * t - 1.5, 3, 3);
+      }
 
-      // Marcador del punto de caída
-      ag.fillStyle(0x84cc16, 0.95);
-      ag.fillCircle(targetX, targetY, 6);
+      // Arco de puntos pixel que avanzan hacia el objetivo + marcador de caída
+      this.drawGrenadeArc(ag, sx, sy, targetX, targetY, h, 0, 1, { dot: 3, alpha: 0.95, steps, marker: 10, march: true });
     } else if (weapon === "MELEE") {
       // Garras: Alcance exacto de 75px
       const range = 75;
