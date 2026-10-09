@@ -9,8 +9,24 @@ import {
   preloadCatSprites, createCatAnims, hasCatSprites, applyCatSkin, updateCatAnim,
   getWeaponHold, applyWeaponSprite, applyHandSprite, handPosition, muzzleOffset,
   bulletKey, grenadeKey, applyProjectileSprite, hasGhostSprites, applyGhostSkin, playEffect, makeLoopingEffect,
+  effectAnimKey, playCatDash,
   CAT_SPRITE_SCALE,
 } from "../catSprites";
+
+/** Celdas (pixels de 2px) del anillo de recarga, con su posición angular 0..1
+ *  desde arriba en sentido horario. */
+const RELOAD_RING: [number, number, number][] = (() => {
+  const cells: [number, number, number][] = [];
+  for (let gy = -8; gy < 8; gy++) {
+    for (let gx = -8; gx < 8; gx++) {
+      const d = Math.hypot(gx + 0.5, gy + 0.5);
+      if (d < 5.4 || d > 6.5) continue;
+      const a = Math.atan2(gx + 0.5, -(gy + 0.5));
+      cells.push([gx, gy, (a < 0 ? a + Math.PI * 2 : a) / (Math.PI * 2)]);
+    }
+  }
+  return cells;
+})();
 
 /** Margen inferior del minimapa: queda por encima de la barra de controles del HUD. */
 const MINIMAP_BOTTOM = 84;
@@ -54,6 +70,8 @@ interface VPlayer {
   catSprite:   Phaser.GameObjects.Sprite;    // Cuerpo pixel art (ver catSprites.ts)
   lastX: number; lastY: number;              // Posición del frame anterior (para idle / walk)
   walkHold: number;                          // ms restantes mostrando walk (evita parpadeo idle/walk)
+  dashAnimUntil?: number;                    // hasta cuándo se reproduce la animación de dash (no pisarla)
+  reloadAnimActive?: boolean;                // las manos están haciendo la animación de recarga
   bodyGfx:     Phaser.GameObjects.Graphics;
   earsGfx:     Phaser.GameObjects.Graphics;
   faceGfx:     Phaser.GameObjects.Graphics;
@@ -70,6 +88,7 @@ interface VPlayer {
   reloadSpinnerContainer: Phaser.GameObjects.Container;
   reloadIconSprite: Phaser.GameObjects.Image;
   reloadProgressGfx: Phaser.GameObjects.Graphics;
+  reloadSpin: Phaser.GameObjects.Sprite | null;  // ícono pixel de recarga (flechas girando)
   emoteGfx:    Phaser.GameObjects.Container;
   emoteText:   Phaser.GameObjects.Text;
   tx: number; ty: number; tr: number;
@@ -307,8 +326,9 @@ export class MainScene extends Phaser.Scene {
 
   // Partículas pixel de superficie (tierra / agua / astillas) para dash, roll y pasos
   private surfParticles: { x: number; y: number; vx: number; vy: number; life: number; max: number;
-                           color: number; w: number; h: number }[] = [];
+                           color: number; w: number; h: number; front?: boolean; drag?: number }[] = [];
   private surfGfx!: Phaser.GameObjects.Graphics;
+  private fxGfx!: Phaser.GameObjects.Graphics;      // partículas pixel por encima de los gatos
   private localShootCooldown = 0;
 
   // Object Pools for High FPS Zero-GC Performance
@@ -341,6 +361,7 @@ export class MainScene extends Phaser.Scene {
 
     // 1.2 Minimapa base pre-renderizado (Zero-Redraw)
     this.surfGfx = this.add.graphics().setDepth(55);   // debajo de los personajes (60)
+    this.fxGfx = this.add.graphics().setDepth(80);     // chispas y hojas, por encima
     this.minimapBaseGfx = this.add.graphics().setDepth(199).setScrollFactor(0);
     this.drawMinimapBase();
     this.scale.on("resize", () => this.drawMinimapBase());
@@ -752,7 +773,7 @@ export class MainScene extends Phaser.Scene {
     const travel = (range: number) => Math.max(0, (SERVER_SPAWN_DIST[weapon] ?? 28) + range - mx);
 
     // Destello de boca de cañón
-    this.createSparksFX(spawnX, spawnY, weapon === "SNIPER" ? 0x06b6d4 : weapon === "SHOTGUN" ? 0xef4444 : 0x10b981);
+    this.createSparksFX(spawnX, spawnY, weapon === "SHOTGUN" ? 0xf07a1e : 0xffd23f);   // fogonazo cálido
 
     if (weapon === "SHOTGUN") {
       const pellets = 5;
@@ -872,7 +893,7 @@ export class MainScene extends Phaser.Scene {
 
     this.net.sendReload();
     soundManager.playReload();
-    this.showDamageText(me.container.x, me.container.y - 25, "RECARGANDO...", "#fbbf24");
+    // (sin texto "RECARGANDO...": lo indica el ícono pixel de flechas girando)
   }
 
   private performLocalDash(me: VPlayer) {
@@ -949,6 +970,8 @@ export class MainScene extends Phaser.Scene {
     destX = Math.max(30, Math.min(8000 - 30, destX));
     destY = Math.max(30, Math.min(8000 - 30, destY));
 
+    this.spawnDashAfterimages(v, 4, 30);
+
     // Partículas pixel de la superficie (tierra / agua / astillas) a lo largo del dash
     for (let i = 0; i < 5; i++) {
       this.time.delayedCall(i * 28, () => {
@@ -977,7 +1000,6 @@ export class MainScene extends Phaser.Scene {
     targetY?: number
   ) {
     this.cameras.main.shake(70, 0.004);
-    v.isRolling = true;
 
     let destX = typeof targetX === "number" ? targetX : v.container.x + dirX * distance;
     let destY = typeof targetY === "number" ? targetY : v.container.y + dirY * distance;
@@ -1007,26 +1029,11 @@ export class MainScene extends Phaser.Scene {
       });
     }
 
-    // Giro acrobático 360° en la dirección del movimiento.
-    // Primero se cortan los tweens previos: si se cortaran después, también
-    // matarían este giro y isRolling quedaría trabado en true (rotación congelada).
-    const spinDir = dirX >= 0 ? 1 : -1;
-    const initialRot = v.container.rotation;
+    // Dash (antes era un giro de 360°): el gato sale disparado sin girar, sigue
+    // apuntando, y deja una estela de siluetas pixel que se apagan.
+    v.isRolling = false;
     this.tweens.killTweensOf(v.container);
-
-    this.tweens.add({
-      targets: v.container,
-      rotation: initialRot + spinDir * Math.PI * 2,
-      duration: 220,
-      ease: "Cubic.easeInOut",
-      onComplete: () => {
-        v.isRolling = false;
-      },
-    });
-    // Seguro: si otro efecto (dash, nuevo roll) corta el giro, igual se libera la rotación
-    this.time.delayedCall(260, () => {
-      v.isRolling = false;
-    });
+    this.spawnDashAfterimages(v, 4, 40);
 
     this.tweens.add({
       targets: v.container,
@@ -1169,7 +1176,7 @@ export class MainScene extends Phaser.Scene {
     s.projectiles.onRemove((_: Projectile, id: string) => {
       const v = this.projs.get(id);
       if (v) {
-        this.createSparksFX(v.g.x, v.g.y, 0xf472b6);
+        this.createSparksFX(v.g.x, v.g.y, 0xffd23f);
         v.g.destroy();
         v.trail.destroy();
         this.projs.delete(id);
@@ -1222,6 +1229,16 @@ export class MainScene extends Phaser.Scene {
     this.room.onMessage("playerReloadComplete", (d: any) => {
       const v = this.players.get(d.id);
       if (v) {
+        // recarga completa: flechas verdes + halo, crece un poco y se desvanece
+        if (v.reloadSpin && v.reloadSpinnerContainer.visible && !v.isGhost &&
+            this.isInCameraView(v.container.x, v.container.y, 120)) {
+          const fx = playEffect(this, "reload_done", v.uiContainer.x, v.uiContainer.y - 64, 2, 66, false);
+          if (fx) {
+            this.tweens.add({ targets: fx, scale: 3, duration: 260, ease: "Back.easeOut" });
+            this.tweens.add({ targets: fx, alpha: 0, delay: 260, duration: 220 });
+            this.createSparksFX(v.uiContainer.x, v.uiContainer.y - 64, 0x22c55e);
+          }
+        }
         v.isReloading = false;
         v.reloadTimer = 0;
         v.reloadSpinnerContainer.setVisible(false);
@@ -1229,7 +1246,7 @@ export class MainScene extends Phaser.Scene {
         v.ammo = d.ammo ?? v.ammo;
         v.reserveAmmo = d.reserveAmmo ?? v.reserveAmmo;
         if (v.isMe) {
-          this.showDamageText(v.container.x, v.container.y - 25, "¡LISTO!", "#10b981");
+          // (sin texto "¡LISTO!": avisa el ícono pixel de recarga que se vuelve verde)
         }
       }
     });
@@ -1748,6 +1765,82 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
+  /** Estela de dash: copias del sprite del gato (silueta clara) que quedan en el
+   *  recorrido y se apagan. Respeta los pixels (misma escala y frame que el gato). */
+  private spawnDashAfterimages(v: VPlayer, count: number, everyMs: number) {
+    if (!v.catSprite.visible || !this.isInCameraView(v.container.x, v.container.y, 120)) return;
+    // animación de dash del gato (agacharse, impulso, en el aire, caída)
+    const ms = playCatDash(v.catSprite);
+    if (ms) {
+      v.dashAnimUntil = this.time.now + ms;
+      this.playDashHop(v, ms);
+    }
+    for (let i = 0; i < count; i++) {
+      this.time.delayedCall(i * everyMs, () => {
+        if (!v.container.active || !v.catSprite.visible) return;
+        const cs = v.catSprite;
+        const ghost = this.add.sprite(v.container.x, v.container.y, cs.texture.key, cs.frame.name)
+          .setOrigin(cs.originX, cs.originY).setScale(cs.scaleX, cs.scaleY)
+          .setRotation(v.container.rotation).setDepth(58)
+          .setTintFill(0xfff1b8).setAlpha(0.8 - i * 0.12);
+        this.tweens.add({ targets: ghost, alpha: 0, duration: 240, ease: "Quad.easeIn", onComplete: () => ghost.destroy() });
+      });
+    }
+  }
+
+  /** Recarga: la mano de apoyo baja al costado del arma (saca el cargador) y vuelve
+   *  (mete uno nuevo); la del gatillo hace un vaivén y el arma se inclina apenas.
+   *  Coordenadas locales del contenedor (x = hacia donde apunta), en pasos de 1 pixel. */
+  private animateReloadHands(v: VPlayer, time: number) {
+    if (!v.leftHandGfx.visible || v.equippedWeapon === "MELEE") return;
+    const P = 3;                                   // 1 pixel del sprite
+    const t = (time % 560) / 560;
+    const o = Math.sin(Math.PI * t);               // 0 -> 1 -> 0 (bajar y volver)
+    const lx = v.leftHandGfx.getData("baseX") ?? v.leftHandGfx.x;
+    const ly = v.leftHandGfx.getData("baseY") ?? v.leftHandGfx.y;
+    const rx = v.rightHandGfx.getData("baseX") ?? v.rightHandGfx.x;
+    const ry = v.rightHandGfx.getData("baseY") ?? v.rightHandGfx.y;
+    v.leftHandGfx.setPosition(lx - Math.round(2 * o) * P, ly + Math.round(4 * o) * P);
+    v.rightHandGfx.setPosition(rx, ry + (t > 0.5 ? P : 0));
+    v.aimGfx.setRotation(0.12 * o);
+    v.reloadAnimActive = true;
+  }
+
+  private resetReloadHands(v: VPlayer) {
+    v.leftHandGfx.setPosition(v.leftHandGfx.getData("baseX") ?? v.leftHandGfx.x, v.leftHandGfx.getData("baseY") ?? v.leftHandGfx.y);
+    v.rightHandGfx.setPosition(v.rightHandGfx.getData("baseX") ?? v.rightHandGfx.x, v.rightHandGfx.getData("baseY") ?? v.rightHandGfx.y);
+    v.aimGfx.setRotation(0);
+    v.reloadAnimActive = false;
+  }
+
+  /** Saltito del dash: el gato (con manos y arma) sube hasta 10 px en pantalla y
+   *  cae, con una sombra que queda en el suelo. El contenedor rota con la mira,
+   *  así que el "arriba" de pantalla se pasa a coordenadas locales. */
+  private playDashHop(v: VPlayer, ms: number) {
+    const parts = [v.catSprite, v.aimGfx, v.leftHandGfx, v.rightHandGfx];
+    // posición de reposo vigente (si cambia el arma en medio del dash, se respeta)
+    const rest = (p: Phaser.GameObjects.Sprite | Phaser.GameObjects.Image): [number, number] =>
+      p === v.leftHandGfx || p === v.rightHandGfx
+        ? [p.getData("baseX") ?? p.x, p.getData("baseY") ?? p.y]
+        : [0, 0];
+    const shadow = this.add.ellipse(v.container.x, v.container.y + 6, 30, 12, 0x000000, 0.28).setDepth(57);
+    const st = { t: 0 };
+    this.tweens.add({
+      targets: st, t: 1, duration: ms, ease: "Linear",
+      onUpdate: () => {
+        const lift = Math.round(Math.sin(Math.PI * st.t) * 10 / 3) * 3;   // en pasos de 1 pixel del sprite
+        const rot = v.container.rotation;
+        const lx = -lift * Math.sin(rot), ly = -lift * Math.cos(rot);
+        parts.forEach(p => { const [bx, by] = rest(p); p.setPosition(bx + lx, by + ly); });
+        shadow.setPosition(v.container.x, v.container.y + 6).setScale(1 - 0.25 * Math.sin(Math.PI * st.t));
+      },
+      onComplete: () => {
+        parts.forEach(p => { const [bx, by] = rest(p); p.setPosition(bx, by); });
+        shadow.destroy();
+      },
+    });
+  }
+
   /** Superficie bajo un punto: puentes de madera, río o tierra/pasto. */
   private surfaceAt(x: number, y: number): "wood" | "water" | "dirt" {
     const bridges = [[4100, 4260, 1950, 2050], [3770, 3930, 3950, 4050], [4120, 4280, 5950, 6050]];
@@ -1788,16 +1881,17 @@ export class MainScene extends Phaser.Scene {
   }
 
   private updateSurfParticles(dt: number) {
-    const g = this.surfGfx;
-    g.clear();
+    this.surfGfx.clear();
+    this.fxGfx.clear();
     const keep: typeof this.surfParticles = [];
     for (const p of this.surfParticles) {
       p.life -= dt;
       if (p.life <= 0) continue;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
-      p.vx *= 0.88;
-      p.vy *= 0.88;
+      p.vx *= p.drag ?? 0.88;
+      p.vy *= p.drag ?? 0.88;
+      const g = p.front ? this.fxGfx : this.surfGfx;
       const cx = Math.round(p.x / 3), cy = Math.round(p.y / 3);
       g.fillStyle(p.color, Math.min(1, (p.life / p.max) * 1.4));
       g.fillRect(cx * 3 - 1.5, cy * 3 - 1.5, p.w * 3, p.h * 3);
@@ -2406,7 +2500,7 @@ export class MainScene extends Phaser.Scene {
     hpBg.fillRect(-24, -40, 48, 4);
 
     const label = this.add.text(0, -54,
-      isMe ? "TÚ 🐾" : (p.name || id.slice(0, 6)),
+      isMe ? "" : (p.name || id.slice(0, 6)),   // sin "TÚ" sobre el propio gato
       {
         fontFamily: "Outfit, Inter, sans-serif",
         fontSize: "12px",
@@ -2434,15 +2528,34 @@ export class MainScene extends Phaser.Scene {
 
     // Símbolo de Recarga Giratorio Táctico (posicionado arriba del personaje a y = -64px)
     const reloadSpinnerContainer = this.add.container(0, -64).setVisible(false);
+    // Recarga pixel art (pixels de 2px): disco oscuro + balita de latón en el centro;
+    // el anillo de progreso se dibuja en update
     const reloadBg = this.add.graphics();
-    reloadBg.fillStyle(0x020617, 0.88);
-    reloadBg.fillCircle(0, 0, 15);
-    reloadBg.lineStyle(1.5, 0x334155, 1);
-    reloadBg.strokeCircle(0, 0, 15);
+    for (let gy = -8; gy < 8; gy++) {
+      for (let gx = -8; gx < 8; gx++) {
+        const d = Math.hypot(gx + 0.5, gy + 0.5);
+        if (d > 7.6) continue;
+        reloadBg.fillStyle(d > 6.8 ? 0x14101c : 0x0f172a, 0.92);
+        reloadBg.fillRect(gx * 2, gy * 2, 2, 2);
+      }
+    }
+    const BULLET_ICON = [".t.", "tbt", "bBb", "bBb", "bBb", "BBB", "ddd"];
+    const ICON_COLORS: Record<string, number> = { t: 0xfff1b8, b: 0xe0a63a, B: 0xa8701e, d: 0x6b4024 };
+    BULLET_ICON.forEach((row, ry) => [...row].forEach((ch, rx) => {
+      if (ch === ".") return;
+      reloadBg.fillStyle(ICON_COLORS[ch], 1);
+      reloadBg.fillRect((rx - 1.5) * 2, (ry - 3.5) * 2, 2, 2);
+    }));
 
     const reloadProgressGfx = this.add.graphics();
-    const reloadIconSprite = this.add.image(0, 0, "tex_reload_icon").setDisplaySize(20, 20);
+    const reloadIconSprite = this.add.image(0, 0, "tex_reload_icon").setVisible(false); // reemplazado por la balita pixel
     reloadSpinnerContainer.add([reloadBg, reloadProgressGfx, reloadIconSprite]);
+    // Ícono pixel de recarga (dos flechas girando); si cargó, reemplaza al disco + balita
+    const reloadSpin = makeLoopingEffect(this, "reload", 0, 0, 2);
+    if (reloadSpin) {
+      reloadBg.clear();
+      reloadSpinnerContainer.add(reloadSpin);
+    }
 
     // El contenedor de visuales del gato rota con la dirección de apuntado (cuerpo + manos + arma)
     container.add([catSprite, bodyGfx, earsGfx, faceGfx, aimGfx, leftHandGfx, rightHandGfx]);
@@ -2457,7 +2570,7 @@ export class MainScene extends Phaser.Scene {
       lastX: px, lastY: py, walkHold: 0,
       punchAlternator: 0,
       hpBg, hpFill, shdFill, label, buffIcon,
-      reloadBarGfx, reloadSpinnerContainer, reloadIconSprite, reloadProgressGfx, emoteGfx, emoteText,
+      reloadBarGfx, reloadSpinnerContainer, reloadIconSprite, reloadProgressGfx, reloadSpin, emoteGfx, emoteText,
       tx: px, ty: py, tr: p.rotation || 0,
       hp: p.hp ?? 100, maxHp: p.maxHp ?? 100,
       shield: p.shield ?? 0, maxShield: p.maxShield ?? 50,
@@ -2826,14 +2939,14 @@ export class MainScene extends Phaser.Scene {
       v.hpBg.setVisible(false);
       v.hpFill.setVisible(false);
       v.shdFill.setVisible(false);
-      v.label.setText((v.isMe ? "TÚ" : v.name) + " 👻");
+      v.label.setText(v.isMe ? "" : v.name + " 👻");
       v.container.setAlpha(hasGhostSprites() ? 0.9 : 0.5);
       v.uiContainer.setAlpha(0.7);
     } else {
       v.hpBg.setVisible(true);
       v.hpFill.setVisible(true);
       v.shdFill.setVisible(true);
-      v.label.setText(v.isMe ? "TÚ 🐾" : v.name);
+      v.label.setText(v.isMe ? "" : v.name);
       v.container.setAlpha(1);
       v.uiContainer.setAlpha(1);
     }
@@ -2978,49 +3091,38 @@ export class MainScene extends Phaser.Scene {
     });
   }
 
+  /** Chispas pixel (fogonazo, impactos, ítems): pixels del color dado, su versión
+   *  clara y blanco, que saltan y se apagan rápido. */
   private createSparksFX(x: number, y: number, color = 0x10b981) {
     if (!this.isInCameraView(x, y, 80)) return;
-    for (let i = 0; i < 6; i++) {
-      const p = this.add.graphics().setDepth(80).setPosition(x, y);
-      p.fillStyle(color, 1);
-      p.fillCircle(0, 0, 2.5);
-
-      const angle = Math.random() * Math.PI * 2;
-      const speed = 40 + Math.random() * 80;
-
-      this.tweens.add({
-        targets: p,
-        x: x + Math.cos(angle) * speed,
-        y: y + Math.sin(angle) * speed,
-        alpha: 0,
-        duration: 300,
-        onComplete: () => p.destroy(),
+    const light = (((((color >> 16) & 255) + 255) >> 1) << 16) | (((((color >> 8) & 255) + 255) >> 1) << 8) | (((color & 255) + 255) >> 1);
+    const pal = [0xffffff, light, color, color];
+    for (let i = 0; i < 9 && this.surfParticles.length < 450; i++) {
+      const a = Math.random() * Math.PI * 2, sp = 70 + Math.random() * 110;
+      const life = 0.12 + Math.random() * 0.18;
+      this.surfParticles.push({
+        x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life, max: life,
+        color: pal[Math.floor(Math.random() * pal.length)], w: 1, h: 1, front: true, drag: 0.86,
       });
     }
   }
 
+  /** Hojitas pixel (al entrar/salir de un arbusto): palitos verdes que saltan y caen. */
   private createLeavesFX(x: number, y: number) {
     if (!this.isInCameraView(x, y, 80)) return;
-    for (let i = 0; i < 5; i++) {
-      const leaf = this.add.graphics().setDepth(85).setPosition(x, y);
-      leaf.fillStyle(0x34d399, 0.9);
-      leaf.fillEllipse(0, 0, 6, 3);
-      leaf.rotation = Math.random() * Math.PI;
-
-      const angle = Math.random() * Math.PI * 2;
-      const dist = 30 + Math.random() * 40;
-
-      this.tweens.add({
-        targets: leaf,
-        x: x + Math.cos(angle) * dist,
-        y: y + Math.sin(angle) * dist,
-        alpha: 0,
-        rotation: leaf.rotation + 2,
-        duration: 450,
-        onComplete: () => leaf.destroy(),
+    const pal = [0x1d3b24, 0x2f6a3a, 0x4f8f3e, 0x8fbf4a];
+    for (let i = 0; i < 8 && this.surfParticles.length < 450; i++) {
+      const a = Math.random() * Math.PI * 2, sp = 35 + Math.random() * 60;
+      const life = 0.45 + Math.random() * 0.4;
+      const horiz = Math.random() < 0.5;
+      this.surfParticles.push({
+        x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 15, life, max: life,
+        color: pal[Math.floor(Math.random() * pal.length)],
+        w: horiz ? 2 : 1, h: horiz ? 1 : 2, front: true, drag: 0.93,
       });
     }
   }
+
 
   public showGraphicClawSlash(x: number, y: number, angle: number) {
     soundManager.playClawSlash();
@@ -3418,11 +3520,13 @@ export class MainScene extends Phaser.Scene {
         }
       }
 
+      if (v.reloadAnimActive && (!v.isReloading || v.isGhost)) this.resetReloadHands(v);
+
       // Sprite pixel art: walk mientras se mueve, idle cuando está quieto
       if (inCam && v.catSprite.visible) {
         const moved = Math.hypot(v.container.x - v.lastX, v.container.y - v.lastY);
         v.walkHold = moved > 0.4 ? 120 : Math.max(0, v.walkHold - delta);
-        updateCatAnim(v.catSprite, v.walkHold > 0);
+        if (!v.dashAnimUntil || time >= v.dashAnimUntil) updateCatAnim(v.catSprite, v.walkHold > 0);
         // el fantasma "respira": pulso de transparencia (no depende de la rotación)
         v.catSprite.setAlpha(v.isGhost ? 0.8 + 0.2 * Math.sin(time / 260) : 1);
       }
@@ -3433,6 +3537,10 @@ export class MainScene extends Phaser.Scene {
       if (v.isReloading && !v.isGhost && inCam) {
         if (!v.reloadSpinnerContainer.visible) {
           v.reloadSpinnerContainer.setVisible(true);
+          if (v.reloadSpin) {
+            const anim = effectAnimKey(this, "reload");
+            if (anim) v.reloadSpin.play(anim);
+          }
           v.reloadSpinnerContainer.setScale(0.2);
           this.tweens.killTweensOf(v.reloadSpinnerContainer);
           this.tweens.add({
@@ -3443,8 +3551,6 @@ export class MainScene extends Phaser.Scene {
           });
         }
 
-        // Rotación continua fluida del ícono de recarga (~1.4 vueltas por segundo)
-        v.reloadIconSprite.rotation += (delta / 1000) * 8.8;
 
         // Cuenta regresiva suave de recarga en cliente
         if (v.reloadTimer > 0) {
@@ -3453,16 +3559,14 @@ export class MainScene extends Phaser.Scene {
         const maxTime = Math.max(0.1, v.maxReloadTimer || 2.0);
         const progress = Math.max(0, Math.min(1, 1 - (v.reloadTimer / maxTime)));
 
-        // Dibujar anillo de progreso alrededor del símbolo
-        v.reloadProgressGfx.clear();
-        v.reloadProgressGfx.lineStyle(2, 0x1e293b, 0.7);
-        v.reloadProgressGfx.strokeCircle(0, 0, 13);
+        // Manos recargando (no durante el saltito del dash, que también las mueve)
+        if (!v.dashAnimUntil || time >= v.dashAnimUntil) this.animateReloadHands(v, time);
 
-        if (progress > 0.01) {
-          v.reloadProgressGfx.lineStyle(2.5, 0xfacc15, 1);
-          v.reloadProgressGfx.beginPath();
-          v.reloadProgressGfx.arc(0, 0, 13, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2, false);
-          v.reloadProgressGfx.strokePath();
+        // Anillo pixel de progreso (solo respaldo, si el sprite de flechas no cargó)
+        v.reloadProgressGfx.clear();
+        if (!v.reloadSpin) for (const [gx, gy, t] of RELOAD_RING) {
+          v.reloadProgressGfx.fillStyle(t <= progress ? 0xfacc15 : 0x334155, 1);
+          v.reloadProgressGfx.fillRect(gx * 2, gy * 2, 2, 2);
         }
       } else {
         if (v.reloadSpinnerContainer.visible) {

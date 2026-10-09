@@ -22,8 +22,8 @@ interface AsepriteFrameData {
 
 let catKeys: string[] = [];
 let handKeys: string[] = [];
-let ghostKeys: string[] = [];
-let effectKeys: Record<string, string> = {};   // effect_id -> sheet (p.ej. explosion)   // fantasma de cada personaje (al morir), por catColor
+let ghostKeys: string[] = [];                   // fantasma de cada personaje (al morir), por catColor
+let effectKeys: Record<string, string> = {};   // effect_id -> sheet (p.ej. explosion)
 
 /** Cómo se empuña un arma, en pixels del sprite relativos al centro del gato. */
 export interface WeaponHold {
@@ -259,4 +259,20 @@ export function makeLoopingEffect(scene: Phaser.Scene, id: string, x: number, y:
   const fx = scene.add.sprite(x, y, key, `${key} 0.ase`).setOrigin(0.5).setScale(scale);
   if (tag) fx.play(`${key}:${tag}`);
   return fx;
+}
+
+/** Clave de animación "<sheet>:<tag>" de un efecto (null si no está cargado). */
+export function effectAnimKey(scene: Phaser.Scene, id: string): string | null {
+  const key = effectKeys[id];
+  if (!key) return null;
+  const tag = (scene.textures.get(key).customData as { meta: AsepriteMeta }).meta.frameTags[0]?.name;
+  return tag ? `${key}:${tag}` : null;
+}
+
+/** Reproduce una vez la animación de dash del gato (si la tiene). Devuelve su duración en ms. */
+export function playCatDash(sprite: Phaser.GameObjects.Sprite): number {
+  const anim = `${sprite.texture.key}:dash`;
+  if (!catKeys.includes(sprite.texture.key) || !sprite.scene.anims.exists(anim)) return 0;
+  sprite.play({ key: anim, repeat: 0 });
+  return sprite.anims.currentAnim?.duration ?? 220;
 }

@@ -171,6 +171,8 @@
   "effects": {
     "explosion": "efecto-explosion",
     "ghost_kitten": "efecto-gatito-fantasma",
+    "reload_done": "efecto-recarga-lista",
+    "reload": "efecto-recarga",
     "trap_burst": "efecto-trampa-estallido",
     "trap": "efecto-trampa",
     "tomb": "efecto-tumba",
