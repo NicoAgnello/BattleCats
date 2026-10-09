@@ -5,6 +5,16 @@ import { GameState, Player, Projectile, Trap, Bush, ItemPickup, Obstacle } from 
 import { soundManager } from "../SoundManager";
 import { sseManager } from "../SSEClient";
 import { STRUCTURES, StructureDef } from "../structures";
+import {
+  preloadCatSprites, createCatAnims, hasCatSprites, applyCatSkin, updateCatAnim,
+  getWeaponHold, applyWeaponSprite, applyHandSprite, handPosition, muzzleOffset,
+} from "../catSprites";
+
+/** Distancia al centro del jugador a la que el SERVIDOR crea cada proyectil
+ *  (JungleRoom.ts). Las balas visuales salen de la boca del arma pixel art pero
+ *  terminan donde termina la del servidor, para no cambiar el alcance real. */
+const SERVER_SPAWN_DIST: Record<string, number> = { LASER: 28, SHOTGUN: 26, SNIPER: 30, GRENADE: 26 };
+const PROJ_TYPE_WEAPON: Record<string, string> = { PELLET: "SHOTGUN", SNIPER_BEAM: "SNIPER", GRENADE: "GRENADE" };
 
 interface VStructure {
   def: StructureDef;
@@ -25,12 +35,15 @@ const WEAPON_CONFIGS: Record<string, { shootCooldown: number; speed: number; ran
 interface VPlayer {
   container:   Phaser.GameObjects.Container; // Contenedor visual rotativo del personaje (gato + arma)
   uiContainer: Phaser.GameObjects.Container; // Contenedor HUD superior que NUNCA rota (barra vida, nombre)
+  catSprite:   Phaser.GameObjects.Sprite;    // Cuerpo pixel art (ver catSprites.ts)
+  lastX: number; lastY: number;              // Posición del frame anterior (para idle / walk)
+  walkHold: number;                          // ms restantes mostrando walk (evita parpadeo idle/walk)
   bodyGfx:     Phaser.GameObjects.Graphics;
   earsGfx:     Phaser.GameObjects.Graphics;
   faceGfx:     Phaser.GameObjects.Graphics;
-  aimGfx:      Phaser.GameObjects.Graphics;
-  leftHandGfx: Phaser.GameObjects.Graphics;  // Mano izquierda estilo Suroi.io
-  rightHandGfx: Phaser.GameObjects.Graphics; // Mano derecha estilo Suroi.io
+  aimGfx:      Phaser.GameObjects.Image;     // Arma pixel art (en reposo en x=0: el retroceso la mueve)
+  leftHandGfx: Phaser.GameObjects.Image;     // Mano de adelante (apoyo), pixel art
+  rightHandGfx: Phaser.GameObjects.Image;    // Mano de atrás (gatillo), pixel art
   punchAlternator: number;                   // Alternador de puñetazo / zarpazo
   hpBg:        Phaser.GameObjects.Graphics;
   hpFill:      Phaser.GameObjects.Graphics;
@@ -77,6 +90,7 @@ interface VProj {
   targetY?: number;
   isArmed?: boolean;
   blinkTimer?: number;
+  hideNear?: { x: number; y: number; r: number }; // oculto hasta pasar la boca del arma del tirador
 }
 
 interface VTrap {
@@ -278,8 +292,14 @@ export class MainScene extends Phaser.Scene {
 
   constructor() { super({ key: "MainScene" }); }
 
+  preload() {
+    // Sprites pixel art de los gatos (public/sprites/, generados con /sprites)
+    preloadCatSprites(this);
+  }
+
   create() {
     this.game.canvas.addEventListener("contextmenu", e => e.preventDefault());
+    createCatAnims(this);
 
     this.physics.world.setBounds(0, 0, 8000, 8000);
     this.cameras.main.setBounds(0, 0, 8000, 8000);
@@ -691,9 +711,15 @@ export class MainScene extends Phaser.Scene {
       return;
     }
 
-    const barrelDist = weapon === "SNIPER" ? 32 : weapon === "SHOTGUN" ? 22 : 28;
-    const spawnX = me.container.x + Math.cos(angle) * barrelDist;
-    const spawnY = me.container.y + Math.sin(angle) * barrelDist;
+    // Boca del cañón del arma pixel art (rotada con el apuntado)
+    const muzzle = muzzleOffset(weapon);
+    const fallbackDist = weapon === "SNIPER" ? 32 : weapon === "SHOTGUN" ? 22 : 28;
+    const [mx, my] = muzzle ?? [fallbackDist, 0];
+    const cosA = Math.cos(angle), sinA = Math.sin(angle);
+    const spawnX = me.container.x + mx * cosA - my * sinA;
+    const spawnY = me.container.y + mx * sinA + my * cosA;
+    // Recorrido para terminar donde termina la bala del servidor
+    const travel = (range: number) => Math.max(0, (SERVER_SPAWN_DIST[weapon] ?? 28) + range - mx);
 
     // Destello de boca de cañón
     this.createSparksFX(spawnX, spawnY, weapon === "SNIPER" ? 0x06b6d4 : weapon === "SHOTGUN" ? 0xef4444 : 0x10b981);
@@ -705,11 +731,11 @@ export class MainScene extends Phaser.Scene {
       for (let i = 0; i < pellets; i++) {
         const offset = (i - (pellets - 1) / 2) * (spread / (pellets - 1));
         const a = angle + offset;
-        this.createLocalVisualBullet(spawnX, spawnY, a, speed, 310 / speed, 4, 0xef4444);
+        this.createLocalVisualBullet(spawnX, spawnY, a, speed, travel(310) / speed, 4, 0xef4444);
       }
     } else if (weapon === "SNIPER") {
       const speed = 1400;
-      this.createLocalVisualBullet(spawnX, spawnY, angle, speed, 980 / speed, 7, 0x06b6d4);
+      this.createLocalVisualBullet(spawnX, spawnY, angle, speed, travel(980) / speed, 7, 0x06b6d4);
     } else if (weapon === "GRENADE") {
       const rawDist = Math.hypot(targetX - me.container.x, targetY - me.container.y);
       const dist = Math.min(400, rawDist);
@@ -739,7 +765,7 @@ export class MainScene extends Phaser.Scene {
       const angles = isTriple ? [angle - 0.18, angle, angle + 0.18] : [angle];
       const speed = 800;
       for (const a of angles) {
-        this.createLocalVisualBullet(spawnX, spawnY, a, speed, 480 / speed, 6, 0xf472b6);
+        this.createLocalVisualBullet(spawnX, spawnY, a, speed, travel(480) / speed, 6, 0xf472b6);
       }
     }
   }
@@ -934,9 +960,12 @@ export class MainScene extends Phaser.Scene {
       if (v.container && v.container.active) this.createDustPuffFX(v.container.x, v.container.y);
     });
 
-    // Giro acrobático 360° en la dirección del movimiento
+    // Giro acrobático 360° en la dirección del movimiento.
+    // Primero se cortan los tweens previos: si se cortaran después, también
+    // matarían este giro y isRolling quedaría trabado en true (rotación congelada).
     const spinDir = dirX >= 0 ? 1 : -1;
     const initialRot = v.container.rotation;
+    this.tweens.killTweensOf(v.container);
 
     this.tweens.add({
       targets: v.container,
@@ -947,8 +976,11 @@ export class MainScene extends Phaser.Scene {
         v.isRolling = false;
       },
     });
+    // Seguro: si otro efecto (dash, nuevo roll) corta el giro, igual se libera la rotación
+    this.time.delayedCall(260, () => {
+      v.isRolling = false;
+    });
 
-    this.tweens.killTweensOf(v.container);
     this.tweens.add({
       targets: v.container,
       x: destX,
@@ -2294,10 +2326,11 @@ export class MainScene extends Phaser.Scene {
     const container = this.add.container(px, py).setDepth(60);
     const uiContainer = this.add.container(px, py).setDepth(65);
 
+    const catSprite = this.add.sprite(0, 0, "__DEFAULT").setVisible(false);
     const bodyGfx  = this.add.graphics();
     const earsGfx  = this.add.graphics();
     const faceGfx  = this.add.graphics();
-    const aimGfx   = this.add.graphics();
+    const aimGfx   = this.add.image(0, 0, "__DEFAULT").setVisible(false);
     const hpBg     = this.add.graphics();
     const hpFill   = this.add.graphics();
     const shdFill  = this.add.graphics();
@@ -2331,8 +2364,8 @@ export class MainScene extends Phaser.Scene {
     emoteGfx.add([emoteBg, emoteText]);
 
     const reloadBarGfx = this.add.graphics();
-    const leftHandGfx = this.add.graphics();
-    const rightHandGfx = this.add.graphics();
+    const leftHandGfx = this.add.image(0, 0, "__DEFAULT").setVisible(false);
+    const rightHandGfx = this.add.image(0, 0, "__DEFAULT").setVisible(false);
 
     // Símbolo de Recarga Giratorio Táctico (posicionado arriba del personaje a y = -64px)
     const reloadSpinnerContainer = this.add.container(0, -64).setVisible(false);
@@ -2347,7 +2380,7 @@ export class MainScene extends Phaser.Scene {
     reloadSpinnerContainer.add([reloadBg, reloadProgressGfx, reloadIconSprite]);
 
     // El contenedor de visuales del gato rota con la dirección de apuntado (cuerpo + manos + arma)
-    container.add([bodyGfx, earsGfx, faceGfx, aimGfx, leftHandGfx, rightHandGfx]);
+    container.add([catSprite, bodyGfx, earsGfx, faceGfx, aimGfx, leftHandGfx, rightHandGfx]);
 
     // El contenedor de interfaz de usuario SOBRE EL PERSONAJE (HUD Billboard)
     // NUNCA rota, siempre permanece horizontal arriba del personaje (y = -42px)
@@ -2355,7 +2388,8 @@ export class MainScene extends Phaser.Scene {
     uiContainer.setRotation(0);
 
     const vp: VPlayer = {
-      container, uiContainer, bodyGfx, earsGfx, faceGfx, aimGfx, leftHandGfx, rightHandGfx,
+      container, uiContainer, catSprite, bodyGfx, earsGfx, faceGfx, aimGfx, leftHandGfx, rightHandGfx,
+      lastX: px, lastY: py, walkHold: 0,
       punchAlternator: 0,
       hpBg, hpFill, shdFill, label, buffIcon,
       reloadBarGfx, reloadSpinnerContainer, reloadIconSprite, reloadProgressGfx, emoteGfx, emoteText,
@@ -2428,11 +2462,12 @@ export class MainScene extends Phaser.Scene {
   }
 
   private drawCat(v: VPlayer) {
-    const { bodyGfx, earsGfx, faceGfx, aimGfx, leftHandGfx, rightHandGfx, isGhost, catColor } = v;
+    const { catSprite, bodyGfx, earsGfx, faceGfx, aimGfx, leftHandGfx, rightHandGfx, isGhost, catColor } = v;
 
     bodyGfx.clear();
     earsGfx.clear();
     faceGfx.clear();
+    catSprite.setVisible(false);
 
     if (isGhost) {
       bodyGfx.fillStyle(0x38bdf8, 0.45);
@@ -2453,9 +2488,9 @@ export class MainScene extends Phaser.Scene {
       faceGfx.fillCircle(7, -6, 2);
       faceGfx.fillCircle(7, 6, 2);
 
-      aimGfx.clear();
-      leftHandGfx.clear();
-      rightHandGfx.clear();
+      aimGfx.setVisible(false);
+      leftHandGfx.setVisible(false);
+      rightHandGfx.setVisible(false);
       return;
     }
 
@@ -2469,6 +2504,15 @@ export class MainScene extends Phaser.Scene {
     ];
 
     const c = colorTable[catColor % colorTable.length];
+
+    // Cuerpo pixel art: si los sprites cargaron, reemplazan al gato vectorial
+    // (las patas y el arma se siguen dibujando en redrawAim)
+    if (hasCatSprites()) {
+      applyCatSkin(catSprite, catColor);
+      catSprite.setVisible(true);
+      this.redrawAim(v, true);
+      return;
+    }
 
     // Aura suave exterior
     bodyGfx.fillStyle(c.main, 0.15);
@@ -2527,166 +2571,40 @@ export class MainScene extends Phaser.Scene {
   }
 
   private redrawAim(v: VPlayer, forceRedraw = false) {
-    if (!forceRedraw && v.equippedWeapon === v.lastWeapon && v.aimGfx.visible) return;
+    // Se llama en cada frame: solo redibuja si cambió el arma o el estado fantasma
+    // (redibujar corta las animaciones de retroceso / zarpazo)
+    const weaponShown = !v.isGhost && !!getWeaponHold(v.equippedWeapon)?.sprite;
+    const handsShown = !v.isGhost;
+    if (!forceRedraw && v.equippedWeapon === v.lastWeapon &&
+        v.aimGfx.visible === weaponShown && v.rightHandGfx.visible === handsShown) return;
     v.lastWeapon = v.equippedWeapon;
 
     const { aimGfx, leftHandGfx, rightHandGfx, isGhost, equippedWeapon, catColor } = v;
-    aimGfx.clear();
-    leftHandGfx.clear();
-    rightHandGfx.clear();
+    const hold = getWeaponHold(equippedWeapon);
 
-    if (isGhost) {
+    if (isGhost || !hold) {
       aimGfx.setVisible(false);
       leftHandGfx.setVisible(false);
       rightHandGfx.setVisible(false);
       return;
     }
 
-    aimGfx.setVisible(true);
-    leftHandGfx.setVisible(true);
-    rightHandGfx.setVisible(true);
+    // Arma pixel art montada según el manifest (/sprites/src/armas.py).
+    // Garras (MELEE): sin arma, solo las manos con las uñas afuera.
+    this.tweens.killTweensOf([aimGfx, leftHandGfx, rightHandGfx]);
+    aimGfx.setPosition(0, 0);
+    applyWeaponSprite(aimGfx, hold);
 
-    const colorTable = [
-      { main: 0x10b981, inner: 0x6ee7b7, earInner: 0xf472b6, stroke: 0x1e293b },
-      { main: 0xef4444, inner: 0xfca5a5, earInner: 0xf43f5e, stroke: 0x1e293b },
-      { main: 0x8b5cf6, inner: 0xc4b5fd, earInner: 0xf472b6, stroke: 0x1e293b },
-      { main: 0xf97316, inner: 0xfed7aa, earInner: 0xfb7185, stroke: 0x1e293b },
-      { main: 0x06b6d4, inner: 0x67e8f9, earInner: 0xf472b6, stroke: 0x1e293b },
-      { main: 0xeab308, inner: 0xfef08a, earInner: 0xf43f5e, stroke: 0x1e293b },
-    ];
-    const c = colorTable[catColor % colorTable.length];
+    const claws = equippedWeapon === "MELEE";
+    const [lx, ly] = handPosition(hold.front);
+    const [rx, ry] = handPosition(hold.rear);
 
-    // Posiciones relativas de las manos según el arma empuñada
-    let lx = 16, ly = -10;
-    let rx = 16, ry = 10;
-
-    if (equippedWeapon === "SHOTGUN") {
-      // Escopeta táctica estilo Suroi
-      aimGfx.fillStyle(0x1e293b, 1);
-      aimGfx.fillRect(8, -4, 20, 8);
-      aimGfx.lineStyle(2, 0x0f172a, 1);
-      aimGfx.strokeRect(8, -4, 20, 8);
-
-      aimGfx.fillStyle(0x334155, 1);
-      aimGfx.fillRect(20, -3.5, 12, 3);
-      aimGfx.fillRect(20, 0.5, 12, 3);
-      aimGfx.lineStyle(1.5, 0x0f172a, 1);
-      aimGfx.strokeRect(20, -3.5, 12, 3);
-      aimGfx.strokeRect(20, 0.5, 12, 3);
-
-      // Guardamanos de madera bombeable
-      aimGfx.fillStyle(0x854d0e, 1);
-      aimGfx.fillRoundedRect(17, -4.5, 8, 9, 2);
-      aimGfx.lineStyle(1.5, 0x451a03, 1);
-      aimGfx.strokeRoundedRect(17, -4.5, 8, 9, 2);
-
-      rx = 11; ry = 6.5;
-      lx = 21.5; ly = 0;
-
-    } else if (equippedWeapon === "SNIPER") {
-      // Rifle francotirador de precisión (Largo alcance)
-      aimGfx.fillStyle(0x0f172a, 1);
-      aimGfx.fillRect(6, -3, 24, 6);
-      aimGfx.lineStyle(2, 0x020617, 1);
-      aimGfx.strokeRect(6, -3, 24, 6);
-
-      aimGfx.fillStyle(0x06b6d4, 1);
-      aimGfx.fillRect(24, -2, 17, 4);
-      aimGfx.lineStyle(1.5, 0x083344, 1);
-      aimGfx.strokeRect(24, -2, 17, 4);
-
-      aimGfx.fillStyle(0x1e293b, 1);
-      aimGfx.fillRect(41, -3, 4, 6);
-
-      // Mira telescópica con reflejo
-      aimGfx.fillStyle(0x1e293b, 1);
-      aimGfx.fillRect(10, -8, 14, 4);
-      aimGfx.lineStyle(1.5, 0x020617, 1);
-      aimGfx.strokeRect(10, -8, 14, 4);
-      aimGfx.fillStyle(0x38bdf8, 1);
-      aimGfx.fillRect(23, -7.5, 2, 3);
-      aimGfx.fillRect(9, -7.5, 2, 3);
-
-      rx = 11; ry = 6.5;
-      lx = 26; ly = -1.5;
-
-    } else if (equippedWeapon === "GRENADE") {
-      // Granada táctica fragmentaria
-      aimGfx.fillStyle(0x365314, 1);
-      aimGfx.fillCircle(18, 5, 7);
-      aimGfx.lineStyle(2, 0x14532d, 1);
-      aimGfx.strokeCircle(18, 5, 7);
-
-      aimGfx.lineStyle(1.5, 0x4d7c0f, 1);
-      aimGfx.lineBetween(14, 5, 22, 5);
-      aimGfx.lineBetween(18, 1, 18, 9);
-
-      aimGfx.fillStyle(0x94a3b8, 1);
-      aimGfx.fillRect(13, 2, 4, 3);
-      aimGfx.lineStyle(1.5, 0xfacc15, 1);
-      aimGfx.strokeCircle(12, 1, 3);
-
-      rx = 17; ry = 6;
-      lx = 13; ly = -12;
-
-    } else if (equippedWeapon === "MELEE") {
-      // Garras felinas afiladas listas para el combate
-      rx = 18; ry = 13;
-      lx = 18; ly = -13;
-
-      // Destellos de garras
-      aimGfx.lineStyle(2, 0xffffff, 0.85);
-      aimGfx.lineBetween(rx + 5, ry - 3, rx + 10, ry - 5);
-      aimGfx.lineBetween(rx + 6, ry, rx + 12, ry);
-      aimGfx.lineBetween(rx + 5, ry + 3, rx + 10, ry + 5);
-
-      aimGfx.lineBetween(lx + 5, ly - 3, lx + 10, ly - 5);
-      aimGfx.lineBetween(lx + 6, ly, lx + 12, ry ? -12 : -12);
-      aimGfx.lineBetween(lx + 5, ly + 3, lx + 10, ly - 1);
-
-    } else {
-      // LASER / Pistola táctica estándar Suroi
-      aimGfx.fillStyle(0x1e293b, 1);
-      aimGfx.fillRect(9, -3.5, 17, 7);
-      aimGfx.lineStyle(2, 0x0f172a, 1);
-      aimGfx.strokeRect(9, -3.5, 17, 7);
-
-      aimGfx.fillStyle(0x334155, 1);
-      aimGfx.fillRect(14, -2.5, 14, 5);
-      aimGfx.lineStyle(1.5, 0x10b981, 1);
-      aimGfx.lineBetween(12, 0, 24, 0);
-
-      aimGfx.fillStyle(0x10b981, 1);
-      aimGfx.fillCircle(27, 0, 2);
-
-      rx = 12; ry = 6.5;
-      lx = 17; ly = -4;
-    }
-
-    // Dibujar las Manos / Garras circulares estilo Suroi con borde oscuro (r = 6.2px)
-    const drawPaw = (handGfx: Phaser.GameObjects.Graphics) => {
-      handGfx.clear();
-      handGfx.fillStyle(c.main, 1);
-      handGfx.fillCircle(0, 0, 6.2);
-      handGfx.lineStyle(2, 0x1e293b, 1);
-      handGfx.strokeCircle(0, 0, 6.2);
-
-      // Almohadilla plantar rosada central
-      handGfx.fillStyle(c.earInner, 0.95);
-      handGfx.fillCircle(0, 0, 2.8);
-
-      // 3 deditos
-      handGfx.fillCircle(3.2, -2.5, 1.2);
-      handGfx.fillCircle(4.2, 0, 1.2);
-      handGfx.fillCircle(3.2, 2.5, 1.2);
-    };
-
-    drawPaw(leftHandGfx);
+    applyHandSprite(leftHandGfx, catColor, claws);
     leftHandGfx.setData("baseX", lx);
     leftHandGfx.setData("baseY", ly);
     leftHandGfx.setPosition(lx, ly);
 
-    drawPaw(rightHandGfx);
+    applyHandSprite(rightHandGfx, catColor, claws);
     rightHandGfx.setData("baseX", rx);
     rightHandGfx.setData("baseY", ry);
     rightHandGfx.setPosition(rx, ry);
@@ -2872,7 +2790,18 @@ export class MainScene extends Phaser.Scene {
       targetY: p.targetY || 0,
       isArmed: !!p.isArmed,
       blinkTimer: 0,
+      hideNear: this.muzzleHideZone(p, type),
     });
+  }
+
+  /** Zona alrededor del tirador donde la bala del servidor no se muestra (todavía
+   *  estaría "dentro" del arma pixel art, que es más larga que el punto de salida). */
+  private muzzleHideZone(p: Projectile, type: string): VProj["hideNear"] {
+    if (type === "GRENADE") return undefined;
+    const owner = this.players.get(p.ownerId);
+    const muzzle = muzzleOffset(PROJ_TYPE_WEAPON[type] ?? "LASER");
+    if (!owner || !muzzle) return undefined;
+    return { x: owner.container.x, y: owner.container.y, r: Math.hypot(muzzle[0], muzzle[1]) };
   }
 
   /* ── Trampas Espectrales ─────────────────────────────────── */
@@ -3335,6 +3264,15 @@ export class MainScene extends Phaser.Scene {
         }
       }
 
+      // Sprite pixel art: walk mientras se mueve, idle cuando está quieto
+      if (inCam && !v.isGhost && v.catSprite.visible) {
+        const moved = Math.hypot(v.container.x - v.lastX, v.container.y - v.lastY);
+        v.walkHold = moved > 0.4 ? 120 : Math.max(0, v.walkHold - delta);
+        updateCatAnim(v.catSprite, v.walkHold > 0);
+      }
+      v.lastX = v.container.x;
+      v.lastY = v.container.y;
+
       // Animación continua del símbolo de recarga girando arriba del personaje
       if (v.isReloading && !v.isGhost && inCam) {
         if (!v.reloadSpinnerContainer.visible) {
@@ -3394,6 +3332,14 @@ export class MainScene extends Phaser.Scene {
           v.trail.setVisible(false);
         }
         return;
+      }
+
+      if (v.hideNear) {
+        if (Math.hypot(v.g.x - v.hideNear.x, v.g.y - v.hideNear.y) < v.hideNear.r) {
+          if (v.g.visible) v.g.setVisible(false);
+          return;
+        }
+        v.hideNear = undefined;
       }
 
       if (!v.g.visible) v.g.setVisible(true);

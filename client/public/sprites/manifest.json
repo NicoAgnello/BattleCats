@@ -1,0 +1,159 @@
+{
+  "cats": [
+    "juego-felino-naranja-bosque",
+    "juego-felino-gris-urbano",
+    "juego-felino-negro-selva",
+    "juego-felino-crema-desierto",
+    "juego-felino-blanco-nieve"
+  ],
+  "portraits": [
+    {
+      "name": "retrato-sargento",
+      "title": "Sargento Naranja",
+      "w": 64,
+      "h": 80,
+      "frames": 16,
+      "frameMs": 150
+    },
+    {
+      "name": "retrato-ceniza",
+      "title": "Ceniza Gris",
+      "w": 64,
+      "h": 80,
+      "frames": 16,
+      "frameMs": 150
+    },
+    {
+      "name": "retrato-sombra",
+      "title": "Sombra Negra",
+      "w": 64,
+      "h": 80,
+      "frames": 16,
+      "frameMs": 150
+    },
+    {
+      "name": "retrato-duna",
+      "title": "Duna Arena",
+      "w": 64,
+      "h": 80,
+      "frames": 16,
+      "frameMs": 150
+    },
+    {
+      "name": "retrato-copito",
+      "title": "Copito Blanco",
+      "w": 64,
+      "h": 80,
+      "frames": 16,
+      "frameMs": 150
+    }
+  ],
+  "hands": [
+    "juego-mano-naranja",
+    "juego-mano-gris",
+    "juego-mano-negro",
+    "juego-mano-crema",
+    "juego-mano-blanco"
+  ],
+  "weapons": {
+    "SHOTGUN": {
+      "sprite": "arma-escopeta",
+      "w": 17,
+      "h": 7,
+      "mount": [
+        2,
+        -3
+      ],
+      "rear": [
+        6,
+        2
+      ],
+      "front": [
+        12,
+        -2
+      ],
+      "muzzle": [
+        18,
+        0
+      ]
+    },
+    "MELEE": {
+      "sprite": null,
+      "w": 1,
+      "h": 1,
+      "mount": null,
+      "rear": [
+        6,
+        4
+      ],
+      "front": [
+        6,
+        -4
+      ],
+      "muzzle": null
+    },
+    "GRENADE": {
+      "sprite": "arma-granada",
+      "w": 7,
+      "h": 8,
+      "mount": [
+        6,
+        -2
+      ],
+      "rear": [
+        6,
+        3
+      ],
+      "front": [
+        4,
+        -4
+      ],
+      "muzzle": [
+        9,
+        2
+      ]
+    },
+    "LASER": {
+      "sprite": "arma-pistola",
+      "w": 10,
+      "h": 6,
+      "mount": [
+        5,
+        -2
+      ],
+      "rear": [
+        7,
+        2
+      ],
+      "front": [
+        6,
+        -2
+      ],
+      "muzzle": [
+        14,
+        0
+      ]
+    },
+    "SNIPER": {
+      "sprite": "arma-sniper",
+      "w": 24,
+      "h": 7,
+      "mount": [
+        1,
+        -3
+      ],
+      "rear": [
+        7,
+        2
+      ],
+      "front": [
+        15,
+        -1
+      ],
+      "muzzle": [
+        24,
+        0
+      ]
+    }
+  }
+}

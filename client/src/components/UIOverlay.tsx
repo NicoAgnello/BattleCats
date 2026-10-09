@@ -487,34 +487,39 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
         </div>
       )}
 
-      {/* ── BANNER MODO FANTASMA ───────────────────────────────── */}
-      {player.isGhost && !victory && (
-        <div className="self-center pointer-events-auto glass-panel border border-cyan-500/40 bg-slate-950/80 p-4 rounded-2xl text-center max-w-sm space-y-2 shadow-2xl">
-          <div className="flex items-center justify-center gap-2 text-cyan-400 font-black text-sm">
-            <span>👻</span> MODO FANTASMA FELINO
+      {/* ── BARRA MODO FANTASMA (arriba, no tapa el centro de la pantalla) ── */}
+      {player.isGhost && !victory && (() => {
+        const TRAP_COOLDOWN = 6.0; // igual que el servidor (JungleRoom: trapCooldown = 6.0)
+        const ready = player.trapCooldown <= 0;
+        const progress = ready ? 1 : Math.max(0, Math.min(1, 1 - player.trapCooldown / TRAP_COOLDOWN));
+        return (
+          <div className="absolute left-1/2 -translate-x-1/2 top-32 pointer-events-auto glass-panel border border-cyan-500/40 bg-slate-950/80 px-4 py-2 rounded-xl shadow-xl flex items-center gap-3 w-[min(92vw,460px)]">
+            <span className="text-cyan-400 font-black text-xs whitespace-nowrap">👻 FANTASMA</span>
+            <div className="flex-1 min-w-0">
+              <div className="flex justify-between text-[10px] font-bold mb-1">
+                <span className="text-cyan-200 truncate">Clic derecho: plantar trampa</span>
+                <span className={`font-mono ml-2 ${ready ? "text-emerald-400" : "text-amber-400"}`}>
+                  {ready ? "¡Trampa lista!" : `${player.trapCooldown.toFixed(1)}s`}
+                </span>
+              </div>
+              <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-[width] duration-100 ${ready ? "bg-emerald-400" : "bg-amber-400"}`}
+                  style={{ width: `${progress * 100}%` }}
+                />
+              </div>
+            </div>
+            <button
+              onClick={handleRestart}
+              title="Reiniciar partida"
+              className="py-1 px-2 rounded-lg text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1 transition whitespace-nowrap"
+            >
+              <RotateCcw className="w-3 h-3" />
+              Reiniciar
+            </button>
           </div>
-          <p className="text-xs text-cyan-200">
-            Haz <strong>Clic Derecho</strong> para plantar trampas espectrales en el mapa.
-          </p>
-          {player.trapCooldown > 0 ? (
-            <span className="text-amber-400 font-mono text-xs block font-bold">
-              Recarga de Trampa: {player.trapCooldown.toFixed(1)}s
-            </span>
-          ) : (
-            <span className="text-emerald-400 font-mono text-xs block font-bold">
-              ¡Trampa Lista!
-            </span>
-          )}
-
-          <button
-            onClick={handleRestart}
-            className="mt-2 py-1.5 px-4 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center justify-center gap-1.5 mx-auto transition"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            Reiniciar Partida
-          </button>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ── FILA INFERIOR (SELECTOR DE ARMAS, DASH Y CONTROLES) ── */}
       <div className="flex items-end justify-between gap-4">

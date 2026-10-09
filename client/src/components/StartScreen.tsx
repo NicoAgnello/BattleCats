@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { soundManager } from "../game/SoundManager";
 import { GameplayBackground } from "./GameplayBackground";
+import { PixelPortrait } from "./PixelPortrait";
 
 export interface PlayerConfig {
   name: string;
@@ -23,71 +24,67 @@ export interface SkinItem {
   earInner: string;
   discount?: string;
   glow: string;
+  portrait: string;   // retrato pixel art animado (public/sprites/<portrait>.png)
 }
 
+// El índice (id) es el número de skin que usa el juego: coincide con el orden
+// de "cats" y "portraits" en public/sprites/manifest.json (ver /sprites).
 export const SKINS: SkinItem[] = [
   {
     id: 0,
-    name: "Esmeralda",
-    title: "Battle Cat Táctico",
-    rarity: "Común",
-    rarityColor: "#10b981",
-    color: "#10b981",
+    name: "Sargento",
+    title: "Líder de escuadrón veterano",
+    rarity: "Legendaria",
+    rarityColor: "#eab308",
+    color: "#e07a2e",
     earInner: "#f472b6",
-    glow: "rgba(16, 185, 129, 0.45)",
+    glow: "rgba(224, 122, 46, 0.5)",
+    portrait: "retrato-sargento",
   },
   {
     id: 1,
-    name: "Carmesí",
-    title: "Ninja Sangriento",
-    rarity: "Rara",
-    rarityColor: "#ef4444",
-    color: "#ef4444",
-    earInner: "#f43f5e",
-    discount: "-25%",
-    glow: "rgba(239, 68, 68, 0.45)",
+    name: "Ceniza",
+    title: "Francotirador melancólico",
+    rarity: "Épica",
+    rarityColor: "#8b5cf6",
+    color: "#7c8292",
+    earInner: "#f472b6",
+    glow: "rgba(124, 130, 146, 0.5)",
+    portrait: "retrato-ceniza",
   },
   {
     id: 2,
-    name: "Violeta",
-    title: "Sombra Real",
+    name: "Sombra",
+    title: "Comando de jungla",
     rarity: "Épica",
     rarityColor: "#8b5cf6",
-    color: "#8b5cf6",
+    color: "#4a4656",
     earInner: "#f472b6",
-    glow: "rgba(139, 92, 246, 0.45)",
+    discount: "-25%",
+    glow: "rgba(234, 179, 8, 0.4)",
+    portrait: "retrato-sombra",
   },
   {
     id: 3,
-    name: "Garfield",
-    title: "Michi Fuego",
+    name: "Duna",
+    title: "Piloto del desierto",
     rarity: "Rara",
-    rarityColor: "#f97316",
-    color: "#f97316",
-    earInner: "#fb7185",
-    discount: "-15%",
-    glow: "rgba(249, 115, 22, 0.45)",
+    rarityColor: "#06b6d4",
+    color: "#ead8a4",
+    earInner: "#f472b6",
+    glow: "rgba(234, 216, 164, 0.5)",
+    portrait: "retrato-duna",
   },
   {
     id: 4,
-    name: "Neón",
-    title: "Ciber Azul",
-    rarity: "Épica",
-    rarityColor: "#06b6d4",
-    color: "#06b6d4",
+    name: "Copito",
+    title: "El novato del equipo",
+    rarity: "Común",
+    rarityColor: "#10b981",
+    color: "#e6ddd0",
     earInner: "#f472b6",
-    glow: "rgba(6, 182, 212, 0.45)",
-  },
-  {
-    id: 5,
-    name: "Leyenda",
-    title: "Gato Dorado Mítico",
-    rarity: "Legendaria",
-    rarityColor: "#eab308",
-    color: "#eab308",
-    earInner: "#f43f5e",
-    discount: "VIP",
-    glow: "rgba(234, 179, 8, 0.55)",
+    glow: "rgba(93, 155, 230, 0.5)",
+    portrait: "retrato-copito",
   },
 ];
 
@@ -182,7 +179,8 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
 
   const [selectedSkin, setSelectedSkin] = useState<number>(() => {
     const saved = localStorage.getItem("michi_player_skin");
-    return saved !== null ? parseInt(saved, 10) : 0;
+    const n = saved !== null ? parseInt(saved, 10) : 0;
+    return Number.isInteger(n) && n >= 0 && n < SKINS.length ? n : 0;
   });
 
   const [musicEnabled, setMusicEnabled] = useState<boolean>(() => {
@@ -417,11 +415,17 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
                 style={{ filter: `drop-shadow(0 0 16px ${activeSkinObj.glow})` }}
                 className="transition-transform duration-200 hover:scale-105"
               >
-                <CatAvatar3D
-                  colorHex={activeSkinObj.color}
-                  earInnerHex={activeSkinObj.earInner}
-                  size={84}
-                  isSelected={true}
+                <PixelPortrait
+                  name={activeSkinObj.portrait}
+                  scale={2}
+                  fallback={
+                    <CatAvatar3D
+                      colorHex={activeSkinObj.color}
+                      earInnerHex={activeSkinObj.earInner}
+                      size={84}
+                      isSelected={true}
+                    />
+                  }
                 />
               </div>
 
@@ -446,7 +450,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
             </button>
           </div>
 
-          {/* Paleta rápida de 6 puntos de color para cambio con 1 click */}
+          {/* Paleta rápida de puntos de color (uno por personaje) para cambio con 1 click */}
           <div className="flex items-center justify-center gap-2 pt-2 border-t border-slate-700/60 w-full mt-2">
             {SKINS.map((s) => (
               <button
@@ -593,7 +597,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
                         setSelectedSkin(skin.id);
                         soundManager.playClick();
                       }}
-                      className={`diep-grid-blueprint relative rounded-xl border-3 transition-all cursor-pointer p-3 flex flex-col items-center justify-between h-56 ${
+                      className={`diep-grid-blueprint relative rounded-xl border-3 transition-all cursor-pointer p-3 flex flex-col items-center justify-between ${
                         isSelected
                           ? "border-emerald-400 ring-2 ring-emerald-400/50 scale-[1.02]"
                           : "border-slate-800 hover:border-slate-600"
@@ -616,11 +620,17 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
 
                       {/* Avatar 3D */}
                       <div className="py-2">
-                        <CatAvatar3D
-                          colorHex={skin.color}
-                          earInnerHex={skin.earInner}
-                          size={78}
-                          isSelected={isSelected}
+                        <PixelPortrait
+                          name={skin.portrait}
+                          scale={2}
+                          fallback={
+                            <CatAvatar3D
+                              colorHex={skin.color}
+                              earInnerHex={skin.earInner}
+                              size={78}
+                              isSelected={isSelected}
+                            />
+                          }
                         />
                       </div>
 

@@ -813,7 +813,7 @@ export class JungleRoom extends Room<GameState> {
 
   private spawnBots() {
     this.botControllers.clear();
-    const colors = [1, 2, 3, 4, 5, 2];
+    const colors = [1, 2, 3, 4, 0, 2];   // skins 0..4
     const botWeapons = ["LASER", "SHOTGUN", "SNIPER", "LASER", "SHOTGUN", "SNIPER"];
 
     for (let i = 0; i < this.botNames.length; i++) {
@@ -867,7 +867,7 @@ export class JungleRoom extends Room<GameState> {
       ? options.name.trim().slice(0, 16) 
       : "Michi Campeón";
     const skinColor = (options && typeof options.skin === "number" && !isNaN(options.skin))
-      ? Math.max(0, Math.min(5, Math.floor(options.skin)))
+      ? Math.max(0, Math.min(4, Math.floor(options.skin)))   // 5 skins: 0..4
       : 0;
 
     console.log(`Player connected: ${client.sessionId} (Name: ${playerName}, Skin: ${skinColor})`);
