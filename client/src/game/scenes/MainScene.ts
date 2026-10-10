@@ -530,24 +530,24 @@ export class MainScene extends Phaser.Scene {
       }
     });
 
-    window.addEventListener("restart-game", () => {
+    this.onWindow("restart-game", () => {
       this.net.sendRestart();
     });
 
-    window.addEventListener("switch-weapon", (e: any) => {
+    this.onWindow("switch-weapon", (e: any) => {
       if (e.detail?.weapon) this.switchWeapon(e.detail.weapon);
     });
 
-    window.addEventListener("reload-weapon", () => {
+    this.onWindow("reload-weapon", () => {
       this.tryReload();
     });
 
-    window.addEventListener("send-emote", (e: any) => {
+    this.onWindow("send-emote", (e: any) => {
       if (e.detail?.emote) this.triggerEmote(e.detail.emote);
     });
 
     // 8. Integración con Pipeline Ultra-Rápido SSE (Server-Sent Events)
-    window.addEventListener("sse-tick", (e: any) => {
+    this.onWindow("sse-tick", (e: any) => {
       const data = e.detail;
       if (!data?.players) return;
       data.players.forEach((pState: any) => {
@@ -577,7 +577,7 @@ export class MainScene extends Phaser.Scene {
       }
     });
 
-    window.addEventListener("sse-shoot", (e: any) => {
+    this.onWindow("sse-shoot", (e: any) => {
       const d = e.detail;
       if (!d || d.id === this.myId) return;
       const p = this.players.get(d.id);
@@ -606,7 +606,7 @@ export class MainScene extends Phaser.Scene {
       }
     });
 
-    window.addEventListener("sse-melee", (e: any) => {
+    this.onWindow("sse-melee", (e: any) => {
       const d = e.detail;
       if (!d || d.id === this.myId) return;
       this.showGraphicClawSlash(d.x, d.y, d.angle);
@@ -625,7 +625,7 @@ export class MainScene extends Phaser.Scene {
       }
     });
 
-    window.addEventListener("sse-dash", (e: any) => {
+    this.onWindow("sse-dash", (e: any) => {
       const d = e.detail;
       if (!d || d.id === this.myId) return;
       const p = this.players.get(d.id);
@@ -638,7 +638,7 @@ export class MainScene extends Phaser.Scene {
       }
     });
 
-    window.addEventListener("sse-hit", (e: any) => {
+    this.onWindow("sse-hit", (e: any) => {
       const d = e.detail;
       if (!d) return;
       // sin número de daño flotante: el daño se marca en la barra de vida (destello rojo)
@@ -649,7 +649,7 @@ export class MainScene extends Phaser.Scene {
       }
     });
 
-    window.addEventListener("sse-explosion", (e: any) => {
+    this.onWindow("sse-explosion", (e: any) => {
       const d = e.detail;
       if (!d) return;
       soundManager.playExplosion();
@@ -2593,6 +2593,7 @@ export class MainScene extends Phaser.Scene {
 
   /* ── Personajes Gatos (Battle Cats) ──────────────────────── */
   private createPlayer(id: string, p: Player) {
+    if (this.players.has(id)) this.destroyPlayer(id);   // nunca dos gatos con el mismo id (el viejo quedaba congelado)
     const isMe = id === this.myId;
     const px = typeof p.x === "number" && p.x !== 0 ? p.x : 4000;
     const py = typeof p.y === "number" && p.y !== 0 ? p.y : 4000;
@@ -3007,8 +3008,9 @@ export class MainScene extends Phaser.Scene {
     }
 
     if (!v.isMe) {
-      v.container.setVisible(!v.isHidden);
-      v.uiContainer.setVisible(!v.isHidden);
+      const show = !v.isHidden && !v.isGhost;            // los fantasmas ajenos no se ven (solo su tumba)
+      v.container.setVisible(show);
+      v.uiContainer.setVisible(show);
     } else {
       // fantasma pixel art: más opaco (el sprite ya es celeste espectral y pulsa)
       const alphaVal = v.isHidden && !v.isGhost ? 0.5 : (v.isGhost ? (hasGhostSprites() ? 0.9 : 0.5) : 1);
@@ -4356,6 +4358,27 @@ export class MainScene extends Phaser.Scene {
     g.strokeCircle(x, y, r);
     g.lineStyle(2, 0xfca5a5, 0.85);
     g.strokeCircle(x, y, r - 3);
+  }
+
+  /** Escucha un evento de la ventana y lo quita al cerrar la escena (si no, al jugar
+   *  otra partida quedaban vivos los de la anterior). Los eventos SSE de otra sala se
+   *  ignoran: los bots se llaman igual en todas las salas (bot_1..bot_6). */
+  private windowHandlers: [string, EventListener][] = [];
+  private onWindow(type: string, fn: (e: any) => void) {
+    const h: EventListener = (e: any) => {
+      if (type.startsWith("sse-")) {
+        const rid = e?.detail?.roomId;
+        if (!this.room || (rid && rid !== this.room.roomId)) return;
+      }
+      fn(e);
+    };
+    if (!this.windowHandlers.length) {
+      const off = () => { this.windowHandlers.forEach(([t, f]) => window.removeEventListener(t, f)); this.windowHandlers = []; };
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, off);
+      this.events.once(Phaser.Scenes.Events.DESTROY, off);
+    }
+    this.windowHandlers.push([type, h]);
+    window.addEventListener(type, h);
   }
 
   /** Gatos en la playa/mar: el agua los va cubriendo según la profundidad (con la ola).

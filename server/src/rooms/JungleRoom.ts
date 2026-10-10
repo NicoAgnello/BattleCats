@@ -3,6 +3,7 @@ import { GameState, Player, Projectile, Trap, Bush, ItemPickup, Obstacle } from 
 import { broadcastSSE } from "../sse";
 import { SpatialHashGrid } from "../spatial/SpatialHashGrid";
 import { STRUCTURES, StructureDef } from "./structures";
+import { inRiver } from "./river";
 
 interface MovePayload {
   dx: number;
@@ -133,6 +134,12 @@ export class JungleRoom extends Room<GameState> {
     "Michi Táctico",
     "Bigotes Letal",
   ];
+
+  /** Evento SSE de esta sala: lleva el roomId para que cada cliente ignore los de
+   *  otras salas (los bots se llaman igual en todas: bot_1..bot_6). */
+  private sse(type: string, data: Record<string, unknown>) {
+    broadcastSSE(type, { ...data, roomId: this.roomId });
+  }
 
   onCreate(options: any) {
     this.setState(new GameState());
@@ -307,7 +314,7 @@ export class JungleRoom extends Room<GameState> {
         isRoll: !isMelee,
         cooldown,
       });
-      broadcastSSE("playerDash", {
+      this.sse("playerDash", {
         id: client.sessionId,
         x: player.x,
         y: player.y,
@@ -455,7 +462,7 @@ export class JungleRoom extends Room<GameState> {
           weapon: weaponName,
         };
         this.broadcast("kill", killPayload);
-        broadcastSSE("kill", killPayload);
+        this.sse("kill", killPayload);
       }
 
 
@@ -578,7 +585,7 @@ export class JungleRoom extends Room<GameState> {
       }
 
       this.broadcast("playerMelee", { id: player.id, x: slashX, y: slashY, angle, damage: 50 });
-      broadcastSSE("playerMelee", { id: player.id, x: slashX, y: slashY, angle, damage: 50 });
+      this.sse("playerMelee", { id: player.id, x: slashX, y: slashY, angle, damage: 50 });
       return;
     }
 
@@ -608,7 +615,7 @@ export class JungleRoom extends Room<GameState> {
         this.addProjectile(proj);
       }
       this.broadcast("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SHOTGUN" });
-      broadcastSSE("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SHOTGUN" });
+      this.sse("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SHOTGUN" });
       return;
     }
 
@@ -632,7 +639,7 @@ export class JungleRoom extends Room<GameState> {
       this.addProjectile(proj);
 
       this.broadcast("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SNIPER" });
-      broadcastSSE("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SNIPER" });
+      this.sse("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SNIPER" });
       return;
     }
 
@@ -676,7 +683,7 @@ export class JungleRoom extends Room<GameState> {
         targetX: destX,
         targetY: destY
       });
-      broadcastSSE("playerShoot", {
+      this.sse("playerShoot", {
         id: player.id,
         x: player.x,
         y: player.y,
@@ -710,7 +717,7 @@ export class JungleRoom extends Room<GameState> {
     }
 
     this.broadcast("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "LASER", isTriple });
-    broadcastSSE("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "LASER", isTriple });
+    this.sse("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "LASER", isTriple });
   }
 
   private damageObstacle(obs: Obstacle, dmg: number, shooterId?: string) {
@@ -733,7 +740,7 @@ export class JungleRoom extends Room<GameState> {
 
   private triggerBarrelExplosion(x: number, y: number, shooterId?: string) {
     this.broadcast("explosion", { x, y, radius: 140, type: "BARREL" });
-    broadcastSSE("explosion", { x, y, radius: 140, type: "BARREL" });
+    this.sse("explosion", { x, y, radius: 140, type: "BARREL" });
 
     // Damage nearby players & obstacles via SpatialHashGrid (O(1))
     const nearby = this.spatialGrid.queryRadius(x, y, 140, ["player", "obstacle"]);
@@ -762,7 +769,7 @@ export class JungleRoom extends Room<GameState> {
     const outerRadius = 280;
 
     this.broadcast("explosion", { x, y, radius: outerRadius, innerRadius, type: "GRENADE" });
-    broadcastSSE("explosion", { x, y, radius: outerRadius, innerRadius, type: "GRENADE" });
+    this.sse("explosion", { x, y, radius: outerRadius, innerRadius, type: "GRENADE" });
 
     // Daño a jugadores y obstáculos en las 2 zonas via SpatialHashGrid (O(1))
     const nearby = this.spatialGrid.queryRadius(x, y, outerRadius, ["player", "obstacle"]);
@@ -1164,7 +1171,7 @@ export class JungleRoom extends Room<GameState> {
           isGhost: p.isGhost,
         });
       });
-      broadcastSSE("tick", {
+      this.sse("tick", {
         t: Date.now(),
         players: pList,
         zone: {
@@ -1293,7 +1300,7 @@ export class JungleRoom extends Room<GameState> {
             isRoll: !isMelee,
             cooldown,
           });
-          broadcastSSE("playerDash", {
+          this.sse("playerDash", {
             id: bot.id,
             x: bot.x,
             y: bot.y,
@@ -1360,38 +1367,10 @@ export class JungleRoom extends Room<GameState> {
   }
 
   public checkInRiver(x: number, y: number): boolean {
-    // 3 puentes de madera proporcionan cruce seguro sin fricción de agua
-    // Puente 1 (Norte)
-    if (x >= 4100 && x <= 4260 && y >= 1950 && y <= 2050) return false;
-    // Puente 2 (Centro)
-    if (x >= 3770 && x <= 3930 && y >= 3950 && y <= 4050) return false;
-    // Puente 3 (Sur)
-    if (x >= 4120 && x <= 4280 && y >= 5950 && y <= 6050) return false;
-
-    // Río serpenteante que cruza la isla de Norte a Sur (0 a 8000)
-    const pts = [
-      { x: 4000, y: 0 },
-      { x: 4200, y: 1500 },
-      { x: 3900, y: 3100 },
-      { x: 3800, y: 4900 },
-      { x: 4300, y: 6500 },
-      { x: 4100, y: 8000 },
-    ];
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const dx = p2.x - p1.x;
-      const dy = p2.y - p1.y;
-      const l2 = dx * dx + dy * dy;
-      if (l2 === 0) continue;
-      let t = ((x - p1.x) * dx + (y - p1.y) * dy) / l2;
-      t = Math.max(0, Math.min(1, t));
-      const px = p1.x + t * dx;
-      const py = p1.y + t * dy;
-      if (Math.hypot(x - px, y - py) < 65) return true;
-    }
-    return false;
+    // Río curvo compartido con el cliente (rooms/river.ts); los puentes cruzan sin fricción
+    return inRiver(x, y);
   }
+
 
   public checkInStructure(px: number, py: number): StructureDef | null {
     for (const s of STRUCTURES) {
@@ -1438,7 +1417,8 @@ export class JungleRoom extends Room<GameState> {
       this.savePlayerCurrentWeaponAmmo(player);
 
       // Suroi-style weapon swap: drop previous weapon on ground so it can be picked back up!
-      if (prevWeapon && prevWeapon !== item.itemType && prevWeapon !== "LASER") {
+      // (las garras no se sueltan: todos los gatos las tienen siempre)
+      if (prevWeapon && prevWeapon !== item.itemType && prevWeapon !== "LASER" && prevWeapon !== "MELEE") {
         const dropItem = new ItemPickup();
         dropItem.id = `drop_${++this.itemIdCounter}_${Date.now()}`;
         dropItem.x = player.x;
@@ -1786,6 +1766,19 @@ export class JungleRoom extends Room<GameState> {
       { id: "bush_se_3", x: 5200, y: 6800, width: 260, height: 190 },
       { id: "bush_se_4", x: 6800, y: 6900, width: 240, height: 170 },
     ];
+
+    // Ningún arbusto puede quedar dentro de una casa (ni sobre su alero/entrada):
+    // si se superpone, se empuja hacia afuera por el lado más cercano.
+    const MARGIN = 90;
+    bushData.forEach((b) => {
+      for (const st of STRUCTURES) {
+        const hw = st.width / 2 + MARGIN + b.width / 2, hh = st.height / 2 + MARGIN + b.height / 2;
+        const dx = b.x - st.x, dy = b.y - st.y;
+        if (Math.abs(dx) >= hw || Math.abs(dy) >= hh) continue;
+        if (hw - Math.abs(dx) < hh - Math.abs(dy)) b.x = st.x + Math.sign(dx || 1) * hw;
+        else b.y = st.y + Math.sign(dy || 1) * hh;
+      }
+    });
 
     bushData.forEach((b) => {
       const bush = new Bush();

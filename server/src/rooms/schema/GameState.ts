@@ -35,35 +35,31 @@ export function aoiDistanceFilter<T extends Schema & { x: number; y: number; id?
   return (dx * dx + dy * dy) <= AOI_DISTANCE_SQ;
 }
 
+/* Los gatos NO usan el filtro por distancia (antes sí): son 16 como máximo y, con el
+ * filtro, un gato lejano quedaba congelado en el cliente con sus últimos datos (vivo,
+ * quieto e "inmune": el real estaba en otro lado o muerto). Balas y trampas sí lo usan. */
 export class Player extends Schema {
   @type("string") id: string = "";
   @type("string") name: string = "Gato";
   @type("boolean") isBot: boolean = false;
   @type("number") catColor: number = 0;
 
-  @filter(aoiDistanceFilter)
   @type("number") x: number = 0;
 
-  @filter(aoiDistanceFilter)
   @type("number") y: number = 0;
 
-  @filter(aoiDistanceFilter)
   @type("number") rotation: number = 0;
 
-  @filter(aoiDistanceFilter)
   @type("number") hp: number = 100;
 
   @type("number") maxHp: number = 100;
 
-  @filter(aoiDistanceFilter)
   @type("number") shield: number = 0;
 
   @type("number") maxShield: number = 50;
 
-  @filter(aoiDistanceFilter)
   @type("boolean") isGhost: boolean = false;
 
-  @filter(aoiDistanceFilter)
   @type("boolean") isHidden: boolean = false;
 
   @type("number") dashCooldown: number = 0; // remaining s
@@ -80,7 +76,6 @@ export class Player extends Schema {
   @type("number") reloadTimer: number = 0;
   @type("number") maxReloadTimer: number = 2.0;
 
-  @filter(aoiDistanceFilter)
   @type("string") lastEmote: string = ""; // "🐾", "🔥", "💀", "😎", "😿", "🏆"
 
   @type("number") emoteTimer: number = 0;
@@ -164,19 +159,9 @@ export class ZoneState extends Schema {
 }
 
 export class GameState extends Schema {
-  /**
-   * Filtrado a nivel de MapSchema de Jugadores (Area of Interest).
-   * Solo sincroniza jugadores que estén a menos de 1200 píxeles del cliente receptor.
-   */
-  @filterChildren(function (this: GameState, client: ClientWithSessionId, key: string, value: Player) {
-    if (!client || !client.sessionId) return true;
-    const me = this.players.get(client.sessionId);
-    if (!me) return true;
-    if (key === client.sessionId) return true; // El cliente siempre se sincroniza a sí mismo
-    const dx = value.x - me.x;
-    const dy = value.y - me.y;
-    return (dx * dx + dy * dy) <= AOI_DISTANCE_SQ;
-  })
+  /** Jugadores: todos se sincronizan siempre (son 16 como máximo). Con el filtro por
+   *  distancia que había, al salir y volver a entrar en rango el gato se agregaba dos
+   *  veces en el cliente y el viejo quedaba congelado e "inmune". */
   @type({ map: Player }) players = new MapSchema<Player>();
 
   /**

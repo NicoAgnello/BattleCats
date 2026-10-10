@@ -20,35 +20,29 @@ export function aoiDistanceFilter<T extends Schema & { x: number; y: number; id?
   return (dx * dx + dy * dy) <= AOI_DISTANCE_SQ;
 }
 
+/* Sin filtro por distancia en los gatos (igual que en el servidor, ver ahí el porqué). */
 export class Player extends Schema {
   @type("string") id: string = "";
   @type("string") name: string = "Gato";
   @type("boolean") isBot: boolean = false;
   @type("number") catColor: number = 0;
 
-  @filter(aoiDistanceFilter)
   @type("number") x: number = 0;
 
-  @filter(aoiDistanceFilter)
   @type("number") y: number = 0;
 
-  @filter(aoiDistanceFilter)
   @type("number") rotation: number = 0;
 
-  @filter(aoiDistanceFilter)
   @type("number") hp: number = 100;
 
   @type("number") maxHp: number = 100;
 
-  @filter(aoiDistanceFilter)
   @type("number") shield: number = 0;
 
   @type("number") maxShield: number = 50;
 
-  @filter(aoiDistanceFilter)
   @type("boolean") isGhost: boolean = false;
 
-  @filter(aoiDistanceFilter)
   @type("boolean") isHidden: boolean = false;
 
   @type("number") dashCooldown: number = 0;
@@ -65,7 +59,6 @@ export class Player extends Schema {
   @type("number") reloadTimer: number = 0;
   @type("number") maxReloadTimer: number = 2.0;
 
-  @filter(aoiDistanceFilter)
   @type("string") lastEmote: string = "";
 
   @type("number") emoteTimer: number = 0;
