@@ -5,11 +5,15 @@ import { GameState, Player, Projectile, Trap, Bush, ItemPickup, Obstacle } from 
 import { soundManager } from "../SoundManager";
 import { sseManager } from "../SSEClient";
 import { STRUCTURES, StructureDef } from "../structures";
+import { buildStructureArt } from "../structureArt";
+import { inRiver, onBridge, RIVER_PATH } from "../river";
+import { generateGround, buildWater, buildSeaFx, placeBridges } from "../terrain";
+import { edgeField, phaseField, waterDepthAt, islandEdge } from "../coast";
 import {
   preloadCatSprites, createCatAnims, hasCatSprites, applyCatSkin, updateCatAnim,
   getWeaponHold, applyWeaponSprite, applyHandSprite, handPosition, muzzleOffset,
   bulletKey, grenadeKey, applyProjectileSprite, hasGhostSprites, applyGhostSkin, playEffect, makeLoopingEffect,
-  effectAnimKey, playCatDash,
+  effectAnimKey, playCatDash, makeItemSprite, worldFrame, worldFrameAt, worldVariant, worldVariantCount,
   CAT_SPRITE_SCALE,
 } from "../catSprites";
 
@@ -91,6 +95,8 @@ interface VPlayer {
   reloadSpin: Phaser.GameObjects.Sprite | null;  // ícono pixel de recarga (flechas girando)
   emoteGfx:    Phaser.GameObjects.Container;
   emoteText:   Phaser.GameObjects.Text;
+  waterGfx?:   Phaser.GameObjects.Graphics;  // agua que cubre al gato en la playa/mar
+  waterDepth?: number;                       // 0 = seco .. 1 = cubierto
   tx: number; ty: number; tr: number;
   hp: number; maxHp: number;
   shield: number; maxShield: number;
@@ -195,6 +201,7 @@ interface VObstacle {
   sprite: Phaser.GameObjects.Image;
   hpGfx?: Phaser.GameObjects.Graphics;
   obsType: string;
+  stage?: number;            // etapa de daño dibujada (cajas y barriles)
   radius: number;
   hp: number;
   maxHp: number;
@@ -323,6 +330,9 @@ export class MainScene extends Phaser.Scene {
   private zoneDirty = true;
   private lastZoneR = -1;
   private minimapThrottle = 0;
+  private animateWater: (time: number) => void = () => {};
+  private stormPuffs: Phaser.GameObjects.Image[] = [];      // pool de bocanadas de humo de la zona
+  private stormEdgeGfx?: Phaser.GameObjects.Graphics;        // borde pixelado de la tormenta (solo en cámara)
 
   // Partículas pixel de superficie (tierra / agua / astillas) para dash, roll y pasos
   private surfParticles: { x: number; y: number; vx: number; vy: number; life: number; max: number;
@@ -1340,6 +1350,14 @@ export class MainScene extends Phaser.Scene {
     STRUCTURES.forEach(def => {
       // 1. Contenedor de Interior (depth: 3, bajo jugadores/obstáculos, sobre tilemap)
       const interiorContainer = this.add.container(def.x, def.y).setDepth(3);
+
+      // Pixel art con el kit de estructuras; si no cargó, sigue el dibujo vectorial
+      const pixelRoof = this.add.container(def.x, def.y).setDepth(75);
+      if (buildStructureArt(this, def, interiorContainer, pixelRoof)) {
+        this.vStructures.push({ def, interiorContainer, roofContainer: pixelRoof, isInside: false });
+        return;
+      }
+      pixelRoof.destroy();
       const floorGfx = this.add.graphics();
       interiorContainer.add(floorGfx);
 
@@ -1476,6 +1494,16 @@ export class MainScene extends Phaser.Scene {
 
   /* ── Mapa y Vegetación Optimizado (Phaser 3 Tilemap + Culling) ─── */
   private buildMap() {
+    // Suelo pixel art generado (sin baldosas) + agua animada + puentes sprite
+    if (worldFrame(this, "water", "a")) {
+      const key = generateGround(this);
+      this.add.image(0, 0, key).setOrigin(0).setScale(3).setDepth(0);
+      const animRiverSea = buildWater(this);
+      const seaFx = edgeField && phaseField ? buildSeaFx(this, edgeField, phaseField) : () => {};
+      this.animateWater = (t: number) => { animRiverSea(t); seaFx(t); };
+      placeBridges(this);
+      return;
+    }
     const tileW = 80;
     const tileH = 80;
     const numCols = 100; // 8000 / 80
@@ -1729,10 +1757,14 @@ export class MainScene extends Phaser.Scene {
     }
 
     // Estructuras de puente de madera con relieve para máximo contraste visual
-    const bridgeGfx = this.add.graphics().setDepth(1);
-    this.drawWoodenBridge(bridgeGfx, 4180, 2000, 160, 80);
-    this.drawWoodenBridge(bridgeGfx, 3850, 4000, 160, 80);
-    this.drawWoodenBridge(bridgeGfx, 4200, 6000, 160, 80);
+    const bridges: [number, number][] = [[4180, 2000], [3850, 4000], [4200, 6000]];
+    const bf = worldFrame(this, "bridge", "puente");
+    if (bf) {
+      bridges.forEach(([bx, by]) => this.add.image(bx, by, bf.key, bf.frame).setScale(CAT_SPRITE_SCALE).setDepth(1));
+    } else {
+      const bridgeGfx = this.add.graphics().setDepth(1);
+      bridges.forEach(([bx, by]) => this.drawWoodenBridge(bridgeGfx, bx, by, 160, 80));
+    }
 
     // Límites de frontera exterior decorativos
     const borderGfx = this.add.graphics().setDepth(2);
@@ -1842,10 +1874,25 @@ export class MainScene extends Phaser.Scene {
   }
 
   /** Superficie bajo un punto: puentes de madera, río o tierra/pasto. */
-  private surfaceAt(x: number, y: number): "wood" | "water" | "dirt" {
-    const bridges = [[4100, 4260, 1950, 2050], [3770, 3930, 3950, 4050], [4120, 4280, 5950, 6050]];
-    if (bridges.some(([x0, x1, y0, y1]) => x >= x0 && x <= x1 && y >= y0 && y <= y1)) return "wood";
+  private surfaceAt(x: number, y: number): "wood" | "water" | "dirt" | "floor" {
+    if (onBridge(x, y)) return "wood";
+    if (this.onBuildingFloor(x, y)) return "floor";
     return this.checkInRiver(x, y) ? "water" : "dirt";
+  }
+
+  /** ¿Está sobre el piso de una casa, su umbral o la pieza de entrada? (sin partículas) */
+  private onBuildingFloor(x: number, y: number): boolean {
+    return STRUCTURES.some(def => {
+      const hw = def.width / 2 + 18, hh = def.height / 2 + 18;          // hasta la cara exterior del muro
+      if (Math.abs(x - def.x) <= hw && Math.abs(y - def.y) <= hh) return true;
+      return def.doorways.some(d => {                                   // umbral + entrada (hasta 78 px afuera)
+        const vertical = d.height > d.width;
+        const half = (vertical ? d.height : d.width) / 2 + 8;
+        const along = vertical ? (x - d.x) * Math.sign(d.x - def.x) : (y - d.y) * Math.sign(d.y - def.y);
+        const across = vertical ? Math.abs(y - d.y) : Math.abs(x - d.x);
+        return along >= 0 && along <= 78 && across <= half;
+      });
+    });
   }
 
   /** Lanza partículas pixel según la superficie: tierra (terrones + polvo), agua
@@ -1853,6 +1900,7 @@ export class MainScene extends Phaser.Scene {
    *  partículas salen hacia atrás y a los costados). */
   private emitSurface(x: number, y: number, dirX: number, dirY: number, count: number, power = 1) {
     const surf = this.surfaceAt(x, y);
+    if (surf === "floor") return;                             // dentro de las casas no se levanta nada
     const PAL = {
       dirt: [0x6b4a2f, 0x9a7048, 0x7a6a44, 0xc8b28a, 0xd8c690],
       water: [0x2f63b8, 0x5d9be6, 0xa8dcf0, 0xf2fbff],
@@ -1901,35 +1949,9 @@ export class MainScene extends Phaser.Scene {
   }
 
   public checkInRiver(x: number, y: number): boolean {
-    if (x >= 4100 && x <= 4260 && y >= 1950 && y <= 2050) return false;
-    if (x >= 3770 && x <= 3930 && y >= 3950 && y <= 4050) return false;
-    if (x >= 4120 && x <= 4280 && y >= 5950 && y <= 6050) return false;
-
-    const pts = [
-      { x: 4000, y: 0 },
-      { x: 4200, y: 1500 },
-      { x: 3900, y: 3100 },
-      { x: 3800, y: 4900 },
-      { x: 4300, y: 6500 },
-      { x: 4100, y: 8000 },
-    ];
-    let minDist = Infinity;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const dx = p2.x - p1.x;
-      const dy = p2.y - p1.y;
-      const l2 = dx * dx + dy * dy;
-      if (l2 === 0) continue;
-      let t = ((x - p1.x) * dx + (y - p1.y) * dy) / l2;
-      t = Math.max(0, Math.min(1, t));
-      const px = p1.x + t * dx;
-      const py = p1.y + t * dy;
-      const d = Math.hypot(x - px, y - py);
-      if (d < minDist) minDist = d;
-    }
-    return minDist < 52;
+    return inRiver(x, y);              // río curvo compartido con el servidor (game/river.ts)
   }
+
 
   /* ── 0. Generación de Texturas Vectoriales para WebGL Sprite Batching ── */
   private initObjectTextures() {
@@ -2249,6 +2271,18 @@ export class MainScene extends Phaser.Scene {
     const container = this.add.container(b.x, b.y).setDepth(20);
     const w = b.width || 160, h = b.height || 120;
     const img = this.add.image(0, 0, "obs_bush").setDisplaySize(w, h);
+    // diseño estable según el id, pero sin repetir el de un arbusto cercano
+    const n = worldVariantCount(this, "bush");
+    let variant = worldVariant(this, "bush", b.id || `${b.x},${b.y}`);
+    if (n > 1) {
+      const near = new Set(this.bushList
+        .filter(o => Math.hypot(o.x - b.x, o.y - b.y) < 900)
+        .map(o => o.getData("variant") as number));
+      for (let k = 0; k < n && near.has(variant); k++) variant = (variant + 1) % n;
+    }
+    container.setData("variant", variant);
+    const wf = worldFrameAt(this, "bush", variant);
+    if (wf) img.setTexture(wf.key, wf.frame).setScale(CAT_SPRITE_SCALE);
     container.add(img);
     this.bushList.push(container);
     container.setVisible(this.isInCameraView(b.x, b.y, 140));
@@ -2256,18 +2290,18 @@ export class MainScene extends Phaser.Scene {
 
   /* ── Obstáculos con Sprite Batching & Grilla Espacial ──────── */
   private createObstacle(id: string, obs: Obstacle) {
-    const container = this.add.container(obs.x, obs.y).setDepth(30);
+    const container = this.add.container(obs.x, obs.y).setDepth(this.obstacleDepth(obs.obstacleType, !!obs.destroyed));
     const texKey = this.getObstacleTextureKey(obs.obstacleType, !!obs.destroyed);
     const sprite = this.add.image(0, 0, texKey);
     const targetSize = (obs.radius || 30) * 2;
     sprite.setDisplaySize(targetSize, targetSize);
     container.add(sprite);
-
     const vo: VObstacle = {
       id, container, sprite, obsType: obs.obstacleType, radius: obs.radius || 30,
       hp: obs.hp, maxHp: obs.maxHp, destroyed: !!obs.destroyed,
       x: obs.x, y: obs.y
     };
+    this.applyWorldSprite(vo);
 
     if (vo.hp < vo.maxHp && vo.hp > 0) {
       this.drawObstacleHpBar(vo);
@@ -2287,6 +2321,9 @@ export class MainScene extends Phaser.Scene {
       vo.destroyed = !!obs.destroyed;
       if (prevDestroyed !== vo.destroyed) {
         this.updateObstacleTexture(vo);
+        vo.container.setDepth(this.obstacleDepth(vo.obsType, vo.destroyed));
+      } else if (this.damageStage(vo) !== vo.stage) {
+        this.applyWorldSprite(vo);                       // rajaduras / aceite según la vida
       }
       this.drawObstacleHpBar(vo);
     });
@@ -2308,13 +2345,48 @@ export class MainScene extends Phaser.Scene {
 
   private updateObstacleTexture(vo: VObstacle) {
     const texKey = this.getObstacleTextureKey(vo.obsType, vo.destroyed);
-    vo.sprite.setTexture(texKey);
+    vo.sprite.setTexture(texKey).setOrigin(0.5);
     const targetSize = vo.radius * 2;
     vo.sprite.setDisplaySize(targetSize, targetSize);
+    this.applyWorldSprite(vo);
   }
 
+  /** Restos en el suelo (debajo de todo lo demás); árboles por encima de los gatos
+   *  (la copa los tapa y se aclara al pasar por debajo). */
+  private obstacleDepth(obsType: string, destroyed: boolean): number {
+    return destroyed ? 4 : obsType === "TREE" ? 70 : 30;   // 4: sobre el piso de las casas (3)
+  }
+
+  /** Etapa de daño de cajas y barriles: 0 sano, 1 por debajo de 2/3 de vida, 2 por debajo de 1/3. */
+  private damageStage(vo: VObstacle): number {
+    if (vo.destroyed || (vo.obsType !== "CRATE" && vo.obsType !== "BARREL")) return 0;
+    const r = vo.hp / Math.max(1, vo.maxHp);
+    return r < 1 / 3 ? 2 : r < 2 / 3 ? 1 : 0;
+  }
+
+  /** Objetos del mapa en pixel art (variante estable según el id; los restos y las
+   *  etapas de daño son de la misma variante). Los muros de las estructuras no se
+   *  dibujan acá: los arma el kit de estructuras. */
+  private applyWorldSprite(vo: VObstacle) {
+    const { sprite, obsType, id, destroyed } = vo;
+    if (obsType === "WALL") { sprite.setVisible(false); return; }
+    const base = obsType === "CRATE" ? "crate" : obsType === "BARREL" ? "barrel"
+      : obsType === "BOULDER" ? "rock" : obsType === "TREE" ? "tree" : null;
+    if (!base) return;
+    vo.stage = this.damageStage(vo);
+    const variant = worldVariant(this, base, id);
+    const wf = destroyed ? worldFrameAt(this, `${base}_broken`, variant) : worldFrameAt(this, base, variant, vo.stage);
+    if (!wf) return;                                   // respaldo: textura vectorial de antes
+    sprite.setTexture(wf.key, wf.frame).setScale(CAT_SPRITE_SCALE).setVisible(true);
+    const data = sprite.frame.customData as { anchors?: Record<string, { x: number; y: number }>; sourceSize?: { w: number; h: number } };
+    const c = data.anchors?.center, size = data.sourceSize ?? { w: sprite.frame.width, h: sprite.frame.height };
+    sprite.setOrigin(c ? c.x / size.w : 0.5, c ? c.y / size.h : 0.5);
+  }
+
+  /** Barra de vida pixel art de los objetos (mismo estilo que la de los gatos, en
+   *  rojo). Las rocas y árboles no se rompen: no muestran barra. */
   private drawObstacleHpBar(vo: VObstacle) {
-    if (vo.destroyed || vo.hp >= vo.maxHp || vo.hp <= 0) {
+    if (vo.destroyed || vo.hp >= vo.maxHp || vo.hp <= 0 || vo.maxHp >= 9999) {
       if (vo.hpGfx) {
         vo.hpGfx.destroy();
         vo.hpGfx = undefined;
@@ -2327,13 +2399,32 @@ export class MainScene extends Phaser.Scene {
       vo.container.add(vo.hpGfx);
     }
 
-    vo.hpGfx.clear();
-    const w = 42;
+    const g = vo.hpGfx;
+    g.clear();
+    const U = 2, CELLS = 20, X0 = -CELLS, Y = -vo.radius - 16;
     const ratio = Math.max(0, Math.min(1, vo.hp / vo.maxHp));
-    vo.hpGfx.fillStyle(0x0f172a, 0.85);
-    vo.hpGfx.fillRect(-w / 2, -vo.radius - 14, w, 5);
-    vo.hpGfx.fillStyle(0xef4444, 1);
-    vo.hpGfx.fillRect(-w / 2, -vo.radius - 14, w * ratio, 5);
+    const n = Math.max(1, Math.round(CELLS * ratio));
+    const prevN = (g.getData("cells") as number | undefined) ?? CELLS;
+    g.setData("cells", n);
+    g.fillStyle(0x14101c, 0.95);                 // borde con las esquinas recortadas
+    g.fillRect(X0, Y - 2, CELLS * U, 8);
+    g.fillRect(X0 - 2, Y, CELLS * U + 4, 4);
+    g.fillStyle(0x3a3a44, 1);                    // parte vacía
+    g.fillRect(X0, Y, CELLS * U, 4);
+    g.fillStyle(0xfca5a5, 1);                    // brillo
+    g.fillRect(X0, Y, n * U, U);
+    g.fillStyle(0xdc2626, 1);                    // base
+    g.fillRect(X0, Y + U, n * U, U);
+    if (n < CELLS) g.fillRect(X0 + (n - 1) * U, Y, U, U);
+
+    if (n < prevN) {                             // destello blanco del tramo perdido
+      const flash = this.add.graphics();
+      const fx = X0 + n * U, fw = (prevN - n) * U;
+      flash.fillStyle(0xffffff, 1);
+      flash.fillRect(fx, Y, fw, 4);
+      vo.container.add(flash);
+      this.tweens.add({ targets: flash, alpha: 0, duration: 260, ease: "Quad.easeOut", onComplete: () => flash.destroy() });
+    }
   }
 
   /* ── Pickups (Loot en el Suelo Estilo Suroi.io) ─────────────── */
@@ -2353,7 +2444,33 @@ export class MainScene extends Phaser.Scene {
     else if (item.itemType === "SNIPER") { color = 0x06b6d4; emoji = "🎯"; }
     else if (item.itemType === "GRENADE") { color = 0x84cc16; emoji = "💣"; }
 
-    // Pedestal de Loot Circular con Resplandor Suroi
+    // Ítem pixel art (sin pedestal): sprite con contorno claro que titila, flotando
+    // sobre una sombrita que queda quieta en el suelo
+    const itemSprite = makeItemSprite(this, item.itemType);
+    if (itemSprite) {
+      g.fillStyle(0x000000, 0.22);
+      g.fillEllipse(0, 18, 30, 9);
+      container.add([g, itemSprite]);
+      container.setSize(48, 48);
+      container.setInteractive({ useHandCursor: true });
+      container.on("pointerdown", () => this.tryInteract(id));
+      this.tweens.add({
+        targets: itemSprite, y: -5, duration: 900 + Math.random() * 250,
+        yoyo: true, repeat: -1, ease: "Sine.easeInOut",
+      });
+      const icon = this.add.text(0, 0, "");
+      const vi: VItem = { id, container, g, weaponGfx, icon, itemType: item.itemType, active: item.active, x: item.x, y: item.y };
+      this.items.set(id, vi);
+      this.itemSpatialGrid.insert(vi);
+      container.setVisible(item.active && this.isInCameraView(item.x, item.y, 100));
+      item.onChange(() => {
+        vi.active = item.active;
+        container.setVisible(item.active && this.isInCameraView(item.x, item.y, 100));
+      });
+      return;
+    }
+
+    // Pedestal de Loot Circular con Resplandor Suroi (respaldo vectorial)
     g.fillStyle(0x000000, 0.35);
     g.fillCircle(2, 4, 22);
 
@@ -2898,8 +3015,11 @@ export class MainScene extends Phaser.Scene {
       v.container.setAlpha(alphaVal);
       v.uiContainer.setAlpha(alphaVal);
       if (v.isHidden !== this.wasInBush) {
-        soundManager.playBush();
-        this.createLeavesFX(v.container.x, v.container.y);
+        // el servidor también oculta dentro de las casas: ahí no hay hojas ni ruido de arbusto
+        if (!this.onBuildingFloor(v.container.x, v.container.y)) {
+          soundManager.playBush();
+          this.createLeavesFX(v.container.x, v.container.y);
+        }
         this.wasInBush = v.isHidden;
       }
     }
@@ -2986,6 +3106,7 @@ export class MainScene extends Phaser.Scene {
     this.destroyTomb(v);
     v.container.destroy();
     v.uiContainer.destroy();
+    v.waterGfx?.destroy();
     this.players.delete(id);
   }
 
@@ -3667,6 +3788,10 @@ export class MainScene extends Phaser.Scene {
     // 2.2 Simulación y Frustum Culling del Object Pool de Balas Locales (200 máx)
     const dtSecBullet = Math.min(0.04, delta / 1000);
     this.updateSurfParticles(dtSecBullet);
+    this.animateWater(time);
+    this.updateWaterCover(time);
+    this.updateStormPuffs(time);
+    this.updateStormEdge(time);
     const pooledBullets = this.bulletPool.getChildren() as VisualBullet[];
     for (let i = 0; i < pooledBullets.length; i++) {
       const b = pooledBullets[i];
@@ -4208,6 +4333,12 @@ export class MainScene extends Phaser.Scene {
     const { x, y, r } = this.zone;
     g.clear();
 
+    const smoky = !!worldFrame(this, "storm", "v0");
+    if (smoky) {
+      // el velo y su borde pixelado los dibuja updateStormEdge (solo lo que está en cámara)
+      return;
+    }
+
     // Suroi-style niebla roja de tormenta tóxica optimizada para 60 FPS (8000x8000)
     g.fillStyle(0x881337, 0.45);
     if (y - r > 0) g.fillRect(0, 0, 8000, y - r);
@@ -4225,6 +4356,150 @@ export class MainScene extends Phaser.Scene {
     g.strokeCircle(x, y, r);
     g.lineStyle(2, 0xfca5a5, 0.85);
     g.strokeCircle(x, y, r - 3);
+  }
+
+  /** Gatos en la playa/mar: el agua los va cubriendo según la profundidad (con la ola).
+   *  Por ahora es solo visual (la lógica de ahogarse: docs/tecnico-agua-mar.md).
+   *  Nada se dibuja encima del gato: debajo, anillos de ondas pixel que se abren y se
+   *  apagan (cortados, no círculos llenos); el cuerpo se vuelve algo transparente y
+   *  azulado según la profundidad, como visto a través del agua. */
+  private updateWaterCover(time: number) {
+    if (!edgeField) return;
+    this.players.forEach(v => {
+      const depth = v.isGhost || !v.container.visible ? 0 : waterDepthAt(v.container.x, v.container.y, time);
+      const prev = v.waterDepth ?? 0;
+      v.waterDepth = depth;
+      if (depth <= 0) {
+        if (prev > 0) { v.waterGfx?.clear(); v.catSprite.clearTint().setAlpha(1); }
+        return;
+      }
+      if (!v.waterGfx) v.waterGfx = this.add.graphics();
+      const g = v.waterGfx;
+      g.setDepth(v.container.depth - 0.5).setPosition(Math.round(v.container.x / 3) * 3, Math.round(v.container.y / 3) * 3);
+      g.setVisible(v.container.visible);
+      g.clear();
+      const U = 3;
+      // dos anillos desfasados que se abren de radio 7 a 14 pixels del arte y se apagan
+      for (let k = 0; k < 2; k++) {
+        const t = ((time / 1100 + k * 0.5) % 1);
+        const R = 7 + t * 7, alpha = (1 - t) * (0.25 + 0.45 * Math.min(1, depth * 1.5));
+        const steps = Math.ceil(R * 6);
+        for (let i = 0; i < steps; i++) {
+          if ((i + k * 3) % 5 === 0) continue;                       // cortado
+          const an = (i / steps) * Math.PI * 2;
+          const x = Math.round(Math.cos(an) * R), y = Math.round(Math.sin(an) * R * 0.85);
+          g.fillStyle(i % 3 === 0 ? 0xffffff : 0xbfe6ff, alpha);
+          g.fillRect(x * U - 1, y * U - 1, U, U);
+        }
+      }
+      // cuerpo: algo transparente y azulado (sin taparlo)
+      const k = Math.min(1, depth);
+      const r = Math.round(255 - 70 * k), gg = Math.round(255 - 30 * k);
+      v.catSprite.setTint((r << 16) | (gg << 8) | 255).setAlpha(1 - 0.45 * k);
+    });
+  }
+
+  static readonly STORM_BAND = 150;   // ancho de la franja pixelada del borde de la tormenta
+
+  /** Tormenta en pixeles gruesos (9 px = 3 del sprite), fijos en el mundo, solo en cámara:
+   *  cada celda tiene su propio umbral (ruido + tramado), así el límite queda dentado
+   *  y al achicarse la zona va "comiendo" el terreno celda por celda. En el frente,
+   *  las celdas recién tomadas brillan más. Solo se dibuja lo que está en cámara. */
+  private updateStormEdge(time: number) {
+    if (!worldFrame(this, "storm", "v0")) return;
+    if (!this.stormEdgeGfx) this.stormEdgeGfx = this.add.graphics().setDepth(8);
+    const g = this.stormEdgeGfx;
+    g.clear();
+    const { x: zx, y: zy, r } = this.zone;
+    if (!(r > 0 && r < 12000)) return;
+    const view = this.cameras.main.worldView;
+    const C = 9, BAND = MainScene.STORM_BAND;
+    const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+    const x0 = Math.floor(view.x / C) - 1, x1 = Math.ceil(view.right / C) + 1;
+    const y0 = Math.floor(view.y / C) - 1, y1 = Math.ceil(view.bottom / C) + 1;
+    const flick = Math.floor(time / 220);
+    // 0 = nada, 1 = velo, 2 = frente brillante. Los tramos seguidos de velo se unen en un rect.
+    let runStart = -1, runRow = 0;
+    const flush = (cxEnd: number) => {
+      if (runStart >= 0) { g.fillStyle(0x3a1236, 0.32); g.fillRect(runStart * C, runRow * C, (cxEnd - runStart) * C, C); }
+      runStart = -1;
+    };
+    for (let cy = y0; cy <= y1; cy++) {
+      const py = cy * C + C / 2, dy = py - zy;
+      for (let cx = x0; cx <= x1; cx++) {
+        const px = cx * C + C / 2;
+        const d = Math.hypot(px - zx, dy) - r;
+        let kind = 0;
+        if (d >= BAND) kind = 1;
+        else if (d > -30) {
+          // ruido grueso (manchones) + fino por celda + un leve parpadeo en el frente
+          const h1 = Math.abs((Math.floor(cx / 5) * 73856093) ^ (Math.floor(cy / 5) * 19349663)) % 1000 / 1000;
+          const h2 = Math.abs((cx * 83492791) ^ (cy * 2654435761)) % 1000 / 1000;
+          const t = d / BAND + (h1 - 0.5) * 0.55 + (h2 - 0.5) * 0.25;
+          const thr = BAYER[(cy & 3) * 4 + (cx & 3)] / 16;
+          if (t >= 0.12 && !(t < 0.5 && thr > (t - 0.12) / 0.38)) {       // borde tramado
+            kind = t < 0.3 && ((h2 * 1000 + flick) % 7) < 3 ? 2 : 1;       // celdas recién tomadas
+          }
+        }
+        if (kind === 1) { if (runStart < 0) { runStart = cx; runRow = cy; } continue; }
+        flush(cx);
+        if (kind === 2) { g.fillStyle(0x8a2a78, 0.5); g.fillRect(cx * C, cy * C, C, C); }
+      }
+      flush(x1 + 1);
+    }
+  }
+
+  /** Tormenta como humo pixel: una hilera rala sobre el borde + bocanadas repartidas
+   *  por toda la tormenta (solo las que entran en cámara). Se reutiliza un pool de
+   *  imágenes; todo se mueve solo y despacio. */
+  private updateStormPuffs(time: number) {
+    const f0 = worldFrame(this, "storm", "v0");
+    if (!f0) return;
+    const { x: zx, y: zy, r } = this.zone;
+    const view = this.cameras.main.worldView;
+    const M = 120;
+    let used = 0;
+    const put = (px: number, py: number, k: number, alpha: number, scale: number) => {
+      if (px < view.x - M || px > view.right + M || py < view.y - M || py > view.bottom + M) return;
+      let img = this.stormPuffs[used];
+      if (!img) {
+        img = this.add.image(0, 0, f0.key, f0.frame).setDepth(9);
+        this.stormPuffs.push(img);
+      }
+      const v = ((k % 4) + 4) % 4;
+      img.setFrame(`${f0.key} ${v}.ase`).setPosition(Math.round(px / 3) * 3, Math.round(py / 3) * 3)
+        .setScale(scale).setAlpha(alpha).setVisible(true);
+      used++;
+    };
+    if (r > 0 && r < 12000) {
+      // borde: bocanadas desparramadas en una franja (no en hilera): cada una con su
+      // propia distancia al borde, tamaño, opacidad y huecos al azar
+      const n = Math.max(10, Math.floor((2 * Math.PI * (r + 60)) / 75));
+      const drift = time / 30000;                                 // gira muy despacio
+      for (let k = 0; k < n; k++) {
+        const h = (k * 2654435761) >>> 0;
+        if (h % 7 === 0) continue;                                  // huecos
+        const a = (k + ((h >>> 8) % 100) / 100 - 0.5) / n * Math.PI * 2 + drift;
+        const dist = r + 10 + ((h >>> 4) % 150) + Math.sin(time / 1100 + k * 1.7) * 14;
+        put(zx + Math.cos(a) * dist, zy + Math.sin(a) * dist, h >>> 3,
+          0.5 + ((h >>> 12) % 40) / 100, 3 + ((h >>> 16) & 1));
+      }
+      // dentro de la tormenta: humo repartido de forma pareja (grilla con desorden),
+      // un poco más denso cerca del borde y nunca dentro de la zona segura
+      const CELL = 150;
+      for (let cx = Math.floor((view.x - M) / CELL); cx <= Math.ceil((view.right + M) / CELL); cx++) {
+        for (let cy = Math.floor((view.y - M) / CELL); cy <= Math.ceil((view.bottom + M) / CELL); cy++) {
+          const h = Math.abs((cx * 73856093) ^ (cy * 19349663)) % 10007;
+          const px = cx * CELL + (h % 130) + Math.sin(time / 2200 + h) * 26;
+          const py = cy * CELL + ((h * 7) % 130) + Math.cos(time / 2600 + h) * 20;
+          const d = Math.hypot(px - zx, py - zy) - r;
+          if (d < 120) continue;
+          if ((h % 100) / 100 > (d < 400 ? 0.85 : 0.6)) continue;      // algunos huecos
+          put(px, py, h, 0.4 + ((h >> 3) % 30) / 100, 3 + ((h >> 5) & 1));
+        }
+      }
+    }
+    for (let i = used; i < this.stormPuffs.length; i++) this.stormPuffs[i].setVisible(false);
   }
 
   /* ── Minimapa con Orografía de Isla Suroi.io (Base Cacheada en 1 Draw) ─ */
@@ -4245,29 +4520,28 @@ export class MainScene extends Phaser.Scene {
     g.lineStyle(2, 0x10b981, 0.7);
     g.strokeRoundedRect(mx, my, SIZE, SIZE, 12);
 
-    // 2. Playa de arena del minimapa
+    // 2-3. Playa y pasto con la forma real de la isla (contornos de islandEdge)
+    const contour = (level: number) => {
+      const pts: Phaser.Types.Math.Vector2Like[] = [];
+      for (let i = 0; i < 180; i++) {
+        const an = (i / 180) * Math.PI * 2, dx = Math.cos(an), dy = Math.sin(an);
+        let r = 2000;
+        while (r < 6000 && islandEdge(4000 + dx * r, 4000 + dy * r) > level) r += 20;
+        pts.push({ x: mx + (4000 + dx * r) * sc, y: my + (4000 + dy * r) * sc });
+      }
+      return pts;
+    };
     g.fillStyle(0xc4a96b, 0.85);
-    g.fillRoundedRect(mx + 340 * sc, my + 340 * sc, 7320 * sc, 7320 * sc, 6);
-
-    // 3. Hierba central del minimapa
+    g.fillPoints(contour(330), true);
     g.fillStyle(0x56893b, 0.9);
-    g.fillRoundedRect(mx + 540 * sc, my + 540 * sc, 6920 * sc, 6920 * sc, 4);
+    g.fillPoints(contour(560), true);
 
-    // 4. Río del minimapa
+    // 4. Río del minimapa (la misma curva que el juego)
     g.lineStyle(3, 0x2869ad, 0.85);
-    const riverPts = [
-      { x: 4000, y: 0 },
-      { x: 4200, y: 1500 },
-      { x: 3900, y: 3100 },
-      { x: 3800, y: 4900 },
-      { x: 4300, y: 6500 },
-      { x: 4100, y: 8000 },
-    ];
     g.beginPath();
-    g.moveTo(mx + riverPts[0].x * sc, my + riverPts[0].y * sc);
-    for (let i = 1; i < riverPts.length; i++) {
-      g.lineTo(mx + riverPts[i].x * sc, my + riverPts[i].y * sc);
-    }
+    g.moveTo(mx + RIVER_PATH[0].x * sc, my + RIVER_PATH[0].y * sc);
+    for (let i = 4; i < RIVER_PATH.length; i += 4) g.lineTo(mx + RIVER_PATH[i].x * sc, my + RIVER_PATH[i].y * sc);
+    g.lineTo(mx + RIVER_PATH[RIVER_PATH.length - 1].x * sc, my + RIVER_PATH[RIVER_PATH.length - 1].y * sc);
     g.strokePath();
 
     // 4.1 Estructuras y Complejos Tácticos en el Minimapa

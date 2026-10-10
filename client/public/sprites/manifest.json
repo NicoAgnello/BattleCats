@@ -177,5 +177,37 @@
     "trap": "efecto-trampa",
     "tomb": "efecto-tumba",
     "claw": "efecto-zarpazo"
+  },
+  "items": {
+    "MEDKIT": "item-botiquin",
+    "SHOTGUN": "item-escopeta",
+    "SHIELD": "item-escudo",
+    "GRENADE": "item-granada",
+    "LASER": "item-pistola",
+    "SNIPER": "item-sniper",
+    "TRIPLE": "item-triple",
+    "SPEED": "item-velocidad"
+  },
+  "world": {
+    "water": "agua-ondas",
+    "big_prop": "kit-accesorio-grande",
+    "prop": "kit-accesorio",
+    "entrance": "kit-entrada",
+    "corner": "kit-esquina",
+    "wall_h": "kit-muro-h",
+    "wall_v": "kit-muro-v",
+    "floor": "kit-piso",
+    "camo_net": "kit-red",
+    "roof": "kit-techo",
+    "tree": "mundo-arbol",
+    "bush": "mundo-arbusto",
+    "barrel_broken": "mundo-barril-roto",
+    "barrel": "mundo-barril",
+    "crate_broken": "mundo-caja-rota",
+    "crate": "mundo-caja",
+    "rock": "mundo-roca",
+    "bridge_end": "puente-extremo",
+    "bridge_mid": "puente-tramo",
+    "storm": "tormenta-humo"
   }
 }

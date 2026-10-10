@@ -24,6 +24,8 @@ let catKeys: string[] = [];
 let handKeys: string[] = [];
 let ghostKeys: string[] = [];                   // fantasma de cada personaje (al morir), por catColor
 let effectKeys: Record<string, string> = {};   // effect_id -> sheet (p.ej. explosion)
+let itemKeys: Record<string, string> = {};     // itemType del piso -> sheet (p.ej. MEDKIT)
+let worldKeys: Record<string, string> = {};    // objeto del mapa -> sheet con variantes (crate, rock, tree...)
 
 /** Cómo se empuña un arma, en pixels del sprite relativos al centro del gato. */
 export interface WeaponHold {
@@ -44,6 +46,8 @@ interface SpriteManifest {
   bullets?: Record<string, string>;
   ghosts?: string[];
   effects?: Record<string, string>;
+  items?: Record<string, string>;
+  world?: Record<string, string>;
 }
 
 /** Encola el manifest y, cuando llega, las sheets de cada skin. Llamar en preload(). */
@@ -58,8 +62,11 @@ export function preloadCatSprites(scene: Phaser.Scene) {
       bulletKeys = data?.bullets ?? {};
       ghostKeys = data?.ghosts ?? [];
       effectKeys = data?.effects ?? {};
+      itemKeys = data?.items ?? {};
+      worldKeys = data?.world ?? {};
       const weaponKeys = Object.values(weaponHolds).map(h => h.sprite).filter((k): k is string => !!k);
-      for (const k of [...catKeys, ...ghostKeys, ...handKeys, ...weaponKeys, ...Object.values(bulletKeys), ...Object.values(effectKeys)]) {
+      for (const k of [...catKeys, ...ghostKeys, ...handKeys, ...weaponKeys, ...Object.values(bulletKeys), ...Object.values(effectKeys), ...Object.values(itemKeys),
+                       ...Object.values(worldKeys)]) {
         scene.load.atlas(k, BASE_URL + k + ".png", BASE_URL + k + ".json");
       }
     },
@@ -96,6 +103,13 @@ export function createCatAnims(scene: Phaser.Scene) {
   for (const [id, k] of Object.entries(effectKeys)) {
     if (!scene.textures.exists(k)) delete effectKeys[id];
   }
+  for (const [id, k] of Object.entries(itemKeys)) {
+    if (!scene.textures.exists(k)) delete itemKeys[id];
+  }
+  for (const [id, k] of Object.entries(worldKeys)) {
+    if (!scene.textures.exists(k)) delete worldKeys[id];
+    else scene.textures.get(k).setFilter(Phaser.Textures.FilterMode.NEAREST);
+  }
   for (const [id, h] of Object.entries(weaponHolds)) {
     if (h.sprite && !scene.textures.exists(h.sprite)) delete weaponHolds[id];
   }
@@ -106,7 +120,8 @@ export function createCatAnims(scene: Phaser.Scene) {
   for (const k of [...handKeys, ...Object.values(weaponHolds).map(h => h.sprite)]) {
     if (k) scene.textures.get(k).setFilter(Phaser.Textures.FilterMode.NEAREST);
   }
-  for (const key of [...catKeys, ...ghostKeys, ...Object.values(bulletKeys), ...Object.values(effectKeys)]) {
+  for (const key of [...catKeys, ...ghostKeys, ...Object.values(bulletKeys), ...Object.values(effectKeys),
+                     ...Object.values(itemKeys)]) {
     createAsepriteAnims(scene, key);
   }
 }
@@ -275,4 +290,63 @@ export function playCatDash(sprite: Phaser.GameObjects.Sprite): number {
   if (!catKeys.includes(sprite.texture.key) || !sprite.scene.anims.exists(anim)) return 0;
   sprite.play({ key: anim, repeat: 0 });
   return sprite.anims.currentAnim?.duration ?? 220;
+}
+
+/* ─── Ítems del piso ───────────────────────────────────────────── */
+
+/** Sprite pixel del ítem (con su contorno claro que titila), o null si no hay. */
+export function makeItemSprite(scene: Phaser.Scene, itemType: string): Phaser.GameObjects.Sprite | null {
+  const key = itemKeys[itemType];
+  if (!key) return null;
+  const spr = scene.add.sprite(0, 0, key, `${key} 0.ase`).setOrigin(0.5).setScale(CAT_SPRITE_SCALE);
+  const anim = `${key}:idle`;
+  if (scene.anims.exists(anim)) spr.play({ key: anim, startFrame: Math.floor(Math.random() * 2) });
+  return spr;
+}
+
+/* ─── Objetos del mapa (con variantes) ─────────────────────────── */
+
+/** Hash estable de un texto (para elegir variantes iguales en todos los clientes). */
+export function stableHash(text: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+
+/** Textura y frame de un objeto del mapa; la variante sale del id (estable). */
+export function worldFrame(scene: Phaser.Scene, kind: string, id: string, stage = 0): { key: string; frame: string } | null {
+  return worldFrameAt(scene, kind, worldVariant(scene, kind, id), stage);
+}
+
+/** Índice de variante estable de un objeto (tag v<i> del sheet). */
+export function worldVariant(scene: Phaser.Scene, kind: string, id: string): number {
+  const key = worldKeys[kind];
+  if (!key) return 0;
+  const n = Math.max(1, (scene.textures.get(key).customData as { meta: AsepriteMeta }).meta.frameTags.length);
+  return stableHash(id) % n;
+}
+
+/** Cantidad de variantes (tags) de un objeto del mapa. */
+export function worldVariantCount(scene: Phaser.Scene, kind: string): number {
+  const key = worldKeys[kind];
+  if (!key) return 0;
+  return (scene.textures.get(key).customData as { meta: AsepriteMeta }).meta.frameTags.length;
+}
+
+/** Frame de la variante i; stage = etapa de daño (frames siguientes del tag, si hay). */
+export function worldFrameAt(scene: Phaser.Scene, kind: string, variant: number, stage = 0): { key: string; frame: string } | null {
+  const key = worldKeys[kind];
+  if (!key) return null;
+  const tags = (scene.textures.get(key).customData as { meta: AsepriteMeta }).meta.frameTags;
+  const tag = tags[variant % Math.max(1, tags.length)];
+  const f = tag ? tag.from + Math.min(stage, tag.to - tag.from) : 0;
+  return { key, frame: `${key} ${f}.ase` };
+}
+
+/** Frame de una pieza del kit por nombre de tag (p.ej. kitFrame(scene, "floor", "marmol")). */
+export function kitFrame(scene: Phaser.Scene, kind: string, tag: string): { key: string; frame: string } | null {
+  const key = worldKeys[kind];
+  if (!key) return null;
+  const t = (scene.textures.get(key).customData as { meta: AsepriteMeta }).meta.frameTags.find(x => x.name === tag);
+  return t ? { key, frame: `${key} ${t.from}.ase` } : null;
 }
