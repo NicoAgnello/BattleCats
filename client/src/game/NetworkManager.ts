@@ -38,8 +38,8 @@ export class NetworkClient {
     this.room?.send("dash", { dirX, dirY });
   }
 
-  public sendShoot(angle: number, targetX?: number, targetY?: number) {
-    this.room?.send("shoot", { angle, targetX, targetY });
+  public sendShoot(angle: number, targetX?: number, targetY?: number, angles?: number[]) {
+    this.room?.send("shoot", { angle, targetX, targetY, angles });
   }
 
   public sendReload() {

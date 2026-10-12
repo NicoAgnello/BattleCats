@@ -101,6 +101,7 @@ interface VPlayer {
   hp: number; maxHp: number;
   shield: number; maxShield: number;
   equippedWeapon: string;
+  availableWeapons?: string;
   ammo: number; maxAmmo: number;
   reserveAmmo: number;
   isReloading: boolean;
@@ -505,10 +506,14 @@ export class MainScene extends Phaser.Scene {
 
     // Rueda del ratón para cambio de arma
     this.input.on("wheel", (_ptr: any, _dx: number, dy: number) => {
-      const weapons = ["LASER", "SHOTGUN", "SNIPER", "GRENADE", "MELEE"];
+      const allWeapons = ["LASER", "SHOTGUN", "SNIPER", "GRENADE", "MELEE"];
       const me = this.players.get(this.myId);
       if (!me) return;
-      let currIndex = weapons.indexOf(me.equippedWeapon || "LASER");
+      const available = (me.availableWeapons || "MELEE").split(",");
+      const weapons = allWeapons.filter((w) => w === "MELEE" || available.includes(w));
+      if (weapons.length <= 1) return;
+      let currIndex = weapons.indexOf(me.equippedWeapon || "MELEE");
+      if (currIndex < 0) currIndex = 0;
       if (dy > 0) currIndex = (currIndex + 1) % weapons.length;
       else currIndex = (currIndex - 1 + weapons.length) % weapons.length;
       this.switchWeapon(weapons[currIndex]);
@@ -696,8 +701,28 @@ export class MainScene extends Phaser.Scene {
       });
     }
 
-    // Enviar disparo al servidor
-    this.net.sendShoot(angle, wp.x, wp.y);
+    // 1: Cadencia y dispersión dentro del área de apuntado para Escopeta y Pistola
+    let shootAngles: number[] | undefined;
+    if (w === "SHOTGUN") {
+      const isTriple = me.lastBuff === "TRIPLE";
+      const pelletCount = isTriple ? 7 : 5;
+      const spread = 0.28;
+      const blastJitter = (Math.random() - 0.5) * 0.08;
+      shootAngles = [];
+      for (let i = 0; i < pelletCount; i++) {
+        const offset = (i - (pelletCount - 1) / 2) * (spread / (pelletCount - 1));
+        const pelletJitter = (Math.random() - 0.5) * 0.09;
+        shootAngles.push(angle + offset + blastJitter + pelletJitter);
+      }
+    } else if (w === "LASER") {
+      const isTriple = me.lastBuff === "TRIPLE";
+      const pistolSpread = 0.18;
+      const baseOffsets = isTriple ? [-0.18, 0, 0.18] : [0];
+      shootAngles = baseOffsets.map((bo) => angle + bo + (Math.random() - 0.5) * (pistolSpread * (isTriple ? 0.6 : 1.0)));
+    }
+
+    // Enviar disparo al servidor con los ángulos calculados
+    this.net.sendShoot(angle, wp.x, wp.y, shootAngles);
 
     // Audio y retroceso instantáneo a 0ms
     if (w === "SHOTGUN") soundManager.playShotgun();
@@ -761,10 +786,10 @@ export class MainScene extends Phaser.Scene {
     }
 
     // Proyectil visual predictivo instantáneo
-    this.spawnPredictedProjectile(me, angle, wp.x, wp.y, w);
+    this.spawnPredictedProjectile(me, angle, wp.x, wp.y, w, shootAngles);
   }
 
-  private spawnPredictedProjectile(me: VPlayer, angle: number, targetX: number, targetY: number, weapon: string) {
+  private spawnPredictedProjectile(me: VPlayer, angle: number, targetX: number, targetY: number, weapon: string, customAngles?: number[]) {
     if (weapon === "MELEE") {
       const slashX = me.container.x + Math.cos(angle) * 36;
       const slashY = me.container.y + Math.sin(angle) * 36;
@@ -786,12 +811,21 @@ export class MainScene extends Phaser.Scene {
     this.createSparksFX(spawnX, spawnY, weapon === "SHOTGUN" ? 0xf07a1e : 0xffd23f);   // fogonazo cálido
 
     if (weapon === "SHOTGUN") {
-      const pellets = 5;
-      const spread = 0.28;
       const speed = 680;
-      for (let i = 0; i < pellets; i++) {
-        const offset = (i - (pellets - 1) / 2) * (spread / (pellets - 1));
-        const a = angle + offset;
+      let angles = customAngles;
+      if (!angles || angles.length === 0) {
+        const isTriple = me.lastBuff === "TRIPLE";
+        const pelletCount = isTriple ? 7 : 5;
+        const spread = 0.28;
+        const blastJitter = (Math.random() - 0.5) * 0.08;
+        angles = [];
+        for (let i = 0; i < pelletCount; i++) {
+          const offset = (i - (pelletCount - 1) / 2) * (spread / (pelletCount - 1));
+          const pelletJitter = (Math.random() - 0.5) * 0.09;
+          angles.push(angle + offset + blastJitter + pelletJitter);
+        }
+      }
+      for (const a of angles) {
         this.createLocalVisualBullet(spawnX, spawnY, a, speed, travel(310) / speed, 4, 0xef4444, bulletKey("SHOTGUN"));
       }
     } else if (weapon === "SNIPER") {
@@ -836,9 +870,14 @@ export class MainScene extends Phaser.Scene {
         }
       });
     } else { // LASER
-      const isTriple = me.lastBuff === "TRIPLE";
-      const angles = isTriple ? [angle - 0.18, angle, angle + 0.18] : [angle];
       const speed = 800;
+      let angles = customAngles;
+      if (!angles || angles.length === 0) {
+        const isTriple = me.lastBuff === "TRIPLE";
+        const pistolSpread = 0.18;
+        const baseOffsets = isTriple ? [-0.18, 0, 0.18] : [0];
+        angles = baseOffsets.map((bo) => angle + bo + (Math.random() - 0.5) * (pistolSpread * (isTriple ? 0.6 : 1.0)));
+      }
       for (const a of angles) {
         this.createLocalVisualBullet(spawnX, spawnY, a, speed, travel(480) / speed, 6, 0xf472b6, bulletKey("LASER"));
       }
@@ -1056,6 +1095,12 @@ export class MainScene extends Phaser.Scene {
 
   private switchWeapon(w: string) {
     const me = this.players.get(this.myId);
+    if (!me || me.isGhost) return;
+    const available = (me.availableWeapons || "MELEE").split(",");
+    if (w !== "MELEE" && !available.includes(w)) {
+      soundManager.playEmptyClick();
+      return;
+    }
     if (me && me.equippedWeapon !== w) {
       me.equippedWeapon = w;
       this.net.sendSwitchWeapon(w);
@@ -1066,6 +1111,7 @@ export class MainScene extends Phaser.Scene {
         shield: me.shield,
         maxShield: me.maxShield,
         equippedWeapon: me.equippedWeapon,
+        availableWeapons: me.availableWeapons || "MELEE",
         ammo: me.ammo,
         maxAmmo: me.maxAmmo,
         reserveAmmo: me.reserveAmmo,
@@ -2692,9 +2738,10 @@ export class MainScene extends Phaser.Scene {
       tx: px, ty: py, tr: p.rotation || 0,
       hp: p.hp ?? 100, maxHp: p.maxHp ?? 100,
       shield: p.shield ?? 0, maxShield: p.maxShield ?? 50,
-      equippedWeapon: p.equippedWeapon || "LASER",
-      ammo: p.ammo ?? 12, maxAmmo: p.maxAmmo ?? 12,
-      reserveAmmo: p.reserveAmmo ?? 24,
+      equippedWeapon: p.equippedWeapon || "MELEE",
+      availableWeapons: p.availableWeapons || "MELEE",
+      ammo: p.ammo ?? 999, maxAmmo: p.maxAmmo ?? 999,
+      reserveAmmo: p.reserveAmmo ?? 0,
       isReloading: !!p.isReloading,
       reloadTimer: p.reloadTimer ?? 0,
       maxReloadTimer: p.maxReloadTimer ?? 2.0,
@@ -2966,10 +3013,11 @@ export class MainScene extends Phaser.Scene {
     v.maxHp = p.maxHp ?? v.maxHp;
     v.shield = p.shield ?? v.shield;
     v.maxShield = p.maxShield ?? v.maxShield;
-    v.equippedWeapon = p.equippedWeapon || "LASER";
-    v.ammo = p.ammo ?? v.ammo ?? 12;
-    v.maxAmmo = p.maxAmmo ?? v.maxAmmo ?? 12;
-    v.reserveAmmo = p.reserveAmmo ?? v.reserveAmmo ?? 24;
+    v.equippedWeapon = p.equippedWeapon || "MELEE";
+    v.availableWeapons = p.availableWeapons || "MELEE";
+    v.ammo = p.ammo ?? v.ammo ?? 999;
+    v.maxAmmo = p.maxAmmo ?? v.maxAmmo ?? 999;
+    v.reserveAmmo = p.reserveAmmo ?? v.reserveAmmo ?? 0;
     const prevReloading = v.isReloading;
     v.isReloading = !!p.isReloading;
     v.reloadTimer = p.reloadTimer ?? 0;
@@ -3036,6 +3084,7 @@ export class MainScene extends Phaser.Scene {
         shield: v.shield,
         maxShield: v.maxShield,
         equippedWeapon: v.equippedWeapon,
+        availableWeapons: v.availableWeapons || "MELEE",
         ammo: v.ammo,
         maxAmmo: v.maxAmmo,
         reserveAmmo: v.reserveAmmo,
@@ -3913,10 +3962,10 @@ export class MainScene extends Phaser.Scene {
 
       if (isGun) {
         if (isSameGun) {
-          title = `[F] YA EQUIPADO`;
-          stats = `${it.itemType} (Munición Máxima)`;
+          title = `[F] MUNICIÓN DE ${it.itemType}`;
+          stats = `${it.itemType} (Munición Recargada)`;
         } else {
-          title = `[F] CAMBIAR POR ${it.itemType}`;
+          title = me.equippedWeapon === "MELEE" ? `[F] EQUIPAR ${it.itemType}` : `[F] CAMBIAR POR ${it.itemType}`;
           if (it.itemType === "SHOTGUN") stats = "Daño: 15x5 (75) | 2/8 Balas | Cadencia: 1.0s | Recarga: 2.5s";
           else if (it.itemType === "SNIPER") stats = "Daño: 50 | 5/5 Balas | Cadencia: 0.5s | Recarga: 3.0s";
           else if (it.itemType === "GRENADE") stats = "Daño: 100/70 | x3 Granadas | Retardo: 2.0s | Área x2";

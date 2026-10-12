@@ -18,6 +18,7 @@ interface ShootPayload {
   angle: number;
   targetX?: number;
   targetY?: number;
+  angles?: number[];
 }
 
 export interface WeaponDef {
@@ -352,7 +353,7 @@ export class JungleRoom extends Room<GameState> {
       }
 
       const angle = typeof data.angle === "number" ? data.angle : player.rotation;
-      this.spawnProjectiles(player, angle, data.targetX, data.targetY);
+      this.spawnProjectiles(player, angle, data.targetX, data.targetY, data.angles);
       
       let cooldown = cfg.shootCooldown;
       if (player.activeBuff === "SPEED") cooldown *= 0.7;
@@ -369,8 +370,11 @@ export class JungleRoom extends Room<GameState> {
       if (!player || player.isGhost) return;
       const valid = ["LASER", "SHOTGUN", "SNIPER", "GRENADE", "MELEE"];
       if (valid.includes(data.weapon)) {
-        this.savePlayerCurrentWeaponAmmo(player);
-        this.applyWeaponToPlayer(player, data.weapon);
+        const available = (player.availableWeapons || "MELEE").split(",");
+        if (data.weapon === "MELEE" || available.includes(data.weapon)) {
+          this.savePlayerCurrentWeaponAmmo(player);
+          this.applyWeaponToPlayer(player, data.weapon);
+        }
       }
     });
 
@@ -471,7 +475,7 @@ export class JungleRoom extends Room<GameState> {
   }
 
   private spawnDeathLoot(x: number, y: number) {
-    const lootTypes = ["MEDKIT", "SHIELD", "SHOTGUN", "SNIPER", "SPEED"];
+    const lootTypes = ["MEDKIT", "SHIELD", "SHOTGUN", "SNIPER", "LASER", "GRENADE", "SPEED"];
     const chosen = lootTypes[Math.floor(Math.random() * lootTypes.length)];
     const item = new ItemPickup();
     item.id = `loot_drop_${++this.itemIdCounter}_${Date.now()}`;
@@ -493,12 +497,8 @@ export class JungleRoom extends Room<GameState> {
 
   private initPlayerWeapons(playerId: string) {
     this.playerWeaponAmmo.set(playerId, {
-      LASER: { ammo: 12, reserveAmmo: 24 }, // 12 en recámara, 2 cargadores (24)
-      SHOTGUN: { ammo: 2, reserveAmmo: 8 }, // 2 en recámara, 4 cargadores (8)
-      SNIPER: { ammo: 5, reserveAmmo: 5 }, // 5 en recámara, 1 cargador (5)
-      GRENADE: { ammo: 3, reserveAmmo: 0 }, // 3 granadas al recoger
-      MELEE: { ammo: 999, reserveAmmo: 0 }, // Garras
-    });
+      MELEE: { ammo: 999, reserveAmmo: 0 }, // Garras (única arma inicial)
+    } as any);
   }
 
   private applyWeaponToPlayer(player: Player, weaponKey: string) {
@@ -554,7 +554,7 @@ export class JungleRoom extends Room<GameState> {
     });
   }
 
-  private spawnProjectiles(player: Player, angle: number, targetX?: number, targetY?: number) {
+  private spawnProjectiles(player: Player, angle: number, targetX?: number, targetY?: number, customAngles?: number[]) {
     const weapon = player.equippedWeapon;
     const isTriple = player.activeBuff === "TRIPLE";
 
@@ -591,16 +591,25 @@ export class JungleRoom extends Room<GameState> {
 
     if (weapon === "SHOTGUN") {
       // Escopeta: 5 perdigones, 15 de daño cada perdigón. Alcance 310px. Cooldown 1s, recarga 2.5s.
+      // Cadencia y dispersión dentro del área de apuntado (no van por el medio de la mira).
       const pelletCount = isTriple ? 7 : 5;
       const spread = 0.28;
       const range = 310;
       const speed = 680;
       const lifetime = range / speed; // 0.455s -> exactamente termina al llegar a 310px
 
-      for (let i = 0; i < pelletCount; i++) {
-        const offset = (i - (pelletCount - 1) / 2) * (spread / (pelletCount - 1));
-        const a = angle + offset + (Math.random() - 0.5) * 0.04;
+      let anglesToUse = customAngles;
+      if (!anglesToUse || anglesToUse.length !== pelletCount) {
+        const blastJitter = (Math.random() - 0.5) * 0.08;
+        anglesToUse = [];
+        for (let i = 0; i < pelletCount; i++) {
+          const offset = (i - (pelletCount - 1) / 2) * (spread / (pelletCount - 1));
+          const pelletJitter = (Math.random() - 0.5) * 0.09;
+          anglesToUse.push(angle + offset + blastJitter + pelletJitter);
+        }
+      }
 
+      for (const a of anglesToUse) {
         const proj = new Projectile();
         proj.id = `proj_${++this.projectileIdCounter}_${Date.now()}`;
         proj.x = player.x + Math.cos(a) * 26;
@@ -614,8 +623,8 @@ export class JungleRoom extends Room<GameState> {
         proj.radius = 4;
         this.addProjectile(proj);
       }
-      this.broadcast("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SHOTGUN" });
-      this.sse("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SHOTGUN" });
+      this.broadcast("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SHOTGUN", angles: anglesToUse });
+      this.sse("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SHOTGUN", angles: anglesToUse });
       return;
     }
 
@@ -696,12 +705,18 @@ export class JungleRoom extends Room<GameState> {
     }
 
     // Default LASER (Pistola): 20 de daño por bala. Alcance 480px. Speed 800. Lifetime = 480 / 800 = 0.60s.
-    const angles = isTriple ? [angle - 0.18, angle, angle + 0.18] : [angle];
+    // Cadencia y dispersión dentro del área del cono de apuntado (no van por el centro).
+    const pistolSpread = 0.18;
+    const baseAngles = isTriple ? [angle - 0.18, angle, angle + 0.18] : [angle];
+    let anglesToUse = customAngles;
+    if (!anglesToUse || anglesToUse.length !== baseAngles.length) {
+      anglesToUse = baseAngles.map((ba) => ba + (Math.random() - 0.5) * (pistolSpread * (isTriple ? 0.6 : 1.0)));
+    }
     const range = 480;
     const speed = 800;
     const lifetime = range / speed;
 
-    for (const a of angles) {
+    for (const a of anglesToUse) {
       const proj = new Projectile();
       proj.id = `proj_${++this.projectileIdCounter}_${Date.now()}`;
       proj.x = player.x + Math.cos(a) * 28;
@@ -716,8 +731,8 @@ export class JungleRoom extends Room<GameState> {
       this.addProjectile(proj);
     }
 
-    this.broadcast("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "LASER", isTriple });
-    this.sse("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "LASER", isTriple });
+    this.broadcast("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "LASER", isTriple, angles: anglesToUse });
+    this.sse("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "LASER", isTriple, angles: anglesToUse });
   }
 
   private damageObstacle(obs: Obstacle, dmg: number, shooterId?: string) {
@@ -797,7 +812,7 @@ export class JungleRoom extends Room<GameState> {
   }
 
   private spawnCrateLoot(x: number, y: number) {
-    const possible = ["MEDKIT", "SHIELD", "SHOTGUN", "SNIPER", "GRENADE", "SPEED", "TRIPLE"];
+    const possible = ["MEDKIT", "SHIELD", "SHOTGUN", "SNIPER", "GRENADE", "SPEED", "TRIPLE", "LASER"];
     const chosen = possible[Math.floor(Math.random() * possible.length)];
 
     const item = new ItemPickup();
@@ -830,10 +845,11 @@ export class JungleRoom extends Room<GameState> {
       bot.name = this.botNames[i];
       bot.isBot = true;
       bot.catColor = colors[i % colors.length];
-      bot.equippedWeapon = botWeapons[i % botWeapons.length];
+      bot.equippedWeapon = "MELEE";
+      bot.availableWeapons = "MELEE";
 
       this.initPlayerWeapons(botId);
-      this.applyWeaponToPlayer(bot, botWeapons[i % botWeapons.length]);
+      this.applyWeaponToPlayer(bot, "MELEE");
 
       const angle = (i / this.botNames.length) * Math.PI * 2;
       const dist = 1200 + Math.random() * 2000;
@@ -842,7 +858,7 @@ export class JungleRoom extends Room<GameState> {
       bot.rotation = angle + Math.PI;
       bot.hp = 100;
       bot.maxHp = 100;
-      bot.shield = 25;
+      bot.shield = 0;
       bot.maxShield = 50;
       bot.isGhost = false;
       bot.isHidden = false;
@@ -898,15 +914,16 @@ export class JungleRoom extends Room<GameState> {
     player.rotation = 0;
     player.hp = 100;
     player.maxHp = 100;
-    player.shield = 50;
+    player.shield = 0;
     player.maxShield = 50;
     player.isGhost = false;
     player.isHidden = false;
     player.kills = 0;
     player.activeBuff = "";
     player.buffTimer = 0;
+    player.availableWeapons = "MELEE";
     this.initPlayerWeapons(client.sessionId);
-    this.applyWeaponToPlayer(player, "LASER");
+    this.applyWeaponToPlayer(player, "MELEE");
 
     this.state.players.set(client.sessionId, player);
     this.spatialGrid.insert({
@@ -1247,12 +1264,17 @@ export class JungleRoom extends Room<GameState> {
         const angleVar = nearestEnemy.isBot ? (Math.random() - 0.5) * 0.4 : (Math.random() - 0.5) * 0.2;
         bot.rotation = targetAngle + angleVar;
 
-        if (bot.shootCooldown <= 0 && minEnemyDist < 380) {
+        const isMelee = bot.equippedWeapon === "MELEE";
+        const attackRange = isMelee ? 72 : 380;
+        if (bot.shootCooldown <= 0 && minEnemyDist < attackRange) {
           this.spawnProjectiles(bot, bot.rotation);
-          bot.shootCooldown = nearestEnemy.isBot ? (1.6 + Math.random() * 0.8) : (1.0 + Math.random() * 0.5);
+          bot.shootCooldown = isMelee ? 0.35 : (nearestEnemy.isBot ? (1.6 + Math.random() * 0.8) : (1.0 + Math.random() * 0.5));
         }
 
-        if (minEnemyDist < 140) {
+        if (isMelee) {
+          ctrl.targetDx = Math.cos(targetAngle);
+          ctrl.targetDy = Math.sin(targetAngle);
+        } else if (minEnemyDist < 140) {
           const perpAngle = targetAngle + Math.PI / 2;
           ctrl.targetDx = Math.cos(perpAngle);
           ctrl.targetDy = Math.sin(perpAngle);
@@ -1418,7 +1440,7 @@ export class JungleRoom extends Room<GameState> {
 
       // Suroi-style weapon swap: drop previous weapon on ground so it can be picked back up!
       // (las garras no se sueltan: todos los gatos las tienen siempre)
-      if (prevWeapon && prevWeapon !== item.itemType && prevWeapon !== "LASER" && prevWeapon !== "MELEE") {
+      if (prevWeapon && prevWeapon !== item.itemType && prevWeapon !== "MELEE") {
         const dropItem = new ItemPickup();
         dropItem.id = `drop_${++this.itemIdCounter}_${Date.now()}`;
         dropItem.x = player.x;
@@ -1427,17 +1449,29 @@ export class JungleRoom extends Room<GameState> {
         dropItem.active = true;
         dropItem.respawnTimer = 0;
         this.state.items.set(dropItem.id, dropItem);
+        this.spatialGrid.insert({
+          id: dropItem.id,
+          x: dropItem.x,
+          y: dropItem.y,
+          radius: 24,
+          type: "item",
+          data: dropItem,
+        });
       }
 
       // Rellenar munición al recoger arma nueva
       const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
       const store = this.playerWeaponAmmo.get(player.id);
       if (store) {
+        if (prevWeapon && prevWeapon !== "MELEE" && prevWeapon !== item.itemType) {
+          delete (store as any)[prevWeapon];
+        }
         store[item.itemType] = {
           ammo: cfg.maxAmmo,
           reserveAmmo: cfg.reserveAmmo,
         };
       }
+      player.availableWeapons = `MELEE,${item.itemType}`;
       this.applyWeaponToPlayer(player, item.itemType);
 
       if (item.id.startsWith("drop_") || item.id.startsWith("crate_")) {
@@ -1490,11 +1524,9 @@ export class JungleRoom extends Room<GameState> {
         if (dist < 34) {
           const isWeapon = ["SHOTGUN", "SNIPER", "GRENADE", "LASER"].includes(item.itemType);
 
-          // For weapons: only auto-pickup if player is still using default starter LASER.
-          // If player has already equipped a special gun (Sniper, Shotgun, etc.),
-          // don't overwrite it automatically! They must press [F] to swap (Suroi style).
+          // Si el jugador está únicamente con MELEE (o no tiene armas de fuego), recoge automáticamente la primera arma que encuentra
           if (isWeapon) {
-            if (player.equippedWeapon === "LASER" && player.equippedWeapon !== item.itemType) {
+            if (player.equippedWeapon === "MELEE" || !player.availableWeapons || player.availableWeapons === "MELEE") {
               item.active = false;
               item.respawnTimer = 18.0;
               this.savePlayerCurrentWeaponAmmo(player);
@@ -1506,6 +1538,7 @@ export class JungleRoom extends Room<GameState> {
                   reserveAmmo: cfg.reserveAmmo,
                 };
               }
+              player.availableWeapons = `MELEE,${item.itemType}`;
               this.applyWeaponToPlayer(player, item.itemType);
               this.broadcast("itemPicked", {
                 id: item.id,
@@ -1515,6 +1548,21 @@ export class JungleRoom extends Room<GameState> {
                 x: item.x,
                 y: item.y,
               });
+            } else if (player.equippedWeapon === item.itemType) {
+              const cfg = WEAPON_CONFIGS[item.itemType];
+              if (cfg && player.reserveAmmo < cfg.reserveAmmo * 2) {
+                player.reserveAmmo = Math.min(cfg.reserveAmmo * 2, player.reserveAmmo + cfg.reserveAmmo);
+                item.active = false;
+                item.respawnTimer = 18.0;
+                this.broadcast("itemPicked", {
+                  id: item.id,
+                  itemType: item.itemType,
+                  playerId: player.id,
+                  playerName: player.name,
+                  x: item.x,
+                  y: item.y,
+                });
+              }
             }
             return;
           }
@@ -1628,10 +1676,11 @@ export class JungleRoom extends Room<GameState> {
       player.y = this.state.zone.y + Math.sin(angle) * dist;
       player.hp = 100;
       player.maxHp = 100;
-      player.shield = 50;
+      player.shield = 0;
       player.maxShield = 50;
+      player.availableWeapons = "MELEE";
       this.initPlayerWeapons(player.id);
-      this.applyWeaponToPlayer(player, "LASER");
+      this.applyWeaponToPlayer(player, "MELEE");
       player.isGhost = false;
       player.isHidden = false;
       player.kills = 0;
@@ -1929,6 +1978,14 @@ export class JungleRoom extends Room<GameState> {
       { x: 3850, y: 4000, type: "SNIPER" },
       { x: 4180, y: 2000, type: "SHOTGUN" },
       { x: 4200, y: 6000, type: "GRENADE" },
+      { x: 3600, y: 3600, type: "LASER" },
+      { x: 4400, y: 4400, type: "LASER" },
+      { x: 3700, y: 4300, type: "SHOTGUN" },
+      { x: 4300, y: 3700, type: "LASER" },
+      { x: 4000, y: 3500, type: "SHOTGUN" },
+      { x: 4000, y: 4500, type: "LASER" },
+      { x: 3500, y: 4000, type: "SHOTGUN" },
+      { x: 4500, y: 4000, type: "LASER" },
       { x: 1200, y: 1200, type: "MEDKIT" },
       { x: 2800, y: 1800, type: "SHIELD" },
       { x: 5200, y: 1800, type: "TRIPLE" },
@@ -1937,6 +1994,10 @@ export class JungleRoom extends Room<GameState> {
       { x: 2800, y: 5200, type: "MEDKIT" },
       { x: 5200, y: 5200, type: "SHIELD" },
       { x: 6800, y: 6800, type: "SNIPER" },
+      { x: 2400, y: 4000, type: "LASER" },
+      { x: 5600, y: 4000, type: "SHOTGUN" },
+      { x: 4000, y: 2400, type: "SHIELD" },
+      { x: 4000, y: 5600, type: "SHIELD" },
     ];
     wildernessLoot.forEach((wl, idx) => {
       itemsData.push({ id: `loot_wd_${idx}`, x: wl.x, y: wl.y, type: wl.type });

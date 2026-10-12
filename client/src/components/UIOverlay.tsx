@@ -8,6 +8,7 @@ interface PlayerState {
   shield?: number;
   maxShield?: number;
   equippedWeapon?: string;
+  availableWeapons?: string;
   ammo?: number;
   maxAmmo?: number;
   reserveAmmo?: number;
@@ -46,12 +47,13 @@ interface VictoryState {
 const DEFAULT_PLAYER: PlayerState = {
   hp: 100,
   maxHp: 100,
-  shield: 50,
+  shield: 0,
   maxShield: 50,
-  equippedWeapon: "LASER",
-  ammo: 12,
-  maxAmmo: 12,
-  reserveAmmo: 24,
+  equippedWeapon: "MELEE",
+  availableWeapons: "MELEE",
+  ammo: 999,
+  maxAmmo: 999,
+  reserveAmmo: 0,
   isReloading: false,
   reloadTimer: 0,
   maxReloadTimer: 2.0,
@@ -195,6 +197,8 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
   };
 
   const selectWeapon = (weapon: string) => {
+    const available = (player.availableWeapons || "MELEE").split(",");
+    if (weapon !== "MELEE" && !available.includes(weapon)) return;
     window.dispatchEvent(new CustomEvent("switch-weapon", { detail: { weapon } }));
   };
 
@@ -618,25 +622,32 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
             {/* Selector de Armas Suroi (Slot 1-5) */}
             <div className="pointer-events-auto glass-panel p-2 rounded-2xl flex items-center gap-2 border border-slate-700/60 shadow-2xl backdrop-blur-md">
               {weapons.map((w) => {
-                const active = (player.equippedWeapon || "LASER") === w.id;
+                const active = (player.equippedWeapon || "MELEE") === w.id;
+                const available = (player.availableWeapons || "MELEE").split(",").includes(w.id);
                 return (
                   <button
                     key={w.id}
                     type="button"
                     tabIndex={-1}
+                    disabled={!available}
                     // sin foco al hacer clic: evita el contorno de foco del navegador
                     // y que la barra espaciadora (roll) "apriete" el slot
                     onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => selectWeapon(w.id)}
-                    className={`px-3 py-2 rounded-xl flex flex-col items-center min-w-[54px] transition cursor-pointer border focus:outline-none ${
-                      active
-                        ? "bg-emerald-500/25 border-emerald-400 text-white scale-105 shadow-lg"
-                        : "bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"
+                    onClick={() => available && selectWeapon(w.id)}
+                    title={available ? `Equipar ${w.name} (${w.key})` : `Encuentra ${w.name} en el mapa para equiparla`}
+                    className={`px-3 py-2 rounded-xl flex flex-col items-center min-w-[54px] transition border focus:outline-none ${
+                      !available
+                        ? "opacity-30 bg-slate-950/40 border-slate-800/50 text-slate-600 cursor-not-allowed"
+                        : active
+                        ? "bg-emerald-500/25 border-emerald-400 text-white scale-105 shadow-lg cursor-pointer"
+                        : "bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 cursor-pointer"
                     }`}
                   >
                     <span className="text-xs font-mono font-black text-slate-400">{w.key}</span>
-                    <span className="text-base my-0.5">{w.icon}</span>
-                    <span className="text-[9px] font-bold uppercase tracking-wider">{w.name}</span>
+                    <span className="text-base my-0.5">{available ? w.icon : "🔒"}</span>
+                    <span className="text-[9px] font-bold uppercase tracking-wider">
+                      {available ? w.name : "Vacío"}
+                    </span>
                   </button>
                 );
               })}

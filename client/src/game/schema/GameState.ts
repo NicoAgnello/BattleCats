@@ -51,10 +51,11 @@ export class Player extends Schema {
   @type("number") kills: number = 0;
   @type("string") activeBuff: string = "";
   @type("number") buffTimer: number = 0;
-  @type("string") equippedWeapon: string = "LASER";
-  @type("number") ammo: number = 12;
-  @type("number") maxAmmo: number = 12;
-  @type("number") reserveAmmo: number = 24;
+  @type("string") equippedWeapon: string = "MELEE";
+  @type("string") availableWeapons: string = "MELEE";
+  @type("number") ammo: number = 999;
+  @type("number") maxAmmo: number = 999;
+  @type("number") reserveAmmo: number = 0;
   @type("boolean") isReloading: boolean = false;
   @type("number") reloadTimer: number = 0;
   @type("number") maxReloadTimer: number = 2.0;
