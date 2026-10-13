@@ -196,9 +196,57 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
     }
   };
 
+  const WEAPON_DEFS: Record<string, { name: string; icon: string }> = {
+    LASER: { name: "Pistola", icon: "🔫" },
+    SHOTGUN: { name: "Escopeta", icon: "💥" },
+    SNIPER: { name: "Sniper", icon: "🎯" },
+    GRENADE: { name: "Granada", icon: "💣" },
+    MELEE: { name: "Garras", icon: "🐾" },
+  };
+
+  const parseWeaponSlots = (availableWeapons: string | undefined): [string, string, string] => {
+    if (!availableWeapons) return ["", "", "MELEE"];
+    const parts = availableWeapons.split(",");
+    if (parts.length >= 3) {
+      return [parts[0] || "", parts[1] || "", "MELEE"];
+    }
+    const guns = parts.filter((p) => p && p !== "MELEE");
+    return [guns[0] || "", guns[1] || "", "MELEE"];
+  };
+
+  const [slot1, slot2] = parseWeaponSlots(player.availableWeapons);
+
+  const weaponSlots = [
+    {
+      key: "1",
+      id: slot1,
+      name: slot1 ? WEAPON_DEFS[slot1]?.name || slot1 : "Vacío",
+      icon: slot1 ? WEAPON_DEFS[slot1]?.icon || "🔫" : "🔒",
+      available: !!slot1,
+      active: !!slot1 && player.equippedWeapon === slot1,
+    },
+    {
+      key: "2",
+      id: slot2,
+      name: slot2 ? WEAPON_DEFS[slot2]?.name || slot2 : "Vacío",
+      icon: slot2 ? WEAPON_DEFS[slot2]?.icon || "💥" : "🔒",
+      available: !!slot2,
+      active: !!slot2 && player.equippedWeapon === slot2,
+    },
+    {
+      key: "3",
+      id: "MELEE",
+      name: "Garras",
+      icon: "🐾",
+      available: true,
+      active: player.equippedWeapon === "MELEE",
+    },
+  ];
+
   const selectWeapon = (weapon: string) => {
-    const available = (player.availableWeapons || "MELEE").split(",");
-    if (weapon !== "MELEE" && !available.includes(weapon)) return;
+    if (!weapon) return;
+    const [s1, s2] = parseWeaponSlots(player.availableWeapons);
+    if (weapon !== "MELEE" && weapon !== s1 && weapon !== s2) return;
     window.dispatchEvent(new CustomEvent("switch-weapon", { detail: { weapon } }));
   };
 
@@ -225,27 +273,19 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
     window.dispatchEvent(new CustomEvent("reload-weapon"));
   };
 
-  const weapons = [
-    { key: "1", id: "LASER", name: "Pistola", icon: "🔫" },
-    { key: "2", id: "SHOTGUN", name: "Escopeta", icon: "💥" },
-    { key: "3", id: "SNIPER", name: "Sniper", icon: "🎯" },
-    { key: "4", id: "GRENADE", name: "Granada", icon: "💣" },
-    { key: "5", id: "MELEE", name: "Garras", icon: "🐾" },
-  ];
-
   const emotes = ["🐾", "🔥", "💀", "😎", "😿", "🏆"];
 
   return (
-    <div className="pointer-events-none absolute inset-0 z-30 flex flex-col justify-between p-5 select-none font-game">
+    <div className="pointer-events-none absolute inset-0 z-30 flex flex-col justify-between p-5 select-none font-game opacity-85 transition-opacity">
 
       {/* ── FILA SUPERIOR (HUD) ───────────────────────────── */}
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex items-start justify-between gap-4 pointer-events-none">
 
         {/* ── Izquierda: Barra de Salud, Escudo, Estilo ── */}
-        <div className="pointer-events-auto flex flex-col gap-2 min-w-[280px]">
+        <div className="pointer-events-none flex flex-col gap-2 min-w-[280px]">
 
           {/* Badges de Conexión, Audio y Menú */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 pointer-events-none">
             <div className="flex items-center gap-1.5 px-3 py-1 rounded-full glass-panel text-xs font-bold shadow-lg">
               {conn === "CONNECTED" && <><Wifi className="w-3.5 h-3.5 text-emerald-400" /><span className="text-emerald-400">Servidor Conectado</span></>}
               {conn === "CONNECTING" && <><Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" /><span className="text-amber-400">Conectando…</span></>}
@@ -265,10 +305,9 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
               )}
             </div>
 
-
             <button
               onClick={toggleMute}
-              className="glass-panel px-2.5 py-1 rounded-full text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1 hover:border-emerald-500/50"
+              className="pointer-events-auto glass-panel px-2.5 py-1 rounded-full text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1 hover:border-emerald-500/50 cursor-pointer"
               title="Alternar Sonido SFX"
             >
               {isMuted ? <VolumeX className="w-3.5 h-3.5 text-red-400" /> : <Volume2 className="w-3.5 h-3.5 text-emerald-400" />}
@@ -278,7 +317,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
             {onOpenMenu && (
               <button
                 onClick={onOpenMenu}
-                className="glass-panel px-3 py-1 rounded-full text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1 hover:border-cyan-500/50"
+                className="pointer-events-auto glass-panel px-3 py-1 rounded-full text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1 hover:border-cyan-500/50 cursor-pointer"
                 title="Volver al Menú Principal"
               >
                 <span>⚙️ Menú</span>
@@ -363,7 +402,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
         </div>
 
         {/* ── Centro: Zona Segura y Fase ── */}
-        <div className="pointer-events-auto flex flex-col items-center gap-2">
+        <div className="pointer-events-none flex flex-col items-center gap-2">
           <div className="glass-panel px-7 py-3 rounded-2xl flex items-center gap-3.5 border border-amber-500/35 shadow-2xl backdrop-blur-md">
             <Radio className={`w-5 h-5 ${zone.isShrinking ? "text-red-400 animate-spin" : "text-emerald-400 animate-pulse"}`} />
             <div className="flex flex-col items-center">
@@ -385,13 +424,13 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
         </div>
 
         {/* ── Derecha: Vivos, Kills, Emotes & KillFeed ── */}
-        <div className="pointer-events-auto flex flex-col items-end gap-2 min-w-[200px]">
+        <div className="pointer-events-none flex flex-col items-end gap-2 min-w-[200px]">
 
           {/* Vivos, Kills & Botón de Emotes */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 pointer-events-none">
             <button
               onClick={() => setShowEmotes(!showEmotes)}
-              className="glass-panel p-2 rounded-xl text-amber-400 hover:text-yellow-300 hover:border-amber-400/60 transition shadow-lg flex items-center justify-center cursor-pointer"
+              className="pointer-events-auto glass-panel p-2 rounded-xl text-amber-400 hover:text-yellow-300 hover:border-amber-400/60 transition shadow-lg flex items-center justify-center cursor-pointer"
               title="Expresiones y Emotes (E)"
             >
               <Smile className="w-5 h-5" />
@@ -529,10 +568,10 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
       })()}
 
       {/* ── FILA INFERIOR (SELECTOR DE ARMAS, DASH Y CONTROLES) ── */}
-      <div className="flex items-end justify-between gap-4">
+      <div className="flex items-end justify-between gap-4 pointer-events-none">
 
         {/* Cooldown del Dash / Roll */}
-        <div className="pointer-events-auto glass-panel flex items-center gap-3 px-4 py-3 rounded-2xl border border-slate-700/60 shadow-xl backdrop-blur-md">
+        <div className="pointer-events-none glass-panel flex items-center gap-3 px-4 py-3 rounded-2xl border border-slate-700/60 shadow-xl backdrop-blur-md">
           <div className="relative w-11 h-11 rounded-xl bg-slate-800 border border-slate-600 flex items-center justify-center shadow-inner">
             <Zap className={`w-6 h-6 ${player.equippedWeapon === "MELEE" ? "text-amber-400" : "text-cyan-400"}`} />
             {player.dashCooldown > 0 && (
@@ -551,19 +590,19 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
           </div>
         </div>
 
-        {/* Selector de Armas Suroi (Slot 1-5) + Widget de Munición y Recarga */}
+        {/* Selector de Armas Suroi (3 Slots) + Widget de Munición y Recarga */}
         {!player.isGhost && (
-          <div className="flex flex-col items-center gap-2">
+          <div className="flex flex-col items-center gap-2 pointer-events-none">
             {/* Widget de Munición y Recarga del Arma Equipada */}
-            <div className="pointer-events-auto glass-panel px-4 py-1.5 rounded-2xl flex items-center gap-3 border border-slate-700/60 shadow-2xl backdrop-blur-md">
+            <div className="pointer-events-none glass-panel px-4 py-1.5 rounded-2xl flex items-center gap-3 border border-slate-700/60 shadow-2xl backdrop-blur-md">
               {/* Icono y Nombre */}
               <div className="flex items-center gap-2 pr-3 border-r border-slate-800">
                 <span className="text-xl">
-                  {weapons.find(w => w.id === (player.equippedWeapon || "LASER"))?.icon || "🔫"}
+                  {WEAPON_DEFS[player.equippedWeapon || "MELEE"]?.icon || "🐾"}
                 </span>
                 <div className="flex flex-col">
                   <span className="text-[10px] font-black uppercase tracking-wider text-slate-200">
-                    {weapons.find(w => w.id === (player.equippedWeapon || "LASER"))?.name || "Pistola"}
+                    {WEAPON_DEFS[player.equippedWeapon || "MELEE"]?.name || "Garras"}
                   </span>
                   <span className="text-[9px] font-bold text-emerald-400">
                     {player.equippedWeapon === "MELEE" ? "ZARPAZOS (50 DMG • +15% VELOCIDAD)" : (player.equippedWeapon === "GRENADE" ? "LANZABLE (100/70 DMG)" : (player.equippedWeapon === "SHOTGUN" ? "15x5 DMG (75)" : (player.equippedWeapon === "SNIPER" ? "50 DMG" : "20 DMG")))}
@@ -605,7 +644,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
                   <button
                     onClick={triggerReload}
                     disabled={(player.ammo ?? 0) >= (player.maxAmmo ?? 12) || (player.reserveAmmo ?? 0) <= 0}
-                    className={`px-3 py-1 rounded-xl text-xs font-black transition flex items-center gap-1.5 cursor-pointer border ${
+                    className={`pointer-events-auto px-3 py-1 rounded-xl text-xs font-black transition flex items-center gap-1.5 cursor-pointer border ${
                       (player.ammo ?? 0) < (player.maxAmmo ?? 12) && (player.reserveAmmo ?? 0) > 0
                         ? "bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40 shadow-sm"
                         : "bg-slate-900/40 text-slate-600 border-slate-800 cursor-not-allowed"
@@ -619,34 +658,30 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
               )}
             </div>
 
-            {/* Selector de Armas Suroi (Slot 1-5) */}
-            <div className="pointer-events-auto glass-panel p-2 rounded-2xl flex items-center gap-2 border border-slate-700/60 shadow-2xl backdrop-blur-md">
-              {weapons.map((w) => {
-                const active = (player.equippedWeapon || "MELEE") === w.id;
-                const available = (player.availableWeapons || "MELEE").split(",").includes(w.id);
+            {/* Selector de Armas Suroi (3 Slots: Slot 1, Slot 2, Slot 3 Garras) */}
+            <div className="pointer-events-none glass-panel p-2 rounded-2xl flex items-center gap-2 border border-slate-700/60 shadow-2xl backdrop-blur-md">
+              {weaponSlots.map((w) => {
                 return (
                   <button
-                    key={w.id}
+                    key={w.key}
                     type="button"
                     tabIndex={-1}
-                    disabled={!available}
-                    // sin foco al hacer clic: evita el contorno de foco del navegador
-                    // y que la barra espaciadora (roll) "apriete" el slot
+                    disabled={!w.available}
                     onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => available && selectWeapon(w.id)}
-                    title={available ? `Equipar ${w.name} (${w.key})` : `Encuentra ${w.name} en el mapa para equiparla`}
-                    className={`px-3 py-2 rounded-xl flex flex-col items-center min-w-[54px] transition border focus:outline-none ${
-                      !available
-                        ? "opacity-30 bg-slate-950/40 border-slate-800/50 text-slate-600 cursor-not-allowed"
-                        : active
+                    onClick={() => w.available && selectWeapon(w.id)}
+                    title={w.available ? `Equipar ${w.name} (${w.key})` : `Espacio ${w.key} vacío (recoge un arma en el mapa)`}
+                    className={`pointer-events-auto px-3.5 py-2 rounded-xl flex flex-col items-center min-w-[58px] transition border focus:outline-none ${
+                      !w.available
+                        ? "opacity-35 bg-slate-950/40 border-slate-800/50 text-slate-600 cursor-not-allowed"
+                        : w.active
                         ? "bg-emerald-500/25 border-emerald-400 text-white scale-105 shadow-lg cursor-pointer"
                         : "bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 cursor-pointer"
                     }`}
                   >
                     <span className="text-xs font-mono font-black text-slate-400">{w.key}</span>
-                    <span className="text-base my-0.5">{available ? w.icon : "🔒"}</span>
+                    <span className="text-lg my-0.5">{w.icon}</span>
                     <span className="text-[9px] font-bold uppercase tracking-wider">
-                      {available ? w.name : "Vacío"}
+                      {w.name}
                     </span>
                   </button>
                 );
@@ -656,11 +691,11 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
         )}
 
         {/* Guía de controles */}
-        <div className="glass-panel px-5 py-2.5 rounded-2xl border border-slate-800/80 text-[11px] text-slate-400 flex items-center gap-3 shadow-xl backdrop-blur-md">
+        <div className="pointer-events-none glass-panel px-5 py-2.5 rounded-2xl border border-slate-800/80 text-[11px] text-slate-400 flex items-center gap-3 shadow-xl backdrop-blur-md">
           <span><b className="text-slate-100">WASD</b> Moverse</span>
           <span><b className="text-emerald-400">F</b> Recoger/Cambiar</span>
           <span><b className="text-amber-400">R</b> Recargar</span>
-          <span><b className="text-slate-100">1-5 / Rueda</b> Armas</span>
+          <span><b className="text-slate-100">1-3 / Rueda</b> Armas</span>
           <span><b className="text-slate-100">E</b> Emotes</span>
           <span><b className="text-slate-100">Espacio</b> {player.equippedWeapon === "MELEE" ? "Dash rápido" : "Roll esquiva"}</span>
         </div>

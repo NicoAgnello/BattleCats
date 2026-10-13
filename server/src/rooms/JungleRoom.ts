@@ -87,6 +87,20 @@ export const WEAPON_CONFIGS: Record<string, WeaponDef> = {
   },
 };
 
+export function parseWeaponSlots(availableWeapons: string | undefined): [string, string, string] {
+  if (!availableWeapons) return ["", "", "MELEE"];
+  const parts = availableWeapons.split(",");
+  if (parts.length >= 3) {
+    return [parts[0] || "", parts[1] || "", "MELEE"];
+  }
+  const guns = parts.filter((p) => p && p !== "MELEE");
+  return [guns[0] || "", guns[1] || "", "MELEE"];
+}
+
+export function formatWeaponSlots(slot1: string, slot2: string): string {
+  return `${slot1 || ""},${slot2 || ""},MELEE`;
+}
+
 interface TrapPayload {
   x: number;
   y: number;
@@ -249,6 +263,23 @@ export class JungleRoom extends Room<GameState> {
       });
     });
 
+    this.onMessage("debugTeleport", (client, data: { x: number; y: number }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (player && typeof data.x === "number" && typeof data.y === "number") {
+        player.x = data.x;
+        player.y = data.y;
+        player.isHidden = this.checkIsHidden(player.x, player.y);
+        this.spatialGrid.update({
+          id: player.id,
+          x: player.x,
+          y: player.y,
+          radius: 22,
+          type: "player",
+          data: player,
+        });
+      }
+    });
+
     this.onMessage("interact", (client, data: { itemId?: string }) => {
       const player = this.state.players.get(client.sessionId);
       if (!player || player.isGhost) return;
@@ -370,8 +401,8 @@ export class JungleRoom extends Room<GameState> {
       if (!player || player.isGhost) return;
       const valid = ["LASER", "SHOTGUN", "SNIPER", "GRENADE", "MELEE"];
       if (valid.includes(data.weapon)) {
-        const available = (player.availableWeapons || "MELEE").split(",");
-        if (data.weapon === "MELEE" || available.includes(data.weapon)) {
+        const [slot1, slot2] = parseWeaponSlots(player.availableWeapons);
+        if (data.weapon === "MELEE" || data.weapon === slot1 || data.weapon === slot2) {
           this.savePlayerCurrentWeaponAmmo(player);
           this.applyWeaponToPlayer(player, data.weapon);
         }
@@ -846,7 +877,7 @@ export class JungleRoom extends Room<GameState> {
       bot.isBot = true;
       bot.catColor = colors[i % colors.length];
       bot.equippedWeapon = "MELEE";
-      bot.availableWeapons = "MELEE";
+      bot.availableWeapons = ",,MELEE";
 
       this.initPlayerWeapons(botId);
       this.applyWeaponToPlayer(bot, "MELEE");
@@ -921,7 +952,7 @@ export class JungleRoom extends Room<GameState> {
     player.kills = 0;
     player.activeBuff = "";
     player.buffTimer = 0;
-    player.availableWeapons = "MELEE";
+    player.availableWeapons = ",,MELEE";
     this.initPlayerWeapons(client.sessionId);
     this.applyWeaponToPlayer(player, "MELEE");
 
@@ -1236,10 +1267,13 @@ export class JungleRoom extends Room<GameState> {
       let minEnemyDist = Infinity;
 
       // Buscar enemigos cercanos usando SpatialHashGrid en lugar de iterar todo el mapa
+      const botStruct = this.checkInStructure(bot.x, bot.y);
       const nearbyEnemies = this.spatialGrid.queryRadius(bot.x, bot.y, 650, ["player"]);
       for (const ent of nearbyEnemies) {
         const p = ent.data as Player;
         if (p.id === bot.id || p.isGhost) continue;
+        const pStruct = this.checkInStructure(p.x, p.y);
+        if (botStruct !== pStruct) continue; // No ver ni apuntar a través de las paredes del edificio
         if (p.isHidden && !bot.isHidden) {
           const d = Math.hypot(p.x - bot.x, p.y - bot.y);
           if (d > 120) continue;
@@ -1410,10 +1444,11 @@ export class JungleRoom extends Room<GameState> {
   public handlePlayerInteract(player: Player, requestedItemId?: string) {
     let targetItem: ItemPickup | null = null;
     let minDist = 75;
+    const playerStruct = this.checkInStructure(player.x, player.y);
 
     if (requestedItemId && this.state.items.has(requestedItemId)) {
       const it = this.state.items.get(requestedItemId)!;
-      if (it.active && Math.hypot(player.x - it.x, player.y - it.y) <= 85) {
+      if (it.active && this.checkInStructure(it.x, it.y) === playerStruct && Math.hypot(player.x - it.x, player.y - it.y) <= 85) {
         targetItem = it;
       }
     }
@@ -1421,6 +1456,7 @@ export class JungleRoom extends Room<GameState> {
     if (!targetItem) {
       this.state.items.forEach((item) => {
         if (!item.active) return;
+        if (this.checkInStructure(item.x, item.y) !== playerStruct) return;
         const d = Math.hypot(player.x - item.x, player.y - item.y);
         if (d < minDist) {
           minDist = d;
@@ -1438,41 +1474,91 @@ export class JungleRoom extends Room<GameState> {
       const prevWeapon = player.equippedWeapon;
       this.savePlayerCurrentWeaponAmmo(player);
 
-      // Suroi-style weapon swap: drop previous weapon on ground so it can be picked back up!
-      // (las garras no se sueltan: todos los gatos las tienen siempre)
-      if (prevWeapon && prevWeapon !== item.itemType && prevWeapon !== "MELEE") {
-        const dropItem = new ItemPickup();
-        dropItem.id = `drop_${++this.itemIdCounter}_${Date.now()}`;
-        dropItem.x = player.x;
-        dropItem.y = player.y;
-        dropItem.itemType = prevWeapon;
-        dropItem.active = true;
-        dropItem.respawnTimer = 0;
-        this.state.items.set(dropItem.id, dropItem);
-        this.spatialGrid.insert({
-          id: dropItem.id,
-          x: dropItem.x,
-          y: dropItem.y,
-          radius: 24,
-          type: "item",
-          data: dropItem,
-        });
-      }
+      let [slot1, slot2] = parseWeaponSlots(player.availableWeapons);
+      const isSameGun = (slot1 === item.itemType || slot2 === item.itemType);
 
-      // Rellenar munición al recoger arma nueva
-      const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
-      const store = this.playerWeaponAmmo.get(player.id);
-      if (store) {
-        if (prevWeapon && prevWeapon !== "MELEE" && prevWeapon !== item.itemType) {
-          delete (store as any)[prevWeapon];
+      if (isSameGun) {
+        // Rellenar munición de reserva para el arma que ya se posee
+        const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
+        const store = this.playerWeaponAmmo.get(player.id);
+        if (store && store[item.itemType]) {
+          store[item.itemType].reserveAmmo = Math.min(cfg.reserveAmmo * 2, store[item.itemType].reserveAmmo + cfg.reserveAmmo);
+          if (player.equippedWeapon === item.itemType) {
+            player.reserveAmmo = store[item.itemType].reserveAmmo;
+          }
         }
-        store[item.itemType] = {
-          ammo: cfg.maxAmmo,
-          reserveAmmo: cfg.reserveAmmo,
-        };
+      } else if (!slot1) {
+        // Espacio 1 vacío: equipar en espacio 1
+        slot1 = item.itemType;
+        const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
+        const store = this.playerWeaponAmmo.get(player.id);
+        if (store) {
+          store[item.itemType] = {
+            ammo: cfg.maxAmmo,
+            reserveAmmo: cfg.reserveAmmo,
+          };
+        }
+        player.availableWeapons = formatWeaponSlots(slot1, slot2);
+        this.applyWeaponToPlayer(player, item.itemType);
+      } else if (!slot2) {
+        // Espacio 2 vacío: equipar en espacio 2 (permite llevar ej. pistola y escopeta juntas)
+        slot2 = item.itemType;
+        const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
+        const store = this.playerWeaponAmmo.get(player.id);
+        if (store) {
+          store[item.itemType] = {
+            ammo: cfg.maxAmmo,
+            reserveAmmo: cfg.reserveAmmo,
+          };
+        }
+        player.availableWeapons = formatWeaponSlots(slot1, slot2);
+        this.applyWeaponToPlayer(player, item.itemType);
+      } else {
+        // Ambos espacios ocupados: intercambiar el arma equipada con la del suelo
+        // (si tiene MELEE equipada, se reemplaza el espacio 1)
+        let droppedWeapon = "";
+        if (prevWeapon === slot2) {
+          droppedWeapon = slot2;
+          slot2 = item.itemType;
+        } else {
+          droppedWeapon = slot1;
+          slot1 = item.itemType;
+        }
+
+        // Soltar al suelo el arma intercambiada para que se pueda volver a recoger
+        if (droppedWeapon && droppedWeapon !== "MELEE") {
+          const dropItem = new ItemPickup();
+          dropItem.id = `drop_${++this.itemIdCounter}_${Date.now()}`;
+          dropItem.x = player.x;
+          dropItem.y = player.y;
+          dropItem.itemType = droppedWeapon;
+          dropItem.active = true;
+          dropItem.respawnTimer = 0;
+          this.state.items.set(dropItem.id, dropItem);
+          this.spatialGrid.insert({
+            id: dropItem.id,
+            x: dropItem.x,
+            y: dropItem.y,
+            radius: 24,
+            type: "item",
+            data: dropItem,
+          });
+        }
+
+        const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
+        const store = this.playerWeaponAmmo.get(player.id);
+        if (store) {
+          if (droppedWeapon && droppedWeapon !== "MELEE") {
+            delete (store as any)[droppedWeapon];
+          }
+          store[item.itemType] = {
+            ammo: cfg.maxAmmo,
+            reserveAmmo: cfg.reserveAmmo,
+          };
+        }
+        player.availableWeapons = formatWeaponSlots(slot1, slot2);
+        this.applyWeaponToPlayer(player, item.itemType);
       }
-      player.availableWeapons = `MELEE,${item.itemType}`;
-      this.applyWeaponToPlayer(player, item.itemType);
 
       if (item.id.startsWith("drop_") || item.id.startsWith("crate_")) {
         this.state.items.delete(item.id);
@@ -1524,12 +1610,38 @@ export class JungleRoom extends Room<GameState> {
         if (dist < 34) {
           const isWeapon = ["SHOTGUN", "SNIPER", "GRENADE", "LASER"].includes(item.itemType);
 
-          // Si el jugador está únicamente con MELEE (o no tiene armas de fuego), recoge automáticamente la primera arma que encuentra
+          // Armas: auto-recoger si hay un espacio libre (slot 1 o slot 2) o recargar munición si ya se posee
           if (isWeapon) {
-            if (player.equippedWeapon === "MELEE" || !player.availableWeapons || player.availableWeapons === "MELEE") {
+            let [slot1, slot2] = parseWeaponSlots(player.availableWeapons);
+            const isSameGun = (slot1 === item.itemType || slot2 === item.itemType);
+
+            if (isSameGun) {
+              const cfg = WEAPON_CONFIGS[item.itemType];
+              const store = this.playerWeaponAmmo.get(player.id);
+              if (cfg && store && store[item.itemType]) {
+                if (store[item.itemType].reserveAmmo < cfg.reserveAmmo * 2) {
+                  store[item.itemType].reserveAmmo = Math.min(cfg.reserveAmmo * 2, store[item.itemType].reserveAmmo + cfg.reserveAmmo);
+                  if (player.equippedWeapon === item.itemType) {
+                    player.reserveAmmo = store[item.itemType].reserveAmmo;
+                  }
+                  item.active = false;
+                  item.respawnTimer = 18.0;
+                  this.broadcast("itemPicked", {
+                    id: item.id,
+                    itemType: item.itemType,
+                    playerId: player.id,
+                    playerName: player.name,
+                    x: item.x,
+                    y: item.y,
+                  });
+                }
+              }
+            } else if (!slot1) {
+              // Auto-recoger en Slot 1 vacío
               item.active = false;
               item.respawnTimer = 18.0;
               this.savePlayerCurrentWeaponAmmo(player);
+              slot1 = item.itemType;
               const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
               const store = this.playerWeaponAmmo.get(player.id);
               if (store) {
@@ -1538,7 +1650,7 @@ export class JungleRoom extends Room<GameState> {
                   reserveAmmo: cfg.reserveAmmo,
                 };
               }
-              player.availableWeapons = `MELEE,${item.itemType}`;
+              player.availableWeapons = formatWeaponSlots(slot1, slot2);
               this.applyWeaponToPlayer(player, item.itemType);
               this.broadcast("itemPicked", {
                 id: item.id,
@@ -1548,22 +1660,32 @@ export class JungleRoom extends Room<GameState> {
                 x: item.x,
                 y: item.y,
               });
-            } else if (player.equippedWeapon === item.itemType) {
-              const cfg = WEAPON_CONFIGS[item.itemType];
-              if (cfg && player.reserveAmmo < cfg.reserveAmmo * 2) {
-                player.reserveAmmo = Math.min(cfg.reserveAmmo * 2, player.reserveAmmo + cfg.reserveAmmo);
-                item.active = false;
-                item.respawnTimer = 18.0;
-                this.broadcast("itemPicked", {
-                  id: item.id,
-                  itemType: item.itemType,
-                  playerId: player.id,
-                  playerName: player.name,
-                  x: item.x,
-                  y: item.y,
-                });
+            } else if (!slot2) {
+              // Auto-recoger en Slot 2 vacío (permite llevar 2 armas a la vez)
+              item.active = false;
+              item.respawnTimer = 18.0;
+              this.savePlayerCurrentWeaponAmmo(player);
+              slot2 = item.itemType;
+              const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
+              const store = this.playerWeaponAmmo.get(player.id);
+              if (store) {
+                store[item.itemType] = {
+                  ammo: cfg.maxAmmo,
+                  reserveAmmo: cfg.reserveAmmo,
+                };
               }
+              player.availableWeapons = formatWeaponSlots(slot1, slot2);
+              this.applyWeaponToPlayer(player, item.itemType);
+              this.broadcast("itemPicked", {
+                id: item.id,
+                itemType: item.itemType,
+                playerId: player.id,
+                playerName: player.name,
+                x: item.x,
+                y: item.y,
+              });
             }
+            // Si ambos slots están llenos, no intercambia al caminar encima: requiere pulsar F voluntariamente
             return;
           }
 
@@ -1678,7 +1800,7 @@ export class JungleRoom extends Room<GameState> {
       player.maxHp = 100;
       player.shield = 0;
       player.maxShield = 50;
-      player.availableWeapons = "MELEE";
+      player.availableWeapons = ",,MELEE";
       this.initPlayerWeapons(player.id);
       this.applyWeaponToPlayer(player, "MELEE");
       player.isGhost = false;

@@ -271,12 +271,27 @@ export class VisualBullet extends Phaser.GameObjects.Sprite {
   }
 }
 
+export function parseWeaponSlots(availableWeapons: string | undefined): [string, string, string] {
+  if (!availableWeapons) return ["", "", "MELEE"];
+  const parts = availableWeapons.split(",");
+  if (parts.length >= 3) {
+    return [parts[0] || "", parts[1] || "", "MELEE"];
+  }
+  const guns = parts.filter((p) => p && p !== "MELEE");
+  return [guns[0] || "", guns[1] || "", "MELEE"];
+}
+
 /* ─── Escena Principal Phaser (Optimizado & Game Feel) ───────── */
 export class MainScene extends Phaser.Scene {
   public net!: NetworkClient;
   public playerOptions: { name?: string; skin?: number } = {};
   private room!: Room<GameState>;
   private myId = "";
+
+  // Window-level smooth aiming (evita que se trabe el apuntado sobre el HUD)
+  private windowPointerX: number = window.innerWidth / 2;
+  private windowPointerY: number = window.innerHeight / 2;
+  private isWindowPointerDown: boolean = false;
 
   private bulletPool!: Phaser.GameObjects.Group;
 
@@ -286,6 +301,10 @@ export class MainScene extends Phaser.Scene {
   private obstacles = new Map<string, VObstacle>();
   private items   = new Map<string, VItem>();
   private vStructures: VStructure[] = [];
+  private currentStructure: StructureDef | null = null;
+  private activeOcclusionStructure: StructureDef | null = null;
+  private exteriorOcclusionGfx!: Phaser.GameObjects.Graphics;
+  private exteriorOcclusionAlpha = 0;
 
   // Grillas espaciales de cliente O(1) y optimizaciones de frustum
   private obstacleSpatialGrid = new ClientSpatialGrid<VObstacle>(400);
@@ -369,6 +388,7 @@ export class MainScene extends Phaser.Scene {
 
     // 1.1 Estructuras y Complejos Tácticos (Oclusión de Techo & Sigilo)
     this.buildStructures();
+    this.exteriorOcclusionGfx = this.add.graphics().setDepth(74);
 
     // 1.2 Minimapa base pre-renderizado (Zero-Redraw)
     this.surfGfx = this.add.graphics().setDepth(55);   // debajo de los personajes (60)
@@ -488,11 +508,21 @@ export class MainScene extends Phaser.Scene {
       }
     });
 
-    // Cambios de arma por números 1-5
-    this.keys.ONE.on("down", () => this.switchWeapon("LASER"));
-    this.keys.TWO.on("down", () => this.switchWeapon("SHOTGUN"));
-    this.keys.THREE.on("down", () => this.switchWeapon("SNIPER"));
-    this.keys.FOUR.on("down", () => this.switchWeapon("GRENADE"));
+    // Cambios de arma por números 1-3 (Slot 1, Slot 2, Slot 3 Garras fijas)
+    this.keys.ONE.on("down", () => {
+      const me = this.players.get(this.myId);
+      if (!me) return;
+      const [s1] = parseWeaponSlots(me.availableWeapons);
+      if (s1) this.switchWeapon(s1);
+    });
+    this.keys.TWO.on("down", () => {
+      const me = this.players.get(this.myId);
+      if (!me) return;
+      const [, s2] = parseWeaponSlots(me.availableWeapons);
+      if (s2) this.switchWeapon(s2);
+    });
+    this.keys.THREE.on("down", () => this.switchWeapon("MELEE"));
+    this.keys.FOUR.on("down", () => this.switchWeapon("MELEE"));
     this.keys.FIVE.on("down", () => this.switchWeapon("MELEE"));
 
     // Key E: emote rápido Miau o interactuar
@@ -504,19 +534,53 @@ export class MainScene extends Phaser.Scene {
       }
     });
 
-    // Rueda del ratón para cambio de arma
+    // Rueda del ratón para cambio de arma entre los slots disponibles
     this.input.on("wheel", (_ptr: any, _dx: number, dy: number) => {
-      const allWeapons = ["LASER", "SHOTGUN", "SNIPER", "GRENADE", "MELEE"];
       const me = this.players.get(this.myId);
       if (!me) return;
-      const available = (me.availableWeapons || "MELEE").split(",");
-      const weapons = allWeapons.filter((w) => w === "MELEE" || available.includes(w));
+      const [s1, s2] = parseWeaponSlots(me.availableWeapons);
+      const weapons = [s1, s2, "MELEE"].filter(Boolean);
       if (weapons.length <= 1) return;
       let currIndex = weapons.indexOf(me.equippedWeapon || "MELEE");
       if (currIndex < 0) currIndex = 0;
       if (dy > 0) currIndex = (currIndex + 1) % weapons.length;
       else currIndex = (currIndex - 1 + weapons.length) % weapons.length;
       this.switchWeapon(weapons[currIndex]);
+    });
+
+    // Tracking de apuntado global en window (elimina cualquier traba o bloqueo sobre el HUD)
+    const onWinMove = (e: MouseEvent | PointerEvent) => {
+      this.windowPointerX = e.clientX;
+      this.windowPointerY = e.clientY;
+    };
+    window.addEventListener("pointermove", onWinMove);
+    window.addEventListener("mousemove", onWinMove);
+
+    const onWinDown = (e: MouseEvent | PointerEvent) => {
+      if (e.button === 0) {
+        const isBtn = !!(e.target as HTMLElement)?.closest?.("button");
+        if (!isBtn) {
+          this.isWindowPointerDown = true;
+          const me = this.players.get(this.myId);
+          if (me && !me.isGhost) {
+            this.executeLocalShoot(me);
+          }
+        }
+      }
+    };
+    const onWinUp = (e: MouseEvent | PointerEvent) => {
+      if (e.button === 0) {
+        this.isWindowPointerDown = false;
+      }
+    };
+    window.addEventListener("pointerdown", onWinDown);
+    window.addEventListener("pointerup", onWinUp);
+
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      window.removeEventListener("pointermove", onWinMove);
+      window.removeEventListener("mousemove", onWinMove);
+      window.removeEventListener("pointerdown", onWinDown);
+      window.removeEventListener("pointerup", onWinUp);
     });
 
     // 7. Puntero / Disparo con Retroceso Táctil (Weapon Kickback)
@@ -684,7 +748,9 @@ export class MainScene extends Phaser.Scene {
       return;
     }
 
-    const wp = this.cameras.main.getWorldPoint(this.input.activePointer.x, this.input.activePointer.y);
+    const ptrX = this.windowPointerX ?? this.input.activePointer.x;
+    const ptrY = this.windowPointerY ?? this.input.activePointer.y;
+    const wp = this.cameras.main.getWorldPoint(ptrX, ptrY);
     const angle = Phaser.Math.Angle.Between(me.container.x, me.container.y, wp.x, wp.y);
 
     this.localShootCooldown = cfg.shootCooldown;
@@ -965,9 +1031,9 @@ export class MainScene extends Phaser.Scene {
       dirY = dy / mag;
     } else {
       // Estacionario (sin movimiento): se desplaza hacia donde apunta el cursor del ratón
-      const wp = this.cameras.main.getWorldPoint(
-        this.input.activePointer.x, this.input.activePointer.y
-      );
+      const ptrX = this.windowPointerX ?? this.input.activePointer.x;
+      const ptrY = this.windowPointerY ?? this.input.activePointer.y;
+      const wp = this.cameras.main.getWorldPoint(ptrX, ptrY);
       const angle = Phaser.Math.Angle.Between(me.container.x, me.container.y, wp.x, wp.y);
       dirX = Math.cos(angle);
       dirY = Math.sin(angle);
@@ -1096,8 +1162,8 @@ export class MainScene extends Phaser.Scene {
   private switchWeapon(w: string) {
     const me = this.players.get(this.myId);
     if (!me || me.isGhost) return;
-    const available = (me.availableWeapons || "MELEE").split(",");
-    if (w !== "MELEE" && !available.includes(w)) {
+    const [s1, s2] = parseWeaponSlots(me.availableWeapons);
+    if (w !== "MELEE" && w !== s1 && w !== s2) {
       soundManager.playEmptyClick();
       return;
     }
@@ -1536,6 +1602,108 @@ export class MainScene extends Phaser.Scene {
         isInside: false,
       });
     });
+  }
+
+  /** Retorna la estructura en la que se encuentra la coordenada (x, y), o null si está al aire libre */
+  public getStructureAt(x: number, y: number): StructureDef | null {
+    for (let i = 0; i < STRUCTURES.length; i++) {
+      const s = STRUCTURES[i];
+      const hw = s.width / 2;
+      const hh = s.height / 2;
+      if (x >= s.x - hw && x <= s.x + hw && y >= s.y - hh && y <= s.y + hh) {
+        return s;
+      }
+    }
+    return null;
+  }
+
+  /** Determina si el jugador local tiene línea de visión con una coordenada del mundo.
+   *  - Si el jugador local está dentro de una estructura, solo puede ver lo que está dentro de esa misma estructura.
+   *  - Si el jugador local está afuera, solo puede ver lo que está afuera (no puede ver el interior de ninguna estructura).
+   */
+  public canSeeWorldPoint(targetX: number, targetY: number): boolean {
+    const me = this.players.get(this.myId);
+    if (me && me.isGhost) return true; // Los fantasmas espectadores ven todo el mapa
+
+    const myX = me ? me.container.x : this.cameras.main.scrollX + this.cameras.main.width / 2;
+    const myY = me ? me.container.y : this.cameras.main.scrollY + this.cameras.main.height / 2;
+
+    const myStruct = this.getStructureAt(myX, myY);
+    const targetStruct = this.getStructureAt(targetX, targetY);
+
+    return myStruct === targetStruct;
+  }
+
+  /** Dibuja la máscara de oclusión exterior (niebla táctica de guerra) cuando el jugador está dentro de una estructura */
+  private updateExteriorOcclusion() {
+    const me = this.players.get(this.myId);
+    const targetAlpha = (!me?.isGhost && this.currentStructure) ? 1.0 : 0.0;
+    this.exteriorOcclusionAlpha = Phaser.Math.Linear(this.exteriorOcclusionAlpha, targetAlpha, 0.2);
+
+    const g = this.exteriorOcclusionGfx;
+    g.clear();
+
+    if (this.exteriorOcclusionAlpha <= 0.01) {
+      if (!this.currentStructure) this.activeOcclusionStructure = null;
+      return;
+    }
+
+    const st = this.activeOcclusionStructure;
+    if (!st) return;
+
+    const cam = this.cameras.main;
+    const camX = cam.worldView.x - 60;
+    const camY = cam.worldView.y - 60;
+    const camW = cam.worldView.width + 120;
+    const camH = cam.worldView.height + 120;
+    const camR = camX + camW;
+    const camB = camY + camH;
+
+    const hw = st.width / 2;
+    const hh = st.height / 2;
+    const hL = Math.round(st.x - hw - 18);
+    const hR = Math.round(st.x + hw + 18);
+    const hT = Math.round(st.y - hh - 18);
+    const hB = Math.round(st.y + hh + 18);
+
+    const col = 0x050811;
+    const alpha = this.exteriorOcclusionAlpha;
+    g.fillStyle(col, alpha);
+
+    // 1. Slab superior (arriba del hueco de la casa)
+    if (hT > camY) {
+      const topH = Math.min(camH, hT - camY);
+      g.fillRect(camX, camY, camW, topH);
+    }
+    // 2. Slab inferior (debajo del hueco de la casa)
+    if (hB < camB) {
+      const botY = Math.max(camY, hB);
+      g.fillRect(camX, botY, camW, camB - botY);
+    }
+    // 3. Slab izquierdo (entre hT y hB)
+    if (hL > camX) {
+      const clampT = Math.max(camY, hT);
+      const clampB = Math.min(camB, hB);
+      if (clampB > clampT) {
+        const leftW = Math.min(camW, hL - camX);
+        g.fillRect(camX, clampT, leftW, clampB - clampT);
+      }
+    }
+    // 4. Slab derecho (entre hT y hB)
+    if (hR < camR) {
+      const clampT = Math.max(camY, hT);
+      const clampB = Math.min(camB, hB);
+      if (clampB > clampT) {
+        const rightX = Math.max(camX, hR);
+        g.fillRect(rightX, clampT, camR - rightX, clampB - clampT);
+      }
+    }
+
+    // Penumbra atmosférica exterior en los bordes de la casa
+    g.lineStyle(16, 0x03050a, alpha * 0.85);
+    g.strokeRect(hL - 8, hT - 8, (hR - hL) + 16, (hB - hT) + 16);
+    g.lineStyle(32, 0x020306, alpha * 0.5);
+    g.strokeRect(hL - 20, hT - 20, (hR - hL) + 40, (hB - hT) + 40);
   }
 
   /* ── Mapa y Vegetación Optimizado (Phaser 3 Tilemap + Culling) ─── */
@@ -2622,7 +2790,7 @@ export class MainScene extends Phaser.Scene {
     let targetItem = this.nearestItem;
     if (specificItemId && this.items.has(specificItemId)) {
       const it = this.items.get(specificItemId)!;
-      if (it.active && Math.hypot(me.container.x - it.x, me.container.y - it.y) <= 85) {
+      if (it.active && this.canSeeWorldPoint(it.x, it.y) && Math.hypot(me.container.x - it.x, me.container.y - it.y) <= 85) {
         targetItem = it;
       }
     }
@@ -3056,7 +3224,7 @@ export class MainScene extends Phaser.Scene {
     }
 
     if (!v.isMe) {
-      const show = !v.isHidden && !v.isGhost;            // los fantasmas ajenos no se ven (solo su tumba)
+      const show = !v.isHidden && !v.isGhost && this.canSeeWorldPoint(v.container.x, v.container.y);
       v.container.setVisible(show);
       v.uiContainer.setVisible(show);
     } else {
@@ -3244,6 +3412,8 @@ export class MainScene extends Phaser.Scene {
 
   /* ── Efectos Visuales ────────────────────────────────────── */
   private showDamageText(x: number, y: number, text: string, color = "#ef4444") {
+    if (!this.isInCameraView(x, y, 60)) return;
+    if (!this.canSeeWorldPoint(x, y)) return;
     const txt = this.add.text(x, y - 20, text, {
       fontFamily: "Outfit, Inter, sans-serif",
       fontSize: "16px",
@@ -3267,6 +3437,7 @@ export class MainScene extends Phaser.Scene {
    *  clara y blanco, que saltan y se apagan rápido. */
   private createSparksFX(x: number, y: number, color = 0x10b981) {
     if (!this.isInCameraView(x, y, 80)) return;
+    if (!this.canSeeWorldPoint(x, y)) return;
     const light = (((((color >> 16) & 255) + 255) >> 1) << 16) | (((((color >> 8) & 255) + 255) >> 1) << 8) | (((color & 255) + 255) >> 1);
     const pal = [0xffffff, light, color, color];
     for (let i = 0; i < 9 && this.surfParticles.length < 450; i++) {
@@ -3482,9 +3653,9 @@ export class MainScene extends Phaser.Scene {
       if (this.keys.A.isDown) dx -= 1;
       if (this.keys.D.isDown) dx += 1;
 
-      const wp = this.cameras.main.getWorldPoint(
-        this.input.activePointer.x, this.input.activePointer.y
-      );
+      const ptrX = this.windowPointerX ?? this.input.activePointer.x;
+      const ptrY = this.windowPointerY ?? this.input.activePointer.y;
+      const wp = this.cameras.main.getWorldPoint(ptrX, ptrY);
       const rot = Phaser.Math.Angle.Between(me.container.x, me.container.y, wp.x, wp.y);
 
       // Rotación 0ms ultra reactiva (Responsive Rotation estilo Suroi)
@@ -3502,12 +3673,12 @@ export class MainScene extends Phaser.Scene {
       }
 
       // Auto-Disparo Continuo y Fluido al sostener clic izquierdo presionado (Suroi Auto-Fire)
-      if (
-        this.input.activePointer.isDown &&
-        this.input.activePointer.leftButtonDown() &&
+      const isFiring =
+        ((this.input.activePointer.isDown && this.input.activePointer.leftButtonDown()) ||
+          this.isWindowPointerDown) &&
         !me.isGhost &&
-        this.localShootCooldown <= 0
-      ) {
+        this.localShootCooldown <= 0;
+      if (isFiring) {
         this.executeLocalShoot(me);
       }
 
@@ -3620,7 +3791,8 @@ export class MainScene extends Phaser.Scene {
         this.currentFadedTree = insideTree;
       }
 
-      // Actualizar oclusión de tejados y sigilo dentro de estructuras
+      // Actualizar oclusión de tejados, visión interior/exterior y sigilo dentro de estructuras
+      let localInStructure: StructureDef | null = null;
       for (let i = 0; i < this.vStructures.length; i++) {
         const vst = this.vStructures[i];
         let inside = false;
@@ -3635,6 +3807,9 @@ export class MainScene extends Phaser.Scene {
           );
         }
         vst.isInside = inside;
+        if (inside) {
+          localInStructure = vst.def;
+        }
         const targetAlpha = inside ? 0.0 : 1.0;
         vst.roofContainer.alpha = Phaser.Math.Linear(vst.roofContainer.alpha, targetAlpha, 0.16);
 
@@ -3644,6 +3819,12 @@ export class MainScene extends Phaser.Scene {
         vst.roofContainer.setVisible(inCam && vst.roofContainer.alpha > 0.02);
       }
 
+      this.currentStructure = localInStructure;
+      if (localInStructure) {
+        this.activeOcclusionStructure = localInStructure;
+      }
+      this.updateExteriorOcclusion();
+
       // Sistema de Detección de Proximidad y Prompt de Loot ([F] Recoger / Cambiar)
       this.updateLootInteraction(me, time);
     }
@@ -3651,7 +3832,8 @@ export class MainScene extends Phaser.Scene {
     // 2. Interpolación Suave (Lerp) para Jugadores Remotos y Frustum Culling
     this.players.forEach(v => {
       const isLocal = v.isMe;
-      const inCam = isLocal || this.isInCameraView(v.container.x, v.container.y, 120);
+      const canSee = isLocal || this.canSeeWorldPoint(v.container.x, v.container.y);
+      const inCam = isLocal || (canSee && this.isInCameraView(v.container.x, v.container.y, 120));
 
       if (isLocal) {
         v.uiContainer.setPosition(v.container.x, v.container.y);
@@ -3675,11 +3857,12 @@ export class MainScene extends Phaser.Scene {
         v.container.rotation += angleDiff * 0.35;
 
         if (!inCam) {
-          // Fuera de vista de cámara: ocultar y pausar redraws
+          // Fuera de vista de cámara o línea de visión bloqueada: ocultar y pausar redraws
           if (v.container.visible) v.container.setVisible(false);
           if (v.uiContainer.visible) v.uiContainer.setVisible(false);
+          if (v.reloadSpinnerContainer.visible) v.reloadSpinnerContainer.setVisible(false);
         } else {
-          // Dentro de vista de cámara: mostrar y sincronizar visuales
+          // Dentro de vista de cámara y con visión clara: mostrar y sincronizar visuales
           if (!v.container.visible) {
             v.container.setVisible(true);
             this.redrawAim(v, true);
@@ -3760,7 +3943,8 @@ export class MainScene extends Phaser.Scene {
       v.g.x = Phaser.Math.Linear(v.g.x, v.tx, 0.25);
       v.g.y = Phaser.Math.Linear(v.g.y, v.ty, 0.25);
 
-      const inCam = this.isInCameraView(v.g.x, v.g.y, 80);
+      const canSee = this.canSeeWorldPoint(v.g.x, v.g.y);
+      const inCam = canSee && this.isInCameraView(v.g.x, v.g.y, 80);
       if (!inCam) {
         if (v.g.visible) v.g.setVisible(false);
         if (v.trail.visible) {
@@ -3830,7 +4014,7 @@ export class MainScene extends Phaser.Scene {
         t.kitten!.setPosition(Math.round(kx / 2) * 2, Math.round(ky / 2) * 2);
         t.kitten!.setFlipX(Math.sin(t.angle) < 0);   // mira hacia donde camina
       }
-      if (v.isGhost && !v.isMe) {
+      if (!v.isMe && (v.isGhost || !this.canSeeWorldPoint(v.container.x, v.container.y))) {
         if (v.container.visible) v.container.setVisible(false);
         if (v.uiContainer.visible) v.uiContainer.setVisible(false);
       }
@@ -3904,9 +4088,18 @@ export class MainScene extends Phaser.Scene {
 
       this.items.forEach((item) => {
         if (!item.active) return;
-        const vis = item.x >= x1 && item.x <= x2 && item.y >= y1 && item.y <= y2;
+        const canSee = this.canSeeWorldPoint(item.x, item.y);
+        const vis = canSee && item.x >= x1 && item.x <= x2 && item.y >= y1 && item.y <= y2;
         if (item.container.visible !== vis) {
           item.container.setVisible(vis);
+        }
+      });
+
+      this.traps.forEach((trap) => {
+        const canSee = this.canSeeWorldPoint(trap.container.x, trap.container.y);
+        const vis = canSee && trap.container.x >= x1 && trap.container.x <= x2 && trap.container.y >= y1 && trap.container.y <= y2;
+        if (trap.container.visible !== vis) {
+          trap.container.setVisible(vis);
         }
       });
     }
@@ -3942,7 +4135,7 @@ export class MainScene extends Phaser.Scene {
     const nearbyItems = this.itemSpatialGrid.queryNear(me.container.x, me.container.y, 80);
     for (let i = 0; i < nearbyItems.length; i++) {
       const item = nearbyItems[i];
-      if (!item.active) continue;
+      if (!item.active || !this.canSeeWorldPoint(item.x, item.y)) continue;
       const d = Math.hypot(me.container.x - item.x, me.container.y - item.y);
       if (d < closestDist) {
         closestDist = d;
@@ -3955,7 +4148,8 @@ export class MainScene extends Phaser.Scene {
     if (closest) {
       const it: VItem = closest;
       const isGun = ["SHOTGUN", "SNIPER", "GRENADE", "LASER"].includes(it.itemType);
-      const isSameGun = isGun && me.equippedWeapon === it.itemType;
+      const [slot1, slot2] = parseWeaponSlots(me.availableWeapons);
+      const isSameGun = isGun && (slot1 === it.itemType || slot2 === it.itemType);
 
       let title = `RECOGER ${it.itemType}`;
       let stats = "Toca [F] para interactuar";
@@ -3964,8 +4158,21 @@ export class MainScene extends Phaser.Scene {
         if (isSameGun) {
           title = `[F] MUNICIÓN DE ${it.itemType}`;
           stats = `${it.itemType} (Munición Recargada)`;
+        } else if (!slot1) {
+          title = `[F] EQUIPAR ${it.itemType} (SLOT 1)`;
+          if (it.itemType === "SHOTGUN") stats = "Daño: 15x5 (75) | 2/8 Balas | Cadencia: 1.0s | Recarga: 2.5s";
+          else if (it.itemType === "SNIPER") stats = "Daño: 50 | 5/5 Balas | Cadencia: 0.5s | Recarga: 3.0s";
+          else if (it.itemType === "GRENADE") stats = "Daño: 100/70 | x3 Granadas | Retardo: 2.0s | Área x2";
+          else stats = "Daño: 20 | 12/24 Balas | Cadencia: 0.3s | Recarga: 2.0s";
+        } else if (!slot2) {
+          title = `[F] EQUIPAR ${it.itemType} (SLOT 2)`;
+          if (it.itemType === "SHOTGUN") stats = "Daño: 15x5 (75) | 2/8 Balas | Cadencia: 1.0s | Recarga: 2.5s";
+          else if (it.itemType === "SNIPER") stats = "Daño: 50 | 5/5 Balas | Cadencia: 0.5s | Recarga: 3.0s";
+          else if (it.itemType === "GRENADE") stats = "Daño: 100/70 | x3 Granadas | Retardo: 2.0s | Área x2";
+          else stats = "Daño: 20 | 12/24 Balas | Cadencia: 0.3s | Recarga: 2.0s";
         } else {
-          title = me.equippedWeapon === "MELEE" ? `[F] EQUIPAR ${it.itemType}` : `[F] CAMBIAR POR ${it.itemType}`;
+          const gunToSwap = me.equippedWeapon === slot2 ? slot2 : slot1;
+          title = `[F] CAMBIAR ${gunToSwap} POR ${it.itemType}`;
           if (it.itemType === "SHOTGUN") stats = "Daño: 15x5 (75) | 2/8 Balas | Cadencia: 1.0s | Recarga: 2.5s";
           else if (it.itemType === "SNIPER") stats = "Daño: 50 | 5/5 Balas | Cadencia: 0.5s | Recarga: 3.0s";
           else if (it.itemType === "GRENADE") stats = "Daño: 100/70 | x3 Granadas | Retardo: 2.0s | Área x2";
@@ -4650,6 +4857,7 @@ export class MainScene extends Phaser.Scene {
     this.players.forEach(p => {
       if (p.isGhost) return;
       if (p.isHidden && !p.isMe) return;
+      if (!p.isMe && !this.canSeeWorldPoint(p.container.x, p.container.y)) return;
 
       const px = mx + p.container.x * sc;
       const py = my + p.container.y * sc;

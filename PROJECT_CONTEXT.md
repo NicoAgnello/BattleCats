@@ -121,7 +121,8 @@ Ubicados en [`/server/src/rooms/schema/GameState.ts`](file:///home/luca/Escritor
    - **Personaje solo con Garras Felinas (MELEE)**: Realiza un **Dash felino rápido** (impulso ágil de 160 px con estelas doradas traslúcidas y cooldown de **1.8 segundos**).
    - **Dirección inteligente**: Si el personaje se está desplazando con las teclas **WASD**, el dash/roll se ejecuta hacia la dirección exacta del movimiento. Si el personaje está estacionario, se ejecuta hacia la posición del **cursor del mouse**. Valida colisiones con obstáculos en servidor y cliente para evitar solapamientos.
 
-3. **Acción - Disparo y Armamento Asimétrico**:
+3. **Acción - Disparo y Sistema de 3 Slots de Armas**:
+   - **Sistema de 3 Slots**: Slot 1 y 2 para armas de fuego (permite llevar pistola y escopeta juntas). Slot 3 fijo para Garras (`MELEE`). Al tener ambos slots llenos, pulsar `[F]` intercambia el arma equipada con la del suelo.
    - **Pistola Láser**: 20 de daño, 12 balas en recámara, 2 cargadores de reserva (24 balas). Cooldown 0.3s, recarga 2.0s, alcance visual de 480px.
    - **Escopeta de Caza**: 5 perdigones de 15 de daño cada uno, 2 balas en recámara, 4 cargadores de reserva (8 balas). Cooldown 1.0s, recarga 2.5s, cono de 310px.
    - **Rifle Sniper**: 50 de daño por disparo, 5 balas en recámara, 1 cargador de reserva (5 balas). Cooldown 0.5s, recarga 3.0s, alcance de 980px con alta velocidad.
@@ -172,11 +173,11 @@ Ubicados en [`/server/src/rooms/schema/GameState.ts`](file:///home/luca/Escritor
     - `65`: Contenedores UI de personajes (barra de vida y nombres erguidos).
     - `70`: Proyectiles láser, balas de francotirador y granadas.
     - `200`: Minimapa HUD sobre la cámara.
-- **`UIOverlay.tsx`**: Interfaz de usuario externa sobrepuesta en React con estética glassmorphic:
+- **`UIOverlay.tsx`**: Interfaz de usuario externa sobrepuesta en React con estética glassmorphic (+15% más transparente, no bloquea el apuntado):
   - Estado de Conexión (`Servidor Conectado`, `SSE 60Hz`, `Audio`).
   - Barra de Salud y Escudo dinámicas.
   - Barra de Estilo con rangos D, C, B, A, S.
-  - Selector y estado de arma con munición en recámara y cargadores de reserva.
+  - Selector táctico de 3 Slots (Slot 1, Slot 2, Slot 3 Garras fijas) con munición y recarga.
   - Indicador de Cooldown de Dash / Roll.
   - Temporizador de Zona Segura por fases.
   - Notificaciones de Killfeed en tiempo real.
@@ -255,3 +256,9 @@ Basado en el análisis en vivo de [https://suroi.io/](https://suroi.io/) y su re
    - **Fondo de Gameplay en Vivo (`GameplayBackground.tsx`)**: Simulación autónoma a 60 FPS con bots de gatos desplazándose, apuntando, disparando y esquivando obstáculos sobre una cuadrícula sutil estilo diep.io, con soporte opcional de video en bucle.
    - **Estética Diep.io**: Logotipo `BATTLECATS.io` en relieve con orejitas felinas, selectores de Game Mode y Región con ping local en tiempo real, input de apodo de alto contraste y botón `PLAY!` con bisel 3D inferior.
    - **Selector y Armario de Skins**: Carrusel de personajes en tarjeta blueprint con previsualización 3D, selección rápida por paleta de colores y modal de tienda/armario completo con rarezas (`Común`, `Rara`, `Épica`, `Legendaria`).
+
+9. **Oclusión de Visión Bidireccional en Estructuras (Inside/Outside Vision Occlusion)**:
+   - **Desde afuera hacia adentro**: Los techos permanecen 100% opacos a nivel visual (depth 75). Ningún jugador, bot, proyectil, trampa, beacon o pickup dentro de una estructura es visible para observadores exteriores, ocultando también sus indicadores en el minimapa y evitando la interacción a través de muros.
+   - **Desde adentro hacia afuera**: Al cruzar el umbral a una estructura, el tejado se desvanece de forma suave y se activa una capa de niebla/oscuridad táctica exterior a depth 74 (`exteriorOcclusionGfx`) que cubre la vista de cámara más allá del perímetro exterior de las paredes de la casa con penumbra atmosférica suave.
+   - **Culling táctico bidireccional**: Todos los jugadores, bots, botín, trampas y proyectiles exteriores se ocultan inmediatamente de la vista del jugador interior (y viceversa). Dos jugadores dentro de la misma estructura pueden verse y combatir normalmente en interiores.
+
