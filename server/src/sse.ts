@@ -1,18 +1,38 @@
 import express from "express";
 
-// SSE Clients Registry
+/**
+ * Clientes SSE. Cada conexión puede suscribirse a una sala (?roomId=...): los eventos
+ * de una sala (tick, disparos, golpes...) solo van a sus suscriptores. Antes iban a
+ * todos, y con varias salas cada navegador recibía y descartaba el tráfico de las demás.
+ */
 export const sseClients = new Set<express.Response>();
+const roomSubscribers = new Map<string, Set<express.Response>>();
 
+function write(client: express.Response, payload: string) {
+  try {
+    client.write(payload);
+  } catch {
+    sseClients.delete(client);
+  }
+}
+
+/** Evento para todos los clientes conectados (telemetría general). */
 export function broadcastSSE(type: string, data: any) {
   if (sseClients.size === 0) return;
   const payload = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
-  sseClients.forEach((client) => {
-    try {
-      client.write(payload);
-    } catch {
-      sseClients.delete(client);
-    }
-  });
+  sseClients.forEach((client) => write(client, payload));
+}
+
+export function hasRoomSubscribers(roomId: string): boolean {
+  return (roomSubscribers.get(roomId)?.size ?? 0) > 0;
+}
+
+/** Evento de una sala: solo para los clientes suscriptos a ella. */
+export function broadcastRoomSSE(roomId: string, type: string, data: any) {
+  const subs = roomSubscribers.get(roomId);
+  if (!subs || subs.size === 0) return;
+  const payload = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+  subs.forEach((client) => write(client, payload));
 }
 
 export function setupSSERoutes(app: express.Express) {
@@ -28,6 +48,12 @@ export function setupSSERoutes(app: express.Express) {
     res.flushHeaders?.();
 
     sseClients.add(res);
+    const roomId = typeof req.query.roomId === "string" ? req.query.roomId : "";
+    if (roomId) {
+      let subs = roomSubscribers.get(roomId);
+      if (!subs) roomSubscribers.set(roomId, (subs = new Set()));
+      subs.add(res);
+    }
 
     // Immediate Welcome Packet
     const initMsg = {
@@ -40,6 +66,11 @@ export function setupSSERoutes(app: express.Express) {
 
     req.on("close", () => {
       sseClients.delete(res);
+      if (roomId) {
+        const subs = roomSubscribers.get(roomId);
+        subs?.delete(res);
+        if (subs && subs.size === 0) roomSubscribers.delete(roomId);
+      }
     });
   });
 

@@ -1,5 +1,10 @@
 import { Client, Room } from "colyseus.js";
 import { GameState } from "./schema/GameState";
+import { SERVER_WS } from "./serverUrl";
+
+/** El servidor rechaza crear una sala con un código en uso (JungleRoom.ROOM_CODE_TAKEN). */
+const ROOM_CODE_TAKEN = 4409;
+const randomRoomCode = () => String(Math.floor(1000 + Math.random() * 9000));
 
 export interface ConnectOptions {
   name?: string;
@@ -16,18 +21,25 @@ export class NetworkClient {
   public sessionId: string = "";
 
   constructor() {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const hostname = window.location.hostname || "localhost";
-    const serverUrl = `${protocol}//${hostname}:2567`;
-    console.log(`📡 NetworkClient apuntando a: ${serverUrl}`);
-    this.client = new Client(serverUrl);
+    console.log(`📡 NetworkClient apuntando a: ${SERVER_WS}`);
+    this.client = new Client(SERVER_WS);
   }
 
   public async connect(options: ConnectOptions = {}): Promise<Room<GameState>> {
     if (options.isCustom) {
       if (options.isHost) {
-        console.log(`👑 Creando sala personalizada con código: ${options.roomCode}`);
-        this.room = await this.client.create<GameState>("custom_room", options, GameState);
+        // Si el código ya lo usa otra sala, se prueba con otro (el lobby muestra el
+        // código real, que viene en el estado de la sala)
+        for (let attempt = 0; ; attempt++) {
+          console.log(`👑 Creando sala personalizada con código: ${options.roomCode}`);
+          try {
+            this.room = await this.client.create<GameState>("custom_room", options, GameState);
+            break;
+          } catch (e: any) {
+            if (e?.code !== ROOM_CODE_TAKEN || attempt >= 5) throw e;
+            options = { ...options, roomCode: randomRoomCode() };
+          }
+        }
       } else {
         console.log(`🐾 Uniéndose a sala personalizada con código: ${options.roomCode}`);
         this.room = await this.client.join<GameState>("custom_room", options, GameState);

@@ -147,6 +147,12 @@ Para cada funcionalidad se indica **cómo funciona**, **qué archivos interviene
 
 **Estados de partida** (`GameState.status`): `WAITING` → `PLAYING` → `VICTORY`. El loop del servidor solo simula cuando está en `PLAYING`. Al terminar, cualquier cliente puede pedir `restart`.
 
+**Salas privadas** (`custom_room`, misma clase `JungleRoom`, sin bots, hasta 20 jugadores). El anfitrión la crea con un código de 4 números; los demás entran con ese código (`join` filtrado por `roomCode`, o el enlace `/?room=CÓDIGO`). Antes de unirse, el menú consulta `GET /api/room/:code` (existe, lugares, estado).
+- No puede haber dos salas abiertas con el mismo código: el servidor rechaza la segunda con el error `4409` y el cliente del anfitrión reintenta solo con otro código (el lobby muestra el código real).
+- Solo el anfitrión puede iniciar (`startMatch`); si se va, pasa a serlo otro jugador.
+- Al empezar, la sala se cierra (`lock`): nadie entra a mitad de ronda. El menú avisa "la partida ya empezó". Al terminar todos vuelven al menú, así que cada sala sirve para una partida.
+- En red local se entra por la IP de la máquina que corre el servidor (ej. `http://192.168.0.10:3000`); el cliente usa ese mismo host con el puerto 2567. Para otro servidor: `VITE_SERVER_URL` (`client/src/game/serverUrl.ts`).
+
 ### 5.2 Estado compartido (schemas de Colyseus)
 
 **Cómo funciona.** El servidor tiene un único objeto `GameState` con colecciones (`players`, `projectiles`, `traps`, `bushes`, `obstacles`, `items`) y la `zone`. Colyseus detecta los cambios y manda a cada cliente solo las diferencias (*delta*), a 60 patches por segundo (`setPatchRate(1000/60)`). El cliente tiene una copia del esquema para poder deserializar y se suscribe con `onAdd`, `onChange` y `onRemove` (`bindRoom` en `MainScene.ts`) para crear, actualizar o borrar los objetos que dibuja.
@@ -167,13 +173,20 @@ Para cada funcionalidad se indica **cómo funciona**, **qué archivos interviene
 **Por qué.** Con Colyseus no hay que armar a mano el protocolo de serialización: se declara el esquema con decoradores y la sincronización es automática y eficiente.
 
 > **Lección aprendida (ver `docs/fix-bots-congelados.md`):** se había puesto un filtro de distancia (*Area of Interest*) sobre los jugadores. Provocaba gatos "fantasma congelados" en el cliente. Se quitó para `players` (son 16 como máximo) y se dejó solo para balas y trampas.
+>
+> **Rendimiento con muchos jugadores (rama `perf-salas`):** se quitaron también los filtros de balas y trampas. Con cualquier `@filter` Colyseus codifica el estado **una vez por cliente** en cada patch (60 por segundo); con 20 jugadores el patch tardaba ~9 ms de los 16 ms del tick y había cortes de hasta 2,8 s. Sin filtros se codifica una vez y se manda lo mismo a todos (~1 ms). Para que no crezca el tráfico:
+> - Las balas publican solo su salida y su velocidad; el cliente las avanza en línea recta (la granada sí publica dónde cae).
+> - Los temporizadores que usa la lógica (`invulnerableLeft`, `dashLeft`, `reloadLeft`, …, sin `@type`) no se sincronizan; en `onBeforePatch` se publica una copia redondeada a lo que muestra el HUD (décimas o segundos).
+> - Posiciones, vida y escudo van en `float32`.
+>
+> Resultado medido con `loadtest/loadtest.mjs` (20 jugadores en una sala): CPU del servidor 44 % → 24 %, tráfico WebSocket por cliente 102 → 43 KB/s.
 
 ### 5.3 Movimiento y predicción en el cliente
 
 **Cómo funciona.**
 
 1. **Cliente (`MainScene.update`):** lee WASD, calcula la dirección normalizada y mueve a su propio gato **de inmediato** (velocidad 220 px/s; ×1,15 con garras; ×1,4 con buff de velocidad; ×0,75 dentro del río). Aplica choque contra obstáculos con una grilla espacial local. La rotación del gato sigue al mouse.
-2. **Envío:** manda `move { dx, dy, rotation, x, y }` al servidor cuando algo cambia o cada ~16 ms, incluyendo la posición que predijo.
+2. **Envío:** manda `move { dx, dy, rotation, x, y }` al servidor al instante si cambia la dirección; si no, hasta cada ~16 ms mientras se mueve o gira, y cada 100 ms si está quieto. Incluye la posición que predijo.
 3. **Servidor (`onMessage("move")`):** calcula la velocidad que *debería* tener ese jugador (mismas reglas). Si la posición que mandó el cliente está a **≤ 140 px** de la que tiene el servidor, la acepta; si no, ignora la del cliente y avanza desde su propia posición. Después resuelve choques con obstáculos (consulta a la grilla espacial), limita al mapa (30 a 7970 px) y actualiza si el gato está oculto.
 4. **Otros jugadores:** el cliente los dibuja moviéndose suavemente (interpolación LERP) hacia la última posición recibida (`tx`, `ty`), que llega por el estado de Colyseus y por el canal SSE.
 
@@ -288,8 +301,9 @@ Los bots usan las mismas reglas de daño, armas, loot y zona que un jugador.
 | Para qué | entrar a la sala, **enviar acciones** (`move`, `shoot`, `dash`, `reload`, `interact`, `switchWeapon`, `emote`, `placeTrap`, `restart`), **estado sincronizado** | **eventos en tiempo real**: `tick` (posiciones, vida y zona a 30 Hz), `playerShoot`, `playerMelee`, `playerDash`, `hit`, `explosion`, `kill`, `telemetry` (cada 1 s) |
 | Puerto | 2567 (`ws://`) | 2567 (HTTP `text/event-stream`) |
 
-- `sse.ts` mantiene un conjunto de respuestas HTTP abiertas y `broadcastSSE(tipo, datos)` escribe el evento a todas. Se activa `setNoDelay(true)` (sin algoritmo de Nagle) para que los paquetes salgan inmediatamente.
-- `JungleRoom.sse()` agrega el `roomId` a cada evento; el cliente descarta los de otras salas (`onWindow` en `MainScene.ts`).
+- `sse.ts` mantiene las respuestas HTTP abiertas. Cada cliente se suscribe a su sala (`/api/events?roomId=…`, lo hace `sseManager.setRoom()` al conectar) y `broadcastRoomSSE` manda los eventos de una sala solo a sus suscriptores; `broadcastSSE` (telemetría) va a todos. Se activa `setNoDelay(true)` (sin algoritmo de Nagle) para que los paquetes salgan inmediatamente.
+- `JungleRoom.sse()` agrega igual el `roomId` a cada evento y el cliente descarta los de otras salas (`onWindow` en `MainScene.ts`).
+- El `tick` solo se arma si la sala tiene suscriptores y lleva los gatos que cambiaron desde el anterior; una vez por segundo va la lista completa.
 - `SSEClient.ts` escucha cada tipo de evento y lo reenvía como `CustomEvent` de `window` (`sse-tick`, `sse-shoot`, …); la escena de Phaser reacciona a esos eventos para animar disparos, golpes, explosiones y actualizar a los demás jugadores. Si se corta, reintenta cada 2,5 s.
 - El HUD muestra el estado de la conexión y el ping estimado con `telemetry`.
 
@@ -352,6 +366,14 @@ Todos los efectos (disparos, explosiones, pasos en agua, golpes) y la música se
 
 Necesitan Chrome abierto con depuración remota en el puerto 9222 y el juego en `localhost:3000`. Algunos tienen rutas fijas de la compu de un compañero (`C:\Users\...`).
 
+**Pruebas de red sin navegador (`loadtest/`)**, con el servidor levantado (usan `colyseus.js` de `client/node_modules`; ver `loadtest/README.md`):
+
+| Script | Para qué sirve |
+|---|---|
+| `loadtest/loadtest.mjs` | Carga: N jugadores simulados por sala (se mueven, disparan, abren SSE). Mide CPU, tiempo de simulación y de patch del servidor (`GET /api/perf`) y el tráfico por cliente. |
+| `loadtest/rooms-test.mjs` | Salas privadas de punta a punta (crear, unirse, anfitrión, código repetido, partida empezada, SSE por sala, sala llena). Con `--host <IP>` prueba por la red local. |
+| `loadtest/mechanics-test.mjs` | Mecánicas básicas: inmunidad, daño, cajas, recarga, dash, zona, muerte, victoria y bots. |
+
 ---
 
 ## 8. Puntos a revisar en el código
@@ -363,9 +385,9 @@ Cosas que encontré al armar este documento y conviene discutir en la revisión:
 3. **Código duplicado entre cliente y servidor:** `river.ts`, `structures.ts`, `GameState.ts` y `WEAPON_CONFIGS` (y las velocidades). Hay que mantenerlos a mano iguales. Idea: carpeta `shared/`.
 4. **Archivos muy grandes:** `JungleRoom.ts` (~2000 líneas) y `MainScene.ts` (~4700). Candidatos a dividirse (armas, bots, zona, loot, render, input).
 5. **Eventos duplicados por dos canales.** Disparos, golpes, dash y explosiones se mandan por Colyseus (`broadcast`) **y** por SSE.
-6. **SSE a todas las salas.** `broadcastSSE` escribe a todos los clientes conectados; el filtrado por `roomId` lo hace cada cliente. Con muchas salas sería mejor filtrar en el servidor. Además `/api/events` no tiene autenticación y usa CORS abierto.
+6. **SSE sin autenticación.** Ya se filtra por sala en el servidor (`?roomId=`), pero `/api/events` no tiene autenticación y usa CORS abierto: cualquiera que conozca un `roomId` puede escuchar sus eventos.
 7. **Valores viejos en el esquema.** `ZoneState` declara por defecto centro (2400, 2400) y radio 2300, pero `resetZone` lo pisa con (4000, 4000) y 3850.
-8. **IA de bots:** el movimiento recorre todos los obstáculos (`state.obstacles.forEach`) en lugar de usar la grilla espacial como el resto.
+8. **IA de bots:** ~~el movimiento recorre todos los obstáculos~~ — ya usa la grilla espacial como el resto (rama `perf-salas`).
 9. **El servidor no conoce el mar** (`coast.ts` solo en el cliente): se puede caminar por el agua sin consecuencias.
 10. **`PROJECT_CONTEXT.md` desactualizado:** mezcla tamaños de mapa (4800 y 8000), el centro de la zona (1000 y 4000), y tiene rutas absolutas de otras computadoras.
 11. **Raíz del repo desordenada:** scripts de medición sueltos y carpetas `suroi_*` vacías. Podrían ir a `tools/`.

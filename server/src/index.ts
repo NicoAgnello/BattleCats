@@ -4,6 +4,7 @@ import cors from "cors";
 import { Server, matchMaker } from "colyseus";
 import { JungleRoom } from "./rooms/JungleRoom";
 import { setupSSERoutes, sseClients } from "./sse";
+import { perfSnapshot } from "./perf";
 
 const PORT = Number(process.env.PORT || 2567);
 
@@ -28,6 +29,11 @@ gameServer.define("custom_room", JungleRoom).filterBy(["roomCode"]);
 
 app.get("/health", (req, res) => {
   res.json({ status: "OK", room: "jungle_room", sseClients: sseClients.size });
+});
+
+// Métricas de rendimiento acumuladas desde la consulta anterior
+app.get("/api/perf", (req, res) => {
+  res.json(perfSnapshot());
 });
 
 // Endpoint para validar si una sala personalizada con código de 4 dígitos existe
