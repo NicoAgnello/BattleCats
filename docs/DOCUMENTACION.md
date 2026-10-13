@@ -243,7 +243,7 @@ Luego avisa a todos (`playerDash`, por Colyseus y por SSE) para que los demás v
 
 **Cómo funciona.** Hay ítems repartidos por el mapa y dentro de las estructuras (cada una trae un arma según su tipo, un botiquín, un escudo y una mejora de velocidad). Las cajas rotas también sueltan un ítem y los jugadores eliminados dejan uno.
 
-- **Armas:** el gato empieza solo con garras. Si está solo con garras y pasa sobre un arma, la toma automáticamente; si ya tiene arma, hay que **interactuar** (tecla de interacción) para cambiarla, y la anterior queda tirada en el piso.
+- **Armas:** el gato empieza solo con garras. Si está solo con garras y pasa sobre un arma, la toma automáticamente; si ya tiene arma, hay que **interactuar** (tecla `F`, o `E` cerca del ítem) para cambiarla, y la anterior queda tirada en el piso.
 - **Botiquín** +40 vida; **escudo** +50; **velocidad** ×1,4 durante 7 s; **triple** durante 9 s (3 balas de pistola / 7 perdigones).
 - Los ítems fijos reaparecen entre 16 y 22 s después de ser recogidos.
 
