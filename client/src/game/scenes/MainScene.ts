@@ -124,6 +124,7 @@ interface VPlayer {
   lastAimRot: number;
   lastBuff: string;
   lastWeapon: string;
+  lastEmote?: string;
 }
 
 interface VProj {
@@ -1190,6 +1191,7 @@ export class MainScene extends Phaser.Scene {
       me.equippedWeapon = w;
       this.net.sendSwitchWeapon(w);
       this.drawCat(me);
+      lastEmitted.delete("player");   // la próxima actualización completa se reenvía
       emit("player", {
         hp: me.hp,
         maxHp: me.maxHp,
@@ -1220,10 +1222,16 @@ export class MainScene extends Phaser.Scene {
   }
 
   private async connect() {
+    lastEmitted.clear();   // partida nueva: el HUD recién montado necesita todo
     emit("conn", "CONNECTING");
     try {
       this.room = await this.net.connect(this.playerOptions);
       this.myId = this.net.sessionId;
+      // eventos SSE solo de esta sala
+      sseManager.setRoom(this.room.roomId);
+      const leaveSse = () => sseManager.setRoom("");
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, leaveSse);
+      this.events.once(Phaser.Scenes.Events.DESTROY, leaveSse);
       emit("conn", "CONNECTED");
       console.log("✅ Conectado como:", this.myId);
       this.bindRoom();
@@ -1267,7 +1275,7 @@ export class MainScene extends Phaser.Scene {
       if (!s.zone) return;
       this.zone = { x: s.zone.x, y: s.zone.y, r: s.zone.currentRadius };
       this.zoneDirty = true;
-      emit("zone", {
+      emitIfChanged("zone", {
         timer: Math.ceil(s.zone.timer || 0),
         isShrinking: !!s.zone.isShrinking,
         phase: s.zone.phase || 1,
@@ -1277,7 +1285,7 @@ export class MainScene extends Phaser.Scene {
     s.zone.onChange(syncZone);
 
     const emitRoomInfo = () => {
-      emit("roomInfo", {
+      emitIfChanged("roomInfo", {
         isCustomRoom: !!s.isCustomRoom,
         roomCode: s.roomCode || "",
         hostId: s.hostId || "",
@@ -1294,19 +1302,21 @@ export class MainScene extends Phaser.Scene {
     };
     emitRoomInfo();
 
+    let lastStatus = "";
     this.room.onStateChange(() => {
       syncZone();
       emitRoomInfo();
-      emit("alive", { alive: s.aliveCount || 1, total: s.players?.size || 1 });
+      emitIfChanged("alive", { alive: s.aliveCount || 1, total: s.players?.size || 1 });
       if (s.status === "VICTORY" && s.winnerName) {
         emit("victory", {
           winnerId: s.winnerId,
           winnerName: s.winnerName,
           isMe: s.winnerId === this.myId,
         });
-      } else if (s.status === "PLAYING") {
+      } else if (s.status === "PLAYING" && lastStatus !== "PLAYING") {
         emit("playing", {});
       }
+      lastStatus = s.status;
     });
 
     this.room.onMessage("matchStarted", () => {
@@ -1319,10 +1329,9 @@ export class MainScene extends Phaser.Scene {
     s.players.onAdd((p: Player, id: string) => {
       this.createPlayer(id, p);
       emitRoomInfo();
-      p.onChange(() => {
-        this.updatePlayer(id, p);
-        emitRoomInfo();
-      });
+      // (la lista de la sala solo depende de altas/bajas, nombre y anfitrión: se
+      // actualiza en onAdd/onRemove/onStateChange, no en cada cambio de un gato)
+      p.onChange(() => this.updatePlayer(id, p));
     });
     s.players.onRemove((_: Player, id: string) => {
       this.destroyPlayer(id);
@@ -1336,8 +1345,10 @@ export class MainScene extends Phaser.Scene {
       p.onChange(() => {
         const v = this.projs.get(id);
         if (v) {
-          v.tx = p.x;
-          v.ty = p.y;
+          if (v.projType === "GRENADE") {   // solo la granada publica su posición (vuelo y armado)
+            v.tx = p.x;
+            v.ty = p.y;
+          }
           v.vx = p.vx || 0;
           v.vy = p.vy || 0;
           v.isArmed = !!p.isArmed;
@@ -3283,8 +3294,11 @@ export class MainScene extends Phaser.Scene {
     v.isGhost = newGhost;
     v.isHidden = newHidden;
 
-    if (p.lastEmote) {
-      this.showEmoteBubble(v, p.lastEmote);
+    // Solo al aparecer un emote nuevo (antes se relanzaba en cada cambio del gato
+    // mientras duraba: decenas de tweens y timers por emote)
+    if ((p.lastEmote || "") !== v.lastEmote) {
+      v.lastEmote = p.lastEmote || "";
+      if (v.lastEmote) this.showEmoteBubble(v, v.lastEmote);
     }
 
     const newBuff = p.activeBuff ?? "";
@@ -3326,7 +3340,7 @@ export class MainScene extends Phaser.Scene {
 
 
     if (v.isMe) {
-      emit("player", {
+      emitIfChanged("player", {
         hp: v.hp,
         maxHp: v.maxHp,
         shield: v.shield,
@@ -3834,13 +3848,17 @@ export class MainScene extends Phaser.Scene {
       // Renderizar Retícula (Crosshair) y Arco de Apuntado si NO es fantasma
       this.drawAimArcAndCrosshair(me, wp.x, wp.y);
 
-      // Enviar movimiento al servidor a 60 FPS con posición predicha validada
+      // Enviar movimiento al servidor con posición predicha validada: al instante si
+      // cambia la dirección; si no, hasta 60/s mientras se mueve o gira (antes, con
+      // monitores de 144 Hz, cada giro del mouse mandaba un mensaje por frame) y
+      // 10/s si está quieto.
       const rotDiff = Math.abs(rot - this.lastSentRot);
+      const sinceLast = time - this.lastMoveSendTime;
       if (
         dx !== this.lastSentDx ||
         dy !== this.lastSentDy ||
-        rotDiff > 0.02 ||
-        time - this.lastMoveSendTime >= 16
+        ((dx !== 0 || dy !== 0 || rotDiff > 0.02) && sinceLast >= 16) ||
+        sinceLast >= 100
       ) {
         this.net.sendMove(dx, dy, rot, me.container.x, me.container.y);
         this.lastSentDx = dx;
@@ -4068,6 +4086,13 @@ export class MainScene extends Phaser.Scene {
       if (v.arc) {                       // volver a la posición en el suelo
         v.g.y += v.arc.lift;
         v.arc.lift = 0;
+      }
+      if (v.projType !== "GRENADE") {
+        // El servidor ya no publica la posición de las balas en cada tick: la bala va
+        // en línea recta desde la salida, así que se avanza con su velocidad (con el
+        // tiempo real del frame, para no atrasarse si hubo un tirón).
+        v.tx += v.vx * (delta / 1000);
+        v.ty += v.vy * (delta / 1000);
       }
       v.g.x += v.vx * dtSecProj;
       v.g.y += v.vy * dtSecProj;
@@ -5012,4 +5037,14 @@ export class MainScene extends Phaser.Scene {
 
 function emit(name: string, detail: unknown) {
   window.dispatchEvent(new CustomEvent(`${name}-update`, { detail }));
+}
+
+/** Último valor enviado al HUD por evento: los patches llegan 60 veces por segundo y
+ *  cada evento re-renderiza React, así que solo se reenvía si cambió algo. */
+const lastEmitted = new Map<string, string>();
+function emitIfChanged(name: string, detail: unknown) {
+  const key = JSON.stringify(detail);
+  if (lastEmitted.get(name) === key) return;
+  lastEmitted.set(name, key);
+  emit(name, detail);
 }

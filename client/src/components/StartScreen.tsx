@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { soundManager } from "../game/SoundManager";
 import { GameplayBackground } from "./GameplayBackground";
 import { PixelPortrait } from "./PixelPortrait";
+import { SERVER_HTTP } from "../game/serverUrl";
 
 export interface PlayerConfig {
   name: string;
@@ -318,11 +319,15 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
     setCheckingRoom(true);
 
     try {
-      const hostname = window.location.hostname || "localhost";
-      const res = await fetch(`http://${hostname}:2567/api/room/${cleanCode}`);
+      const res = await fetch(`${SERVER_HTTP}/api/room/${cleanCode}`);
       const data = await res.json();
       if (!data.exists) {
         setRoomError(`No se encontró ninguna sala con el código "${cleanCode}".`);
+        setCheckingRoom(false);
+        return;
+      }
+      if (data.status && data.status !== "WAITING") {
+        setRoomError(`La partida de la sala "${cleanCode}" ya empezó. Pedile al anfitrión que cree una sala nueva.`);
         setCheckingRoom(false);
         return;
       }

@@ -1,3 +1,5 @@
+import { SERVER_HTTP } from "./serverUrl";
+
 export interface SSETelemetry {
   connected: boolean;
   tickRate: number;
@@ -19,6 +21,8 @@ export class SSEManager {
   };
 
   private reconnectTimer: any = null;
+  /** Sala a la que está suscripto el stream (los eventos de juego son por sala). */
+  private roomId = "";
 
   constructor() {
     this.connect();
@@ -30,9 +34,8 @@ export class SSEManager {
       this.es = null;
     }
 
-    const hostname = window.location.hostname || "localhost";
-    const port = 2567;
-    const url = `http://${hostname}:${port}/api/events`;
+    const query = this.roomId ? `?roomId=${encodeURIComponent(this.roomId)}` : "";
+    const url = `${SERVER_HTTP}/api/events${query}`;
 
     try {
       this.es = new EventSource(url);
@@ -131,6 +134,14 @@ export class SSEManager {
       this.telemetry.connected = false;
       this.notifyTelemetry();
     }
+  }
+
+  /** Cambia la sala suscripta (vacío = solo telemetría) y reabre el stream. */
+  public setRoom(roomId: string) {
+    if (roomId === this.roomId) return;
+    this.roomId = roomId;
+    clearTimeout(this.reconnectTimer);
+    this.connect();
   }
 
   private notifyTelemetry() {
