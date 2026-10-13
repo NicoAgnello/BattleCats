@@ -8,6 +8,9 @@ export interface PlayerConfig {
   skin: number;
   musicEnabled: boolean;
   sfxEnabled: boolean;
+  isCustom?: boolean;
+  roomCode?: string;
+  isHost?: boolean;
 }
 
 interface StartScreenProps {
@@ -198,10 +201,28 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [partyLinkCopied, setPartyLinkCopied] = useState(false);
 
+  // Modo de Juego: CLASSIC (con bots) vs CUSTOM (sala privada sin bots)
+  const [gameMode, setGameMode] = useState<"CLASSIC" | "CUSTOM">("CLASSIC");
+  const [customTab, setCustomTab] = useState<"CREATE" | "JOIN">("CREATE");
+  const [generatedCode, setGeneratedCode] = useState(() => Math.floor(1000 + Math.random() * 9000).toString());
+  const [joinCode, setJoinCode] = useState("");
+  const [roomError, setRoomError] = useState<string | null>(null);
+  const [checkingRoom, setCheckingRoom] = useState(false);
+
   useEffect(() => {
     soundManager.setMusicMuted(!musicEnabled);
     soundManager.setMuted(!sfxEnabled);
   }, [musicEnabled, sfxEnabled]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const roomParam = params.get("room");
+    if (roomParam && /^\d{4}$/.test(roomParam)) {
+      setGameMode("CUSTOM");
+      setCustomTab("JOIN");
+      setJoinCode(roomParam);
+    }
+  }, []);
 
   const handleToggleMusic = () => {
     const next = !musicEnabled;
@@ -224,15 +245,25 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
     soundManager.playClick();
   };
 
+  const regenerateCode = () => {
+    const newCode = Math.floor(1000 + Math.random() * 9000).toString();
+    setGeneratedCode(newCode);
+    soundManager.playClick();
+  };
+
   const handleCopyPartyLink = () => {
-    const link = window.location.href;
+    let link = window.location.origin;
+    if (gameMode === "CUSTOM") {
+      const code = customTab === "CREATE" ? generatedCode : (joinCode.trim() || generatedCode);
+      link += `/?room=${code}`;
+    }
     navigator.clipboard.writeText(link);
     setPartyLinkCopied(true);
     soundManager.playClick();
     setTimeout(() => setPartyLinkCopied(false), 2000);
   };
 
-  const handlePlay = (e?: React.FormEvent) => {
+  const handlePlayClassic = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const finalName = name.trim() || "Michi Campeón";
 
@@ -249,6 +280,80 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
       skin: selectedSkin,
       musicEnabled,
       sfxEnabled,
+      isCustom: false,
+    });
+  };
+
+  const handleCreateRoom = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const finalName = name.trim() || "Michi Anfitrión";
+
+    localStorage.setItem("michi_player_name", finalName);
+    localStorage.setItem("michi_player_skin", String(selectedSkin));
+
+    if (musicEnabled) {
+      soundManager.startBGM();
+    }
+    soundManager.playClick();
+
+    onStartGame({
+      name: finalName,
+      skin: selectedSkin,
+      musicEnabled,
+      sfxEnabled,
+      isCustom: true,
+      roomCode: generatedCode,
+      isHost: true,
+    });
+  };
+
+  const handleJoinRoom = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const cleanCode = joinCode.trim();
+    if (!/^\d{4}$/.test(cleanCode)) {
+      setRoomError("El código debe tener exactamente 4 números (ej. 4582).");
+      return;
+    }
+    setRoomError(null);
+    setCheckingRoom(true);
+
+    try {
+      const hostname = window.location.hostname || "localhost";
+      const res = await fetch(`http://${hostname}:2567/api/room/${cleanCode}`);
+      const data = await res.json();
+      if (!data.exists) {
+        setRoomError(`No se encontró ninguna sala con el código "${cleanCode}".`);
+        setCheckingRoom(false);
+        return;
+      }
+      if (data.clients >= (data.maxClients || 20)) {
+        setRoomError(`La sala "${cleanCode}" está llena (límite de 20 jugadores alcanzado).`);
+        setCheckingRoom(false);
+        return;
+      }
+    } catch {
+      // Ignorar si la llamada fetch falla y permitir el intento de conexión directa
+    }
+
+    setCheckingRoom(false);
+    const finalName = name.trim() || "Michi Invitado";
+
+    localStorage.setItem("michi_player_name", finalName);
+    localStorage.setItem("michi_player_skin", String(selectedSkin));
+
+    if (musicEnabled) {
+      soundManager.startBGM();
+    }
+    soundManager.playClick();
+
+    onStartGame({
+      name: finalName,
+      skin: selectedSkin,
+      musicEnabled,
+      sfxEnabled,
+      isCustom: true,
+      roomCode: cleanCode,
+      isHost: false,
     });
   };
 
@@ -472,8 +577,144 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
           </div>
         </div>
 
-        {/* ── Input de Apodo Estilo Diep.io ───────────────────────── */}
-        <form onSubmit={handlePlay} className="w-full space-y-2.5">
+        {/* ── Selector de Modo: Partida Rápida vs Sala Personalizada ── */}
+        <div className="w-full bg-slate-900/90 p-1.5 rounded-2xl border-2 border-slate-800 shadow-xl flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              setGameMode("CLASSIC");
+              soundManager.playClick();
+              setRoomError(null);
+            }}
+            className={`flex-1 py-2 px-3 rounded-xl font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+              gameMode === "CLASSIC"
+                ? "bg-[#00b2e1] text-white shadow-lg scale-[1.02]"
+                : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+            }`}
+          >
+            <span>🌐</span>
+            <span>Partida Rápida (Bots)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setGameMode("CUSTOM");
+              soundManager.playClick();
+              setRoomError(null);
+            }}
+            className={`flex-1 py-2 px-3 rounded-xl font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+              gameMode === "CUSTOM"
+                ? "bg-[#10b981] text-slate-950 shadow-lg scale-[1.02]"
+                : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+            }`}
+          >
+            <span>👑</span>
+            <span>Sala Privada (Sin Bots)</span>
+          </button>
+        </div>
+
+        {/* Panel de Configuración de Sala Personalizada */}
+        {gameMode === "CUSTOM" && (
+          <div className="w-full flex flex-col gap-2.5 bg-slate-900/90 p-3 rounded-2xl border border-emerald-500/35 shadow-xl">
+            {/* Sub-Tabs: Crear Sala vs Unirse con Código */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomTab("CREATE");
+                  soundManager.playClick();
+                  setRoomError(null);
+                }}
+                className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                  customTab === "CREATE"
+                    ? "bg-emerald-500/25 border border-emerald-400 text-emerald-300 font-black shadow"
+                    : "bg-slate-800/60 border border-slate-700/60 text-slate-400 hover:text-white"
+                }`}
+              >
+                <span>👑</span>
+                <span>Crear Sala</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomTab("JOIN");
+                  soundManager.playClick();
+                  setRoomError(null);
+                }}
+                className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                  customTab === "JOIN"
+                    ? "bg-emerald-500/25 border border-emerald-400 text-emerald-300 font-black shadow"
+                    : "bg-slate-800/60 border border-slate-700/60 text-slate-400 hover:text-white"
+                }`}
+              >
+                <span>🐾</span>
+                <span>Unirse con Código</span>
+              </button>
+            </div>
+
+            {/* Código generado si es Host */}
+            {customTab === "CREATE" ? (
+              <div className="flex items-center justify-between bg-slate-950/80 px-3 py-2 rounded-xl border border-slate-800">
+                <div className="flex flex-col">
+                  <span className="text-[9px] uppercase font-bold text-slate-400">Código de 4 dígitos:</span>
+                  <span className="font-mono text-2xl font-black text-amber-400 tracking-widest">{generatedCode}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={regenerateCode}
+                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-bold transition flex items-center gap-1 cursor-pointer"
+                  title="Generar otro código de 4 números"
+                >
+                  <span>🔄</span>
+                  <span>Cambiar</span>
+                </button>
+              </div>
+            ) : (
+              /* Input de código si se une como invitado */
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] uppercase font-black text-slate-400 tracking-wider">
+                  Código de 4 números de la sala:
+                </label>
+                <input
+                  type="text"
+                  maxLength={4}
+                  value={joinCode}
+                  onChange={(e) => {
+                    setJoinCode(e.target.value.replace(/\D/g, "").slice(0, 4));
+                    setRoomError(null);
+                  }}
+                  placeholder="Ej: 4582"
+                  className="w-full text-center py-2 px-4 rounded-xl border-2 border-emerald-500/50 bg-slate-950 text-amber-400 font-mono text-2xl font-black tracking-widest outline-none focus:ring-2 focus:ring-emerald-400 shadow-inner"
+                />
+              </div>
+            )}
+
+            {/* Límite y Reglas de la sala */}
+            <div className="text-[10px] text-slate-400 font-medium text-center">
+              👥 <b>Límite: 20 jugadores</b> · Sin bots · {customTab === "CREATE" ? "Comienzas la partida cuando decidas" : "Esperarás a que el host inicie"}
+            </div>
+
+            {roomError && (
+              <div className="text-xs font-bold text-red-400 bg-red-950/40 border border-red-500/40 px-3 py-1.5 rounded-lg text-center animate-shake">
+                ⚠️ {roomError}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Input de Apodo Estilo Diep.io y Botón de Inicio ─────────── */}
+        <form
+          onSubmit={
+            gameMode === "CLASSIC"
+              ? handlePlayClassic
+              : customTab === "CREATE"
+              ? handleCreateRoom
+              : handleJoinRoom
+          }
+          className="w-full space-y-2.5"
+        >
           <div className="relative flex items-center w-full">
             <span className="absolute left-4 text-slate-500 text-base pointer-events-none">
               🐾
@@ -491,13 +732,36 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
             </span>
           </div>
 
-          {/* Botón ¡Jugar! Icónico Diep.io */}
+          {/* Botón Principal (Play / Crear Sala / Unirse) */}
           <button
             type="submit"
-            className="diep-btn-play w-full py-3.5 px-6 rounded-xl text-white font-black text-lg sm:text-xl tracking-wider uppercase cursor-pointer shadow-2xl flex items-center justify-center gap-2"
+            disabled={checkingRoom}
+            className={`w-full py-3.5 px-6 rounded-xl font-black text-lg sm:text-xl tracking-wider uppercase cursor-pointer shadow-2xl flex items-center justify-center gap-2 transition-transform transform active:scale-95 ${
+              gameMode === "CLASSIC"
+                ? "diep-btn-play text-white"
+                : customTab === "CREATE"
+                ? "bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 border-4 border-slate-950 shadow-[0_0_25px_rgba(16,185,129,0.5)]"
+                : "bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white border-4 border-slate-950 shadow-[0_0_25px_rgba(6,182,212,0.5)]"
+            }`}
           >
-            <span>Play!</span>
-            <span>⚔️</span>
+            {checkingRoom ? (
+              <span>Conectando... ⏳</span>
+            ) : gameMode === "CLASSIC" ? (
+              <>
+                <span>Play!</span>
+                <span>⚔️</span>
+              </>
+            ) : customTab === "CREATE" ? (
+              <>
+                <span>Crear Sala #{generatedCode}</span>
+                <span>👑</span>
+              </>
+            ) : (
+              <>
+                <span>Unirse a Sala</span>
+                <span>🐾</span>
+              </>
+            )}
           </button>
         </form>
 
@@ -505,10 +769,10 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
         <button
           type="button"
           onClick={handleCopyPartyLink}
-          className="diep-btn-pill w-full py-2.5 px-4 rounded-xl bg-[#0284c7] hover:bg-[#0369a1] text-white font-bold text-xs tracking-wide shadow flex items-center justify-center gap-2"
+          className="diep-btn-pill w-full py-2.5 px-4 rounded-xl bg-[#0284c7] hover:bg-[#0369a1] text-white font-bold text-xs tracking-wide shadow flex items-center justify-center gap-2 cursor-pointer"
         >
           <span>🔗</span>
-          <span>{partyLinkCopied ? "¡Enlace Copiado al Portapapeles!" : "Copy Party Link"}</span>
+          <span>{partyLinkCopied ? "¡Enlace Copiado al Portapapeles!" : (gameMode === "CUSTOM" ? "Copiar Enlace de la Sala" : "Copy Party Link")}</span>
         </button>
 
       </main>

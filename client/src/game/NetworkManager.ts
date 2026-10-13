@@ -1,6 +1,14 @@
 import { Client, Room } from "colyseus.js";
 import { GameState } from "./schema/GameState";
 
+export interface ConnectOptions {
+  name?: string;
+  skin?: number;
+  isCustom?: boolean;
+  roomCode?: string;
+  isHost?: boolean;
+}
+
 // No singleton — instancia nueva cada vez para evitar sockets zombies con HMR
 export class NetworkClient {
   private client: Client;
@@ -15,8 +23,18 @@ export class NetworkClient {
     this.client = new Client(serverUrl);
   }
 
-  public async connect(options: { name?: string; skin?: number } = {}): Promise<Room<GameState>> {
-    this.room = await this.client.joinOrCreate<GameState>("jungle_room", options, GameState);
+  public async connect(options: ConnectOptions = {}): Promise<Room<GameState>> {
+    if (options.isCustom) {
+      if (options.isHost) {
+        console.log(`👑 Creando sala personalizada con código: ${options.roomCode}`);
+        this.room = await this.client.create<GameState>("custom_room", options, GameState);
+      } else {
+        console.log(`🐾 Uniéndose a sala personalizada con código: ${options.roomCode}`);
+        this.room = await this.client.join<GameState>("custom_room", options, GameState);
+      }
+    } else {
+      this.room = await this.client.joinOrCreate<GameState>("jungle_room", options, GameState);
+    }
     this.sessionId = this.room.sessionId;
     console.log(`✅ Sala conectada. SessionId: ${this.sessionId}`, options);
     return this.room;
@@ -64,6 +82,10 @@ export class NetworkClient {
 
   public sendRestart() {
     this.room?.send("restart");
+  }
+
+  public sendStartMatch() {
+    this.room?.send("startMatch");
   }
 }
 

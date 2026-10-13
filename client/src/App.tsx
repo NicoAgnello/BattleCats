@@ -24,7 +24,7 @@ export const App: React.FC = () => {
       ) : (
         <>
           {/* Phaser Canvas */}
-          <GameCanvas playerConfig={{ name: playerConfig.name, skin: playerConfig.skin }} />
+          <GameCanvas playerConfig={playerConfig} />
 
           {/* External React UI Overlay */}
           <UIOverlay onOpenMenu={handleOpenMenu} />

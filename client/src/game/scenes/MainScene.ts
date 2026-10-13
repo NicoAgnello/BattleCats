@@ -287,7 +287,13 @@ export function parseWeaponSlots(availableWeapons: string | undefined): [string,
 /* ─── Escena Principal Phaser (Optimizado & Game Feel) ───────── */
 export class MainScene extends Phaser.Scene {
   public net!: NetworkClient;
-  public playerOptions: { name?: string; skin?: number } = {};
+  public playerOptions: {
+    name?: string;
+    skin?: number;
+    isCustom?: boolean;
+    roomCode?: string;
+    isHost?: boolean;
+  } = {};
   private room!: Room<GameState>;
   private myId = "";
 
@@ -606,6 +612,10 @@ export class MainScene extends Phaser.Scene {
       this.net.sendRestart();
     });
 
+    this.onWindow("start-match", () => {
+      this.net.sendStartMatch();
+    });
+
     this.onWindow("switch-weapon", (e: any) => {
       if (e.detail?.weapon) this.switchWeapon(e.detail.weapon);
     });
@@ -622,6 +632,7 @@ export class MainScene extends Phaser.Scene {
     this.onWindow("sse-tick", (e: any) => {
       const data = e.detail;
       if (!data?.players) return;
+      if (data.roomId && this.room && data.roomId !== this.room.roomId) return;
       data.players.forEach((pState: any) => {
         const v = this.players.get(pState.id);
         if (v && !v.isMe) {
@@ -652,6 +663,7 @@ export class MainScene extends Phaser.Scene {
     this.onWindow("sse-shoot", (e: any) => {
       const d = e.detail;
       if (!d || d.id === this.myId) return;
+      if (d.roomId && this.room && d.roomId !== this.room.roomId) return;
       const p = this.players.get(d.id);
       if (p) {
         if (d.weapon === "SHOTGUN") soundManager.playShotgun();
@@ -681,6 +693,7 @@ export class MainScene extends Phaser.Scene {
     this.onWindow("sse-melee", (e: any) => {
       const d = e.detail;
       if (!d || d.id === this.myId) return;
+      if (d.roomId && this.room && d.roomId !== this.room.roomId) return;
       this.showGraphicClawSlash(d.x, d.y, d.angle);
 
       const p = this.players.get(d.id);
@@ -700,6 +713,7 @@ export class MainScene extends Phaser.Scene {
     this.onWindow("sse-dash", (e: any) => {
       const d = e.detail;
       if (!d || d.id === this.myId) return;
+      if (d.roomId && this.room && d.roomId !== this.room.roomId) return;
       const p = this.players.get(d.id);
       if (p) {
         if (d.isRoll) {
@@ -713,6 +727,7 @@ export class MainScene extends Phaser.Scene {
     this.onWindow("sse-hit", (e: any) => {
       const d = e.detail;
       if (!d) return;
+      if (d.roomId && this.room && d.roomId !== this.room.roomId) return;
       // sin número de daño flotante: el daño se marca en la barra de vida (destello rojo)
       this.createSparksFX(d.x, d.y, 0xff4444);
       if (d.victimId === this.myId) {
@@ -724,6 +739,7 @@ export class MainScene extends Phaser.Scene {
     this.onWindow("sse-explosion", (e: any) => {
       const d = e.detail;
       if (!d) return;
+      if (d.roomId && this.room && d.roomId !== this.room.roomId) return;
       soundManager.playExplosion();
       this.createExplosionFX(d.x, d.y, d.type === "GRENADE", d.radius || 140, d.innerRadius || 70);
       this.cameras.main.shake(d.type === "GRENADE" ? 320 : 220, d.type === "GRENADE" ? 0.022 : 0.016);
@@ -1259,8 +1275,28 @@ export class MainScene extends Phaser.Scene {
     };
     syncZone();
     s.zone.onChange(syncZone);
+
+    const emitRoomInfo = () => {
+      emit("roomInfo", {
+        isCustomRoom: !!s.isCustomRoom,
+        roomCode: s.roomCode || "",
+        hostId: s.hostId || "",
+        isHost: s.hostId === this.myId,
+        status: s.status,
+        playerCount: s.players?.size || 1,
+        players: Array.from(s.players.values()).map((p: Player) => ({
+          id: p.id,
+          name: p.name,
+          catColor: p.catColor,
+          isHost: p.id === s.hostId,
+        })),
+      });
+    };
+    emitRoomInfo();
+
     this.room.onStateChange(() => {
       syncZone();
+      emitRoomInfo();
       emit("alive", { alive: s.aliveCount || 1, total: s.players?.size || 1 });
       if (s.status === "VICTORY" && s.winnerName) {
         emit("victory", {
@@ -1273,12 +1309,25 @@ export class MainScene extends Phaser.Scene {
       }
     });
 
+    this.room.onMessage("matchStarted", () => {
+      soundManager.playVictory();
+      this.cameras.main.shake(200, 0.012);
+      this.showDamageText(this.cameras.main.midPoint.x, this.cameras.main.midPoint.y - 80, "¡LA PARTIDA HA COMENZADO!", "#10b981");
+    });
+
     // Players
     s.players.onAdd((p: Player, id: string) => {
       this.createPlayer(id, p);
-      p.onChange(() => this.updatePlayer(id, p));
+      emitRoomInfo();
+      p.onChange(() => {
+        this.updatePlayer(id, p);
+        emitRoomInfo();
+      });
     });
-    s.players.onRemove((_: Player, id: string) => this.destroyPlayer(id));
+    s.players.onRemove((_: Player, id: string) => {
+      this.destroyPlayer(id);
+      emitRoomInfo();
+    });
 
     // Projectiles
     s.projectiles.onAdd((p: Projectile, id: string) => {

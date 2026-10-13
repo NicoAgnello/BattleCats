@@ -188,4 +188,7 @@ export class GameState extends Schema {
   @type("number") aliveCount: number = 1;
   @type("string") winnerId: string = "";
   @type("string") winnerName: string = "";
+  @type("boolean") isCustomRoom: boolean = false;
+  @type("string") roomCode: string = "";
+  @type("string") hostId: string = "";
 }

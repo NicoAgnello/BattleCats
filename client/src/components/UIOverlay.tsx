@@ -68,6 +68,23 @@ const DEFAULT_PLAYER: PlayerState = {
   invulnerableTimer: 0,
 };
 
+interface RoomPlayer {
+  id: string;
+  name: string;
+  catColor: number;
+  isHost: boolean;
+}
+
+interface RoomInfo {
+  isCustomRoom: boolean;
+  roomCode: string;
+  hostId: string;
+  isHost: boolean;
+  status: string;
+  playerCount: number;
+  players: RoomPlayer[];
+}
+
 interface UIOverlayProps {
   onOpenMenu?: () => void;
 }
@@ -84,11 +101,15 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
   const [isMuted, setIsMuted] = useState(soundManager.isMuted);
   const [redirectCountdown, setRedirectCountdown] = useState<number | null>(null);
   const [showEmotes, setShowEmotes] = useState(false);
+  const [roomInfo, setRoomInfo] = useState<RoomInfo | null>(null);
+  const [codeCopied, setCodeCopied] = useState(false);
   const [sseInfo, setSseInfo] = useState<{ connected: boolean; tickRate: number; ping: number }>({
     connected: false,
     tickRate: 60,
     ping: 0,
   });
+
+  const onRoomInfo = useCallback((e: Event) => setRoomInfo((e as CustomEvent).detail), []);
 
   const onConn = useCallback((e: Event) => setConn((e as CustomEvent).detail), []);
   // Se combina con el estado anterior: algunas actualizaciones son parciales (p.ej. al
@@ -157,6 +178,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
   }, []);
 
   useEffect(() => {
+    window.addEventListener("roomInfo-update", onRoomInfo);
     window.addEventListener("conn-update", onConn);
     window.addEventListener("player-update", onPlayer);
     window.addEventListener("zone-update", onZone);
@@ -169,6 +191,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
     window.addEventListener("sse-telemetry", onSseTelemetry);
 
     return () => {
+      window.removeEventListener("roomInfo-update", onRoomInfo);
       window.removeEventListener("conn-update", onConn);
       window.removeEventListener("player-update", onPlayer);
       window.removeEventListener("zone-update", onZone);
@@ -180,7 +203,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
       window.removeEventListener("style-update", onStyle);
       window.removeEventListener("sse-telemetry", onSseTelemetry);
     };
-  }, [onConn, onPlayer, onZone, onAlive, onVictory, onRestart, onPlaying, onKillFeed, onStyle, onSseTelemetry]);
+  }, [onRoomInfo, onConn, onPlayer, onZone, onAlive, onVictory, onRestart, onPlaying, onKillFeed, onStyle, onSseTelemetry]);
 
 
   const toggleMute = () => {
@@ -407,8 +430,99 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
           )}
         </div>
 
-        {/* ── Centro: Zona Segura y Fase ── */}
+        {/* ── Centro: Zona Segura, Fase y Lobby de Sala ── */}
         <div className="pointer-events-none flex flex-col items-center gap-2">
+          {/* Sala Personalizada: Banner de Espera y Control de Host */}
+          {roomInfo?.isCustomRoom && roomInfo.status === "WAITING" && (
+            <div className="pointer-events-auto glass-panel p-4 rounded-2xl border-2 border-emerald-400 bg-slate-950/95 shadow-[0_0_40px_rgba(16,185,129,0.35)] backdrop-blur-xl flex flex-col items-center gap-2.5 animate-fadeIn max-w-sm w-full mb-1">
+              <div className="flex items-center justify-between w-full border-b border-slate-700/60 pb-1.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-base">👑</span>
+                  <span className="text-[11px] font-black uppercase tracking-wider text-emerald-400">
+                    Sala Privada (Sin Bots)
+                  </span>
+                </div>
+                <div className="px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-[10px] font-bold text-slate-300">
+                  Máx 20
+                </div>
+              </div>
+
+              {/* Código de Sala */}
+              <div className="flex items-center justify-between w-full bg-slate-900/80 p-2.5 rounded-xl border border-slate-800">
+                <div className="flex flex-col">
+                  <span className="text-[9px] uppercase font-bold text-slate-400">Código de Sala:</span>
+                  <span className="font-mono text-xl font-black text-amber-400 tracking-widest">
+                    {roomInfo.roomCode || "----"}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundManager.playClick();
+                    const url = `${window.location.origin}/?room=${roomInfo.roomCode}`;
+                    navigator.clipboard.writeText(url);
+                    setCodeCopied(true);
+                    setTimeout(() => setCodeCopied(false), 2000);
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-bold transition flex items-center gap-1 shadow cursor-pointer"
+                >
+                  <span>📋</span>
+                  <span>{codeCopied ? "¡Copiado!" : "Copiar Enlace"}</span>
+                </button>
+              </div>
+
+              {/* Lista de Jugadores */}
+              <div className="w-full space-y-1">
+                <div className="flex justify-between items-center text-[10px] font-extrabold text-slate-400 uppercase">
+                  <span>Jugadores Conectados:</span>
+                  <span className="font-mono text-emerald-400 font-bold">{roomInfo.playerCount} / 20</span>
+                </div>
+                <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto p-1 bg-slate-900/50 rounded-lg border border-slate-800/50">
+                  {roomInfo.players?.map((p) => (
+                    <div
+                      key={p.id}
+                      className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-800/80 border border-slate-700/60 text-[11px] font-bold text-slate-200"
+                    >
+                      <span>{p.isHost ? "👑" : "🐾"}</span>
+                      <span>{p.name}</span>
+                      {p.isHost && <span className="text-[8px] text-amber-400 font-extrabold">(Host)</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Acciones de Host vs Invitado */}
+              {roomInfo.isHost ? (
+                <div className="flex flex-col items-center w-full pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundManager.playClick();
+                      window.dispatchEvent(new CustomEvent("start-match"));
+                    }}
+                    className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-xs uppercase tracking-wider shadow-2xl flex items-center justify-center gap-1.5 transform hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer"
+                  >
+                    <span>🚀</span>
+                    <span>Comenzar Partida (Host)</span>
+                  </button>
+                  <span className="text-[9px] text-slate-400 mt-1 font-medium text-center">
+                    Inicia cuando todos los jugadores estén listos.
+                  </span>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center w-full pt-0.5 text-center">
+                  <div className="w-full py-2 px-2.5 rounded-xl bg-slate-900/80 border border-cyan-500/40 text-cyan-300 text-[11px] font-bold flex items-center justify-center gap-1.5 animate-pulse">
+                    <span>⏳</span>
+                    <span>Esperando a que el anfitrión inicie...</span>
+                  </div>
+                  <span className="text-[9px] text-slate-400 mt-1">
+                    ¡Prepárate! Todos tendrán 15s de inmunidad al comenzar.
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Banner de Invulnerabilidad Inicial */}
           {(player.invulnerableTimer ?? 0) > 0 && (
             <div className="glass-panel px-6 py-2 rounded-2xl flex items-center gap-3 border-2 border-cyan-400 bg-cyan-950/80 shadow-[0_0_30px_rgba(56,189,248,0.5)] backdrop-blur-md animate-pulse">

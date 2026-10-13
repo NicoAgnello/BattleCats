@@ -8,6 +8,9 @@ interface GameCanvasProps {
   playerConfig?: {
     name: string;
     skin: number;
+    isCustom?: boolean;
+    roomCode?: string;
+    isHost?: boolean;
   };
 }
 
@@ -27,7 +30,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ playerConfig }) => {
     const scene = new MainScene();
     scene.net   = net;            // inyección directa antes de que Phaser llame a create()
     if (playerConfig) {
-      scene.playerOptions = { name: playerConfig.name, skin: playerConfig.skin };
+      scene.playerOptions = {
+        name: playerConfig.name,
+        skin: playerConfig.skin,
+        isCustom: playerConfig.isCustom,
+        roomCode: playerConfig.roomCode,
+        isHost: playerConfig.isHost,
+      };
     }
 
     /* 3. Arrancar Phaser */

@@ -164,7 +164,21 @@ export class JungleRoom extends Room<GameState> {
 
   onCreate(options: any) {
     this.setState(new GameState());
-    this.state.status = "WAITING";
+
+    if (options && (options.isCustom || options.roomCode)) {
+      this.maxClients = 20;
+      this.state.isCustomRoom = true;
+      this.state.roomCode = String(options.roomCode || "");
+      this.state.status = "WAITING";
+      this.setMetadata({ roomCode: this.state.roomCode, status: "WAITING", isCustom: true });
+      console.log(`🏰 Creando Sala Personalizada #${this.state.roomCode} (Límite: 20 jugadores, SIN BOTS)`);
+    } else {
+      this.maxClients = 16;
+      this.state.isCustomRoom = false;
+      this.state.status = "WAITING";
+      // Initialize Bots (solo en modo clásico)
+      this.spawnBots();
+    }
 
     // 60 FPS ultra-low latency patch rate (16.6ms)
     this.setPatchRate(1000 / 60);
@@ -180,9 +194,6 @@ export class JungleRoom extends Room<GameState> {
 
     // Initialize Zone
     this.resetZone();
-
-    // Initialize Bots
-    this.spawnBots();
 
     // Register Message Handlers
     this.onMessage("move", (client, data: MovePayload) => {
@@ -454,7 +465,24 @@ export class JungleRoom extends Room<GameState> {
 
     this.onMessage("restart", (client) => {
       console.log(`Match restart requested by ${client.sessionId}`);
-      this.restartMatch();
+      if (this.state.isCustomRoom) {
+        if (client.sessionId === this.state.hostId) {
+          this.startCustomMatch();
+        }
+      } else {
+        this.restartMatch();
+      }
+    });
+
+    this.onMessage("startMatch", (client) => {
+      console.log(`Match start requested by ${client.sessionId} in room ${this.state.roomCode}`);
+      if (this.state.isCustomRoom) {
+        if (client.sessionId === this.state.hostId) {
+          this.startCustomMatch();
+        } else {
+          client.send("error", { message: "Solo el anfitrión puede iniciar la partida" });
+        }
+      }
     });
 
     // 60 FPS Game Loop
@@ -1023,10 +1051,20 @@ export class JungleRoom extends Room<GameState> {
       data: player,
     });
 
-    if (this.state.status === "WAITING" || this.state.players.size <= 1) {
-      this.restartMatch();
-    } else {
+    if (this.state.isCustomRoom) {
+      if (!this.state.hostId || options?.isHost) {
+        if (!this.state.hostId) {
+          this.state.hostId = client.sessionId;
+          console.log(`👑 Anfitrión asignado a: ${client.sessionId} (${player.name})`);
+        }
+      }
       this.updateAliveCount();
+    } else {
+      if (this.state.status === "WAITING" || this.state.players.size <= 1) {
+        this.restartMatch();
+      } else {
+        this.updateAliveCount();
+      }
     }
   }
 
@@ -1035,6 +1073,14 @@ export class JungleRoom extends Room<GameState> {
     this.state.players.delete(client.sessionId);
     this.spatialGrid.remove(client.sessionId);
     this.updateAliveCount();
+
+    if (this.state.isCustomRoom && client.sessionId === this.state.hostId) {
+      const remainingHumans = Array.from(this.state.players.values()).filter(p => !p.isBot && p.id !== client.sessionId);
+      if (remainingHumans.length > 0) {
+        this.state.hostId = remainingHumans[0].id;
+        console.log(`👑 Nuevo anfitrión asignado a: ${this.state.hostId} (${remainingHumans[0].name})`);
+      }
+    }
 
     let hasHuman = false;
     for (const [_, p] of this.state.players) {
@@ -1862,7 +1908,7 @@ export class JungleRoom extends Room<GameState> {
 
     this.state.aliveCount = alive;
 
-    if (this.state.players.size > 1 && alive === 1 && this.state.status !== "VICTORY" && lastAlivePlayer) {
+    if (this.state.status === "PLAYING" && this.state.players.size > 1 && alive === 1 && lastAlivePlayer) {
       this.state.status = "VICTORY";
       this.state.winnerId = lastAlivePlayer.id;
       this.state.winnerName = lastAlivePlayer.name;
@@ -1964,6 +2010,93 @@ export class JungleRoom extends Room<GameState> {
 
     this.updateAliveCount();
     this.broadcast("matchRestarted", {});
+  }
+
+  private startCustomMatch() {
+    this.resetZone();
+    this.state.status = "PLAYING";
+    this.state.winnerId = "";
+    this.state.winnerName = "";
+    this.state.projectiles.clear();
+    this.state.traps.clear();
+    this.spatialGrid.clear();
+    this.setMetadata({ roomCode: this.state.roomCode, status: "PLAYING", isCustom: true });
+
+    // Reset obstacles
+    this.state.obstacles.forEach((obs) => {
+      obs.destroyed = false;
+      obs.hp = obs.maxHp;
+      this.spatialGrid.insert({
+        id: obs.id,
+        x: obs.x,
+        y: obs.y,
+        radius: obs.radius,
+        type: "obstacle",
+        data: obs,
+      });
+    });
+
+    // Respawn all items
+    this.state.items.forEach((item) => {
+      item.active = true;
+      item.respawnTimer = 0;
+      this.spatialGrid.insert({
+        id: item.id,
+        x: item.x,
+        y: item.y,
+        radius: 24,
+        type: "item",
+        data: item,
+      });
+    });
+
+    // Revive and reposition all human players symmetrically in a regular polygon (N-gon)
+    const humans = Array.from(this.state.players.values()).filter((p) => !p.isBot);
+    const N = humans.length || 1;
+    const centerX = this.state.zone.x;
+    const centerY = this.state.zone.y;
+    const spawnRadius = 2500;
+    const baseAngle = Math.PI / N;
+
+    humans.forEach((player, i) => {
+      const angle = baseAngle + (i / N) * 2 * Math.PI;
+      const rawX = centerX + Math.cos(angle) * spawnRadius;
+      const rawY = centerY + Math.sin(angle) * spawnRadius;
+      const [safeX, safeY] = this.getSafeSpawnPosition(rawX, rawY, angle);
+
+      player.x = safeX;
+      player.y = safeY;
+      player.rotation = Math.atan2(centerY - safeY, centerX - safeX);
+      player.hp = 30;
+      player.maxHp = 30;
+      player.shield = 0;
+      player.maxShield = 0;
+      player.invulnerableTimer = 15.0; // 15 segundos iniciales de invulnerabilidad
+      player.availableWeapons = ",,MELEE";
+      this.initPlayerWeapons(player.id);
+      this.applyWeaponToPlayer(player, "MELEE");
+      player.isGhost = false;
+      player.isHidden = false;
+      player.kills = 0;
+      player.activeBuff = "";
+      player.buffTimer = 0;
+      player.dashCooldown = 0;
+      player.shootCooldown = 0;
+      player.trapCooldown = 0;
+
+      this.spatialGrid.insert({
+        id: player.id,
+        x: player.x,
+        y: player.y,
+        radius: 22,
+        type: "player",
+        data: player,
+      });
+    });
+
+    this.updateAliveCount();
+    this.broadcast("matchStarted", { count: humans.length, roomCode: this.state.roomCode });
+    console.log(`🚀 Partida Personalizada Iniciada con ${humans.length} jugadores en sala #${this.state.roomCode}`);
   }
 
   private updateZone(dt: number) {
