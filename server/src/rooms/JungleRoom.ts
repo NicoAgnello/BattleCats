@@ -60,7 +60,7 @@ export const WEAPON_CONFIGS: Record<string, WeaponDef> = {
     damage: 50, // 50 de daño por bala
     maxAmmo: 5, // 5 en recámara
     reserveAmmo: 5, // 1 cargador de 5
-    shootCooldown: 0.5, // cooldown de 0.5s
+    shootCooldown: 0.4, // cooldown de 0.4s entre disparos
     reloadTime: 3.0, // recarga de 3s
     range: 980, // alcance de mira telescópica exacto
     speed: 1400,
@@ -77,10 +77,10 @@ export const WEAPON_CONFIGS: Record<string, WeaponDef> = {
   },
   MELEE: {
     name: "Garras Felinas",
-    damage: 50, // 50 de daño por arañazo
+    damage: 50, // 50 de daño por arañazo base (1/4 vida si objetivo tiene garras)
     maxAmmo: 999,
     reserveAmmo: 0,
-    shootCooldown: 0.3, // cooldown de 0.3s
+    shootCooldown: 0.5, // cooldown de 0.5s
     reloadTime: 0,
     range: 75,
     speed: 0,
@@ -99,6 +99,11 @@ export function parseWeaponSlots(availableWeapons: string | undefined): [string,
 
 export function formatWeaponSlots(slot1: string, slot2: string): string {
   return `${slot1 || ""},${slot2 || ""},MELEE`;
+}
+
+export function hasOnlyClaws(player: Player): boolean {
+  const [slot1, slot2] = parseWeaponSlots(player.availableWeapons);
+  return !slot1 && !slot2;
 }
 
 interface TrapPayload {
@@ -148,6 +153,7 @@ export class JungleRoom extends Room<GameState> {
     "Gatito Feroz",
     "Michi Táctico",
     "Bigotes Letal",
+    "Garra Silenciosa",
   ];
 
   /** Evento SSE de esta sala: lleva el roomId para que cada cliente ignore los de
@@ -470,6 +476,7 @@ export class JungleRoom extends Room<GameState> {
 
   private applyDamage(player: Player, damage: number, attackerId?: string, weaponName = "Arma") {
     if (player.isGhost) return;
+    if (player.invulnerableTimer > 0) return;
     if (player.name && player.name.startsWith("TEST_")) return;
 
     let finalDmg = damage;
@@ -550,6 +557,22 @@ export class JungleRoom extends Room<GameState> {
     }
   }
 
+  private syncPlayerHealthAndShieldCapacity(player: Player, wasOnlyClaws: boolean) {
+    const isNowOnlyClaws = hasOnlyClaws(player);
+    if (wasOnlyClaws && !isNowOnlyClaws) {
+      // Al equipar armas de fuego, pasa de 30 de vida máxima a 100 y desbloquea escudos
+      player.maxHp = 100;
+      player.hp = Math.min(100, Math.max(player.hp, Math.round((player.hp / 30) * 100)));
+      player.maxShield = 50;
+    } else if (!wasOnlyClaws && isNowOnlyClaws) {
+      // Si solo tiene garras, tiene 30 de vida máxima y no puede tener escudos
+      player.maxHp = 30;
+      player.hp = Math.min(30, Math.max(1, Math.round((player.hp / 100) * 30)));
+      player.shield = 0;
+      player.maxShield = 0;
+    }
+  }
+
   private savePlayerCurrentWeaponAmmo(player: Player) {
     const store = this.playerWeaponAmmo.get(player.id);
     if (store && player.equippedWeapon) {
@@ -602,8 +625,21 @@ export class JungleRoom extends Room<GameState> {
           if (target.id === player.id || target.isGhost) continue;
           const d = Math.hypot(target.x - slashX, target.y - slashY);
           if (d < 75) {
-            this.applyDamage(target, 50, player.id, "Garras Felinas");
-            this.broadcast("hit", { x: target.x, y: target.y, damage: 50, victimId: target.id, shooterId: player.id });
+            // Estando equipado con garras, el daño recibido por otras garras es un cuarto de vida (4 garrazos)
+            let clawDamage = 50;
+            if (target.equippedWeapon === "MELEE") {
+              clawDamage = target.maxHp / 4;
+            }
+            const isInv = target.invulnerableTimer > 0;
+            this.applyDamage(target, clawDamage, player.id, "Garras Felinas");
+            this.broadcast("hit", {
+              x: target.x,
+              y: target.y,
+              damage: isInv ? 0 : clawDamage,
+              isInvulnerable: isInv,
+              victimId: target.id,
+              shooterId: player.id,
+            });
           }
         } else if (ent.type === "obstacle") {
           const obs = ent.data as Obstacle;
@@ -866,8 +902,14 @@ export class JungleRoom extends Room<GameState> {
 
   private spawnBots() {
     this.botControllers.clear();
-    const colors = [1, 2, 3, 4, 0, 2];   // skins 0..4
-    const botWeapons = ["LASER", "SHOTGUN", "SNIPER", "LASER", "SHOTGUN", "SNIPER"];
+    const colors = [1, 2, 3, 4, 0, 2, 3];   // skins 0..4
+    const totalBots = this.botNames.length;
+    // Reparto simétrico regular de 8 puntas (octágono): índice 0 reservado para el jugador humano
+    const N = totalBots + 1;
+    const centerX = this.state.zone.x;
+    const centerY = this.state.zone.y;
+    const spawnRadius = 2500;
+    const baseAngle = Math.PI / N;
 
     for (let i = 0; i < this.botNames.length; i++) {
       const botId = `bot_${i + 1}`;
@@ -882,15 +924,20 @@ export class JungleRoom extends Room<GameState> {
       this.initPlayerWeapons(botId);
       this.applyWeaponToPlayer(bot, "MELEE");
 
-      const angle = (i / this.botNames.length) * Math.PI * 2;
-      const dist = 1200 + Math.random() * 2000;
-      bot.x = this.state.zone.x + Math.cos(angle) * dist;
-      bot.y = this.state.zone.y + Math.sin(angle) * dist;
-      bot.rotation = angle + Math.PI;
-      bot.hp = 100;
-      bot.maxHp = 100;
+      // Vértices 1 a 7 del octágono simbólico
+      const angle = baseAngle + ((i + 1) / N) * 2 * Math.PI;
+      const rawX = centerX + Math.cos(angle) * spawnRadius;
+      const rawY = centerY + Math.sin(angle) * spawnRadius;
+      const [safeX, safeY] = this.getSafeSpawnPosition(rawX, rawY, angle);
+
+      bot.x = safeX;
+      bot.y = safeY;
+      bot.rotation = Math.atan2(centerY - safeY, centerX - safeX);
+      bot.hp = 30;
+      bot.maxHp = 30;
       bot.shield = 0;
-      bot.maxShield = 50;
+      bot.maxShield = 0;
+      bot.invulnerableTimer = 15.0; // 15 segundos iniciales de invulnerabilidad
       bot.isGhost = false;
       bot.isHidden = false;
       bot.kills = 0;
@@ -938,15 +985,25 @@ export class JungleRoom extends Room<GameState> {
       player.catColor = skinColor;
     }
 
-    const angle = Math.random() * Math.PI * 2;
-    const dist = 800 + Math.random() * 2200;
-    player.x = this.state.zone.x + Math.cos(angle) * dist;
-    player.y = this.state.zone.y + Math.sin(angle) * dist;
-    player.rotation = 0;
-    player.hp = 100;
-    player.maxHp = 100;
+    // Vértice 0 del octágono simbólico para el jugador
+    const N = this.botNames.length + 1;
+    const baseAngle = Math.PI / N;
+    const angle = baseAngle;
+    const centerX = this.state.zone.x;
+    const centerY = this.state.zone.y;
+    const spawnRadius = 2500;
+    const rawX = centerX + Math.cos(angle) * spawnRadius;
+    const rawY = centerY + Math.sin(angle) * spawnRadius;
+    const [safeX, safeY] = this.getSafeSpawnPosition(rawX, rawY, angle);
+
+    player.x = safeX;
+    player.y = safeY;
+    player.rotation = Math.atan2(centerY - safeY, centerX - safeX);
+    player.hp = 30;
+    player.maxHp = 30;
     player.shield = 0;
-    player.maxShield = 50;
+    player.maxShield = 0;
+    player.invulnerableTimer = 15.0; // 15 segundos iniciales de invulnerabilidad
     player.isGhost = false;
     player.isHidden = false;
     player.kills = 0;
@@ -1011,6 +1068,7 @@ export class JungleRoom extends Room<GameState> {
         data: player,
       });
 
+      if (player.invulnerableTimer > 0) player.invulnerableTimer = Math.max(0, player.invulnerableTimer - dt);
       if (player.dashCooldown > 0) player.dashCooldown = Math.max(0, player.dashCooldown - dt);
       if (player.trapCooldown > 0) player.trapCooldown = Math.max(0, player.trapCooldown - dt);
       if (player.shootCooldown > 0) player.shootCooldown = Math.max(0, player.shootCooldown - dt);
@@ -1155,11 +1213,13 @@ export class JungleRoom extends Room<GameState> {
           if (dist < 26) {
             projToDelete.add(key);
             const wName = proj.projType === "SNIPER_BEAM" ? "Rifle Sniper" : proj.projType === "PELLET" ? "Escopeta" : "Pistola Láser";
+            const isInv = player.invulnerableTimer > 0;
             this.applyDamage(player, proj.damage, proj.ownerId, wName);
             this.broadcast("hit", {
               x: player.x,
               y: player.y,
-              damage: proj.damage,
+              damage: isInv ? 0 : proj.damage,
+              isInvulnerable: isInv,
               victimId: player.id,
               shooterId: proj.ownerId,
             });
@@ -1300,9 +1360,9 @@ export class JungleRoom extends Room<GameState> {
 
         const isMelee = bot.equippedWeapon === "MELEE";
         const attackRange = isMelee ? 72 : 380;
-        if (bot.shootCooldown <= 0 && minEnemyDist < attackRange) {
+        if (bot.shootCooldown <= 0 && minEnemyDist < attackRange && bot.invulnerableTimer <= 0) {
           this.spawnProjectiles(bot, bot.rotation);
-          bot.shootCooldown = isMelee ? 0.35 : (nearestEnemy.isBot ? (1.6 + Math.random() * 0.8) : (1.0 + Math.random() * 0.5));
+          bot.shootCooldown = isMelee ? 0.5 : (nearestEnemy.isBot ? (1.6 + Math.random() * 0.8) : (1.0 + Math.random() * 0.5));
         }
 
         if (isMelee) {
@@ -1441,6 +1501,53 @@ export class JungleRoom extends Room<GameState> {
     return null;
   }
 
+  /**
+   * Calcula una posición de aparición segura alrededor de (rawX, rawY) asegurando
+   * que no aparezca dentro del agua del río, dentro de estructuras ni solapando obstáculos.
+   */
+  public getSafeSpawnPosition(rawX: number, rawY: number, angle: number): [number, number] {
+    let x = rawX;
+    let y = rawY;
+
+    // 1. Evitar aparecer en el agua del río (mantener en tierra firme)
+    let riverChecks = 0;
+    while (this.checkInRiver(x, y) && riverChecks < 15) {
+      x += Math.cos(angle) * 70;
+      y += Math.sin(angle) * 70;
+      riverChecks++;
+    }
+
+    // 2. Evitar aparecer dentro de estructuras edilicias (paredes o techos)
+    let struct = this.checkInStructure(x, y);
+    let structChecks = 0;
+    while (struct && structChecks < 15) {
+      const radDist = Math.hypot(x - struct.x, y - struct.y) || 1;
+      x += ((x - struct.x) / radDist) * 80;
+      y += ((y - struct.y) / radDist) * 80;
+      struct = this.checkInStructure(x, y);
+      structChecks++;
+    }
+
+    // 3. Evitar solaparse con obstáculos estáticos (árboles, rocas, barriles, cajas)
+    const nearbyObs = this.spatialGrid.queryRadius(x, y, 45, ["obstacle"]);
+    for (const ent of nearbyObs) {
+      const obs = ent.data as Obstacle;
+      if (!obs || obs.destroyed) continue;
+      const d = Math.hypot(x - obs.x, y - obs.y);
+      if (d < 45 + obs.radius && d > 0) {
+        const push = (45 + obs.radius) - d;
+        x += ((x - obs.x) / d) * push;
+        y += ((y - obs.y) / d) * push;
+      }
+    }
+
+    // 4. Asegurar que esté dentro de los límites del mapa jugable
+    x = Math.max(350, Math.min(this.state.worldWidth - 350, x));
+    y = Math.max(350, Math.min(this.state.worldHeight - 350, y));
+
+    return [Math.round(x), Math.round(y)];
+  }
+
   public handlePlayerInteract(player: Player, requestedItemId?: string) {
     let targetItem: ItemPickup | null = null;
     let minDist = 75;
@@ -1487,77 +1594,83 @@ export class JungleRoom extends Room<GameState> {
             player.reserveAmmo = store[item.itemType].reserveAmmo;
           }
         }
-      } else if (!slot1) {
-        // Espacio 1 vacío: equipar en espacio 1
-        slot1 = item.itemType;
-        const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
-        const store = this.playerWeaponAmmo.get(player.id);
-        if (store) {
-          store[item.itemType] = {
-            ammo: cfg.maxAmmo,
-            reserveAmmo: cfg.reserveAmmo,
-          };
-        }
-        player.availableWeapons = formatWeaponSlots(slot1, slot2);
-        this.applyWeaponToPlayer(player, item.itemType);
-      } else if (!slot2) {
-        // Espacio 2 vacío: equipar en espacio 2 (permite llevar ej. pistola y escopeta juntas)
-        slot2 = item.itemType;
-        const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
-        const store = this.playerWeaponAmmo.get(player.id);
-        if (store) {
-          store[item.itemType] = {
-            ammo: cfg.maxAmmo,
-            reserveAmmo: cfg.reserveAmmo,
-          };
-        }
-        player.availableWeapons = formatWeaponSlots(slot1, slot2);
-        this.applyWeaponToPlayer(player, item.itemType);
       } else {
-        // Ambos espacios ocupados: intercambiar el arma equipada con la del suelo
-        // (si tiene MELEE equipada, se reemplaza el espacio 1)
-        let droppedWeapon = "";
-        if (prevWeapon === slot2) {
-          droppedWeapon = slot2;
-          slot2 = item.itemType;
-        } else {
-          droppedWeapon = slot1;
+        const wasOnlyClaws = hasOnlyClaws(player);
+        if (!slot1) {
+          // Espacio 1 vacío: equipar en espacio 1
           slot1 = item.itemType;
-        }
-
-        // Soltar al suelo el arma intercambiada para que se pueda volver a recoger
-        if (droppedWeapon && droppedWeapon !== "MELEE") {
-          const dropItem = new ItemPickup();
-          dropItem.id = `drop_${++this.itemIdCounter}_${Date.now()}`;
-          dropItem.x = player.x;
-          dropItem.y = player.y;
-          dropItem.itemType = droppedWeapon;
-          dropItem.active = true;
-          dropItem.respawnTimer = 0;
-          this.state.items.set(dropItem.id, dropItem);
-          this.spatialGrid.insert({
-            id: dropItem.id,
-            x: dropItem.x,
-            y: dropItem.y,
-            radius: 24,
-            type: "item",
-            data: dropItem,
-          });
-        }
-
-        const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
-        const store = this.playerWeaponAmmo.get(player.id);
-        if (store) {
-          if (droppedWeapon && droppedWeapon !== "MELEE") {
-            delete (store as any)[droppedWeapon];
+          const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
+          const store = this.playerWeaponAmmo.get(player.id);
+          if (store) {
+            store[item.itemType] = {
+              ammo: cfg.maxAmmo,
+              reserveAmmo: cfg.reserveAmmo,
+            };
           }
-          store[item.itemType] = {
-            ammo: cfg.maxAmmo,
-            reserveAmmo: cfg.reserveAmmo,
-          };
+          player.availableWeapons = formatWeaponSlots(slot1, slot2);
+          this.applyWeaponToPlayer(player, item.itemType);
+        } else if (!slot2) {
+          // Espacio 2 vacío: equipar en espacio 2 (permite llevar ej. pistola y escopeta juntas)
+          slot2 = item.itemType;
+          const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
+          const store = this.playerWeaponAmmo.get(player.id);
+          if (store) {
+            store[item.itemType] = {
+              ammo: cfg.maxAmmo,
+              reserveAmmo: cfg.reserveAmmo,
+            };
+          }
+          player.availableWeapons = formatWeaponSlots(slot1, slot2);
+          this.applyWeaponToPlayer(player, item.itemType);
+        } else {
+          // Ambos espacios ocupados: intercambiar el arma equipada con la del suelo
+          // (si tiene MELEE equipada, se reemplaza el espacio 1)
+          let droppedWeapon = "";
+          if (prevWeapon === slot2) {
+            droppedWeapon = slot2;
+            slot2 = item.itemType;
+          } else {
+            droppedWeapon = slot1;
+            slot1 = item.itemType;
+          }
+
+          // Soltar al suelo el arma intercambiada para que se pueda volver a recoger
+          if (droppedWeapon && droppedWeapon !== "MELEE") {
+            const dropItem = new ItemPickup();
+            dropItem.id = `drop_${++this.itemIdCounter}_${Date.now()}`;
+            dropItem.x = player.x;
+            dropItem.y = player.y;
+            dropItem.itemType = droppedWeapon;
+            dropItem.active = true;
+            dropItem.respawnTimer = 0;
+            this.state.items.set(dropItem.id, dropItem);
+            this.spatialGrid.insert({
+              id: dropItem.id,
+              x: dropItem.x,
+              y: dropItem.y,
+              radius: 24,
+              type: "item",
+              data: dropItem,
+            });
+          }
+
+          const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
+          const store = this.playerWeaponAmmo.get(player.id);
+          if (store) {
+            if (droppedWeapon && droppedWeapon !== "MELEE") {
+              delete (store as any)[droppedWeapon];
+            }
+            store[item.itemType] = {
+              ammo: cfg.maxAmmo,
+              reserveAmmo: cfg.reserveAmmo,
+            };
+          }
+          player.availableWeapons = formatWeaponSlots(slot1, slot2);
+          this.applyWeaponToPlayer(player, item.itemType);
         }
-        player.availableWeapons = formatWeaponSlots(slot1, slot2);
-        this.applyWeaponToPlayer(player, item.itemType);
+
+        // Sincronizar vida máxima y escudo según si porta armas o va solo con garras
+        this.syncPlayerHealthAndShieldCapacity(player, wasOnlyClaws);
       }
 
       if (item.id.startsWith("drop_") || item.id.startsWith("crate_")) {
@@ -1567,6 +1680,11 @@ export class JungleRoom extends Room<GameState> {
         item.respawnTimer = 22.0;
       }
     } else {
+      // Consumibles: Si va solo con garras no puede equiparse escudos
+      if (item.itemType === "SHIELD" && (hasOnlyClaws(player) || player.maxShield <= 0)) {
+        return;
+      }
+
       item.active = false;
       item.respawnTimer = 16.0;
 
@@ -1638,6 +1756,7 @@ export class JungleRoom extends Room<GameState> {
               }
             } else if (!slot1) {
               // Auto-recoger en Slot 1 vacío
+              const wasOnlyClaws = hasOnlyClaws(player);
               item.active = false;
               item.respawnTimer = 18.0;
               this.savePlayerCurrentWeaponAmmo(player);
@@ -1652,6 +1771,7 @@ export class JungleRoom extends Room<GameState> {
               }
               player.availableWeapons = formatWeaponSlots(slot1, slot2);
               this.applyWeaponToPlayer(player, item.itemType);
+              this.syncPlayerHealthAndShieldCapacity(player, wasOnlyClaws);
               this.broadcast("itemPicked", {
                 id: item.id,
                 itemType: item.itemType,
@@ -1662,6 +1782,7 @@ export class JungleRoom extends Room<GameState> {
               });
             } else if (!slot2) {
               // Auto-recoger en Slot 2 vacío (permite llevar 2 armas a la vez)
+              const wasOnlyClaws = hasOnlyClaws(player);
               item.active = false;
               item.respawnTimer = 18.0;
               this.savePlayerCurrentWeaponAmmo(player);
@@ -1676,6 +1797,7 @@ export class JungleRoom extends Room<GameState> {
               }
               player.availableWeapons = formatWeaponSlots(slot1, slot2);
               this.applyWeaponToPlayer(player, item.itemType);
+              this.syncPlayerHealthAndShieldCapacity(player, wasOnlyClaws);
               this.broadcast("itemPicked", {
                 id: item.id,
                 itemType: item.itemType,
@@ -1695,6 +1817,9 @@ export class JungleRoom extends Room<GameState> {
             player.hp = Math.min(player.maxHp, player.hp + 40);
             picked = true;
           } else if (item.itemType === "SHIELD" && player.shield < player.maxShield) {
+            if (hasOnlyClaws(player) || player.maxShield <= 0) {
+              return; // no pueden equiparse escudos si van solo con garras
+            }
             player.shield = Math.min(player.maxShield, player.shield + 50);
             picked = true;
           } else if (item.itemType === "SPEED") {
@@ -1790,16 +1915,31 @@ export class JungleRoom extends Room<GameState> {
       });
     });
 
-    // Revive and reposition all players
-    this.state.players.forEach((player) => {
-      const angle = Math.random() * Math.PI * 2;
-      const dist = player.isBot ? (1100 + Math.random() * 850) : (700 + Math.random() * 1100);
-      player.x = this.state.zone.x + Math.cos(angle) * dist;
-      player.y = this.state.zone.y + Math.sin(angle) * dist;
-      player.hp = 100;
-      player.maxHp = 100;
+    // Revive and reposition all players symmetrically in a regular polygon (e.g. octagon for 8 players)
+    const allPlayers = Array.from(this.state.players.values());
+    const humans = allPlayers.filter((p) => !p.isBot);
+    const bots = allPlayers.filter((p) => p.isBot);
+    const orderedPlayers = [...humans, ...bots];
+    const N = orderedPlayers.length || 8;
+    const centerX = this.state.zone.x;
+    const centerY = this.state.zone.y;
+    const spawnRadius = 2500;
+    const baseAngle = Math.PI / N;
+
+    orderedPlayers.forEach((player, i) => {
+      const angle = baseAngle + (i / N) * 2 * Math.PI;
+      const rawX = centerX + Math.cos(angle) * spawnRadius;
+      const rawY = centerY + Math.sin(angle) * spawnRadius;
+      const [safeX, safeY] = this.getSafeSpawnPosition(rawX, rawY, angle);
+
+      player.x = safeX;
+      player.y = safeY;
+      player.rotation = Math.atan2(centerY - safeY, centerX - safeX);
+      player.hp = 30;
+      player.maxHp = 30;
       player.shield = 0;
-      player.maxShield = 50;
+      player.maxShield = 0;
+      player.invulnerableTimer = 15.0; // 15 segundos iniciales de invulnerabilidad para todos
       player.availableWeapons = ",,MELEE";
       this.initPlayerWeapons(player.id);
       this.applyWeaponToPlayer(player, "MELEE");

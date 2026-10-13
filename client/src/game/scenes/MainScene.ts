@@ -62,9 +62,9 @@ interface VStructure {
 const WEAPON_CONFIGS: Record<string, { shootCooldown: number; speed: number; range: number; pellets?: number }> = {
   LASER:   { shootCooldown: 0.3, speed: 800, range: 480 },
   SHOTGUN: { shootCooldown: 1.0, speed: 680, range: 310, pellets: 5 },
-  SNIPER:  { shootCooldown: 0.5, speed: 1400, range: 980 },
+  SNIPER:  { shootCooldown: 0.4, speed: 1400, range: 980 },
   GRENADE: { shootCooldown: 1.0, speed: 500, range: 400 },
-  MELEE:   { shootCooldown: 0.3, speed: 0, range: 75 },
+  MELEE:   { shootCooldown: 0.5, speed: 0, range: 75 },
 };
 
 /* ─── Tipos Gráficos ─────────────────────────────────────────── */
@@ -113,6 +113,9 @@ interface VPlayer {
   isMe: boolean;
   catColor: number;
   name: string;
+  invulnerableTimer: number;
+  invulnerableShieldGfx?: Phaser.GameObjects.Graphics;
+  invulnerableBadge?: Phaser.GameObjects.Text;
   // Performance flags
   lastGhost: boolean;
   tomb?: { box: Phaser.GameObjects.Container; kitten: Phaser.GameObjects.Sprite | null; angle: number };
@@ -1323,6 +1326,11 @@ export class MainScene extends Phaser.Scene {
 
     // Server messages
     this.room.onMessage("hit", (d: any) => {
+      if (d.isInvulnerable || d.damage === 0) {
+        this.createSparksFX(d.x, d.y, 0x38bdf8);
+        this.showDamageText(d.x, d.y - 18, "🛡️ INMUNE", "#38bdf8");
+        return;
+      }
       // sin número de daño flotante: el daño se marca en la barra de vida (destello rojo)
       this.createSparksFX(d.x, d.y, 0xff4444);
       if (d.victimId === this.myId) {
@@ -2797,6 +2805,12 @@ export class MainScene extends Phaser.Scene {
 
     if (!targetItem || !targetItem.active) return;
 
+    if (targetItem.itemType === "SHIELD" && (me.maxShield <= 0 || !me.availableWeapons || me.availableWeapons === ",,MELEE" || me.availableWeapons === "MELEE")) {
+      soundManager.playEmptyClick();
+      this.showDamageText(targetItem.x, targetItem.y - 14, "🛡️ ESCUDO BLOQUEADO (Solo garras)", "#94a3b8");
+      return;
+    }
+
     this.net.sendInteract(targetItem.id);
     soundManager.playPickup();
     this.createSparksFX(targetItem.x, targetItem.y, 0x10b981);
@@ -2889,12 +2903,25 @@ export class MainScene extends Phaser.Scene {
       reloadSpinnerContainer.add(reloadSpin);
     }
 
+    // Escudo de invulnerabilidad inicial
+    const invulnerableShieldGfx = this.add.graphics();
+    container.add(invulnerableShieldGfx);
+
+    const invulnerableBadge = this.add.text(0, -68, "🛡️ 15s", {
+      fontFamily: "Outfit, Inter, sans-serif",
+      fontSize: "11px",
+      fontStyle: "bold",
+      color: "#38bdf8",
+      stroke: "#000000",
+      strokeThickness: 3,
+    }).setOrigin(0.5).setVisible(false);
+
     // El contenedor de visuales del gato rota con la dirección de apuntado (cuerpo + manos + arma)
     container.add([catSprite, bodyGfx, earsGfx, faceGfx, aimGfx, leftHandGfx, rightHandGfx]);
 
     // El contenedor de interfaz de usuario SOBRE EL PERSONAJE (HUD Billboard)
     // NUNCA rota, siempre permanece horizontal arriba del personaje (y = -42px)
-    uiContainer.add([hpBg, hpFill, shdFill, label, buffIcon, emoteGfx, reloadBarGfx, reloadSpinnerContainer]);
+    uiContainer.add([hpBg, hpFill, shdFill, label, buffIcon, emoteGfx, reloadBarGfx, reloadSpinnerContainer, invulnerableBadge]);
     uiContainer.setRotation(0);
 
     const vp: VPlayer = {
@@ -2904,8 +2931,8 @@ export class MainScene extends Phaser.Scene {
       hpBg, hpFill, shdFill, label, buffIcon,
       reloadBarGfx, reloadSpinnerContainer, reloadIconSprite, reloadProgressGfx, reloadSpin, emoteGfx, emoteText,
       tx: px, ty: py, tr: p.rotation || 0,
-      hp: p.hp ?? 100, maxHp: p.maxHp ?? 100,
-      shield: p.shield ?? 0, maxShield: p.maxShield ?? 50,
+      hp: p.hp ?? 30, maxHp: p.maxHp ?? 30,
+      shield: p.shield ?? 0, maxShield: p.maxShield ?? 0,
       equippedWeapon: p.equippedWeapon || "MELEE",
       availableWeapons: p.availableWeapons || "MELEE",
       ammo: p.ammo ?? 999, maxAmmo: p.maxAmmo ?? 999,
@@ -2918,6 +2945,9 @@ export class MainScene extends Phaser.Scene {
       isGhost: !!p.isGhost, isHidden: !!p.isHidden,
       isMe, catColor: p.catColor || 0,
       name: p.name || "Gato",
+      invulnerableTimer: p.invulnerableTimer ?? 15,
+      invulnerableShieldGfx,
+      invulnerableBadge,
       lastGhost: !!p.isGhost,
       lastHpRatio: 1,
       lastShdRatio: 0,
@@ -3191,6 +3221,7 @@ export class MainScene extends Phaser.Scene {
     v.reloadTimer = p.reloadTimer ?? 0;
     v.maxReloadTimer = p.maxReloadTimer ?? 2.0;
     v.dashCooldown = p.dashCooldown ?? v.dashCooldown ?? 0;
+    v.invulnerableTimer = p.invulnerableTimer ?? v.invulnerableTimer;
 
     if (!v.isReloading && prevReloading) {
       v.reloadSpinnerContainer.setVisible(false);
@@ -3215,8 +3246,8 @@ export class MainScene extends Phaser.Scene {
       else v.buffIcon.setText("");
     }
 
-    const ratio = Math.max(0, Math.min(1, v.hp / v.maxHp));
-    const shdRatio = Math.max(0, Math.min(1, v.shield / v.maxShield));
+    const ratio = Math.max(0, Math.min(1, v.hp / (v.maxHp || 1)));
+    const shdRatio = (v.maxShield || 0) > 0 ? Math.max(0, Math.min(1, v.shield / v.maxShield)) : 0;
     if (Math.abs(ratio - v.lastHpRatio) > 0.01 || Math.abs(shdRatio - v.lastShdRatio) > 0.01) {
       v.lastHpRatio = ratio;
       v.lastShdRatio = shdRatio;
@@ -3266,6 +3297,7 @@ export class MainScene extends Phaser.Scene {
         kills: p.kills ?? 0,
         activeBuff: newBuff,
         buffTimer: p.buffTimer ?? 0,
+        invulnerableTimer: v.invulnerableTimer,
       });
     }
   }
@@ -3927,6 +3959,56 @@ export class MainScene extends Phaser.Scene {
         if (v.reloadSpinnerContainer.visible) {
           v.reloadSpinnerContainer.setVisible(false);
           v.reloadProgressGfx.clear();
+        }
+      }
+
+      // Escudo de Invulnerabilidad Inicial (15 segundos)
+      if (v.invulnerableTimer > 0 && !v.isGhost) {
+        v.invulnerableTimer = Math.max(0, v.invulnerableTimer - delta / 1000);
+        if (inCam) {
+          const invGfx = v.invulnerableShieldGfx;
+          if (invGfx) {
+            invGfx.clear();
+            const pulse = Math.sin(time / 140);
+            const baseR = 34 + pulse * 2.5;
+
+            // 1. Halo exterior pulsante
+            invGfx.lineStyle(2, 0x00e5ff, 0.5 + pulse * 0.25);
+            invGfx.strokeCircle(0, 0, baseR + 5);
+
+            // 2. Cúpula / burbuja translúcida
+            invGfx.fillStyle(0x38bdf8, 0.18 + pulse * 0.08);
+            invGfx.fillCircle(0, 0, baseR);
+            invGfx.lineStyle(2.5, 0x38bdf8, 0.9);
+            invGfx.strokeCircle(0, 0, baseR);
+
+            // 3. Matriz hexagonal de defensa táctica
+            invGfx.lineStyle(1.5, 0x7dd3fc, 0.7);
+            invGfx.beginPath();
+            const hexRot = (time / 700) % (Math.PI * 2);
+            for (let h = 0; h < 6; h++) {
+              const a = hexRot + (h / 6) * Math.PI * 2;
+              const hx = Math.cos(a) * (baseR - 4);
+              const hy = Math.sin(a) * (baseR - 4);
+              if (h === 0) invGfx.moveTo(hx, hy);
+              else invGfx.lineTo(hx, hy);
+            }
+            invGfx.closePath();
+            invGfx.strokePath();
+          }
+
+          if (v.invulnerableBadge) {
+            const secs = Math.ceil(v.invulnerableTimer);
+            v.invulnerableBadge.setText(`🛡️ ${secs}s`);
+            v.invulnerableBadge.setVisible(true);
+          }
+        }
+      } else {
+        if (v.invulnerableShieldGfx) {
+          v.invulnerableShieldGfx.clear();
+        }
+        if (v.invulnerableBadge && v.invulnerableBadge.visible) {
+          v.invulnerableBadge.setVisible(false);
         }
       }
     });

@@ -45,6 +45,8 @@ export class Player extends Schema {
 
   @type("boolean") isHidden: boolean = false;
 
+  @type("number") invulnerableTimer: number = 0;
+
   @type("number") dashCooldown: number = 0;
   @type("number") trapCooldown: number = 0;
   @type("number") shootCooldown: number = 0;

@@ -62,6 +62,8 @@ export class Player extends Schema {
 
   @type("boolean") isHidden: boolean = false;
 
+  @type("number") invulnerableTimer: number = 0; // remaining s of initial match invulnerability
+
   @type("number") dashCooldown: number = 0; // remaining s
   @type("number") trapCooldown: number = 0; // remaining s
   @type("number") shootCooldown: number = 0; // remaining s

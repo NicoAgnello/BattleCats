@@ -22,6 +22,7 @@ interface PlayerState {
   kills: number;
   activeBuff: string;
   buffTimer: number;
+  invulnerableTimer?: number;
 }
 
 interface ZoneState {
@@ -45,10 +46,10 @@ interface VictoryState {
 }
 
 const DEFAULT_PLAYER: PlayerState = {
-  hp: 100,
-  maxHp: 100,
+  hp: 30,
+  maxHp: 30,
   shield: 0,
-  maxShield: 50,
+  maxShield: 0,
   equippedWeapon: "MELEE",
   availableWeapons: "MELEE",
   ammo: 999,
@@ -64,6 +65,7 @@ const DEFAULT_PLAYER: PlayerState = {
   kills: 0,
   activeBuff: "",
   buffTimer: 0,
+  invulnerableTimer: 0,
 };
 
 interface UIOverlayProps {
@@ -266,7 +268,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
 
   const styleInfo = getStyleRank(styleScore);
   const hpPct = Math.max(0, Math.min(100, (player.hp / player.maxHp) * 100));
-  const shdPct = Math.max(0, Math.min(100, ((player.shield || 0) / (player.maxShield || 50)) * 100));
+  const shdPct = (player.maxShield || 0) > 0 ? Math.max(0, Math.min(100, ((player.shield || 0) / (player.maxShield || 1)) * 100)) : 0;
   const stylePct = Math.min(100, (styleScore / 1000) * 100);
 
   const triggerReload = () => {
@@ -358,14 +360,18 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
               <div>
                 <div className="flex justify-between items-center mb-1">
                   <div className="flex items-center gap-1.5">
-                    <Shield className="w-3.5 h-3.5 text-cyan-400 fill-cyan-400" />
-                    <span className="text-[10px] font-black tracking-widest uppercase text-cyan-400">Escudo Felino</span>
+                    <Shield className={`w-3.5 h-3.5 ${(player.maxShield || 0) <= 0 ? "text-slate-500 fill-slate-500" : "text-cyan-400 fill-cyan-400"}`} />
+                    <span className={`text-[10px] font-black tracking-widest uppercase ${(player.maxShield || 0) <= 0 ? "text-slate-500" : "text-cyan-400"}`}>
+                      {(player.maxShield || 0) <= 0 ? "Sin Escudo (Solo Garras)" : "Escudo Felino"}
+                    </span>
                   </div>
-                  <span className="font-mono text-[11px] font-bold text-cyan-300">{Math.ceil(player.shield || 0)} / {player.maxShield || 50}</span>
+                  <span className={`font-mono text-[11px] font-bold ${(player.maxShield || 0) <= 0 ? "text-slate-500" : "text-cyan-300"}`}>
+                    {(player.maxShield || 0) <= 0 ? "BLOQUEADO" : `${Math.ceil(player.shield || 0)} / ${player.maxShield || 50}`}
+                  </span>
                 </div>
                 <div className="w-full h-2 bg-slate-900/90 rounded-full overflow-hidden border border-slate-700/60 p-0.5">
                   <div
-                    className="h-full rounded-full transition-all duration-200 bg-gradient-to-r from-sky-500 to-cyan-400 shadow-md"
+                    className={`h-full rounded-full transition-all duration-200 ${(player.maxShield || 0) <= 0 ? "bg-slate-700/40" : "bg-gradient-to-r from-sky-500 to-cyan-400 shadow-md"}`}
                     style={{ width: `${shdPct}%` }}
                   />
                 </div>
@@ -403,6 +409,21 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
 
         {/* ── Centro: Zona Segura y Fase ── */}
         <div className="pointer-events-none flex flex-col items-center gap-2">
+          {/* Banner de Invulnerabilidad Inicial */}
+          {(player.invulnerableTimer ?? 0) > 0 && (
+            <div className="glass-panel px-6 py-2 rounded-2xl flex items-center gap-3 border-2 border-cyan-400 bg-cyan-950/80 shadow-[0_0_30px_rgba(56,189,248,0.5)] backdrop-blur-md animate-pulse">
+              <Shield className="w-5 h-5 text-cyan-300 animate-bounce" />
+              <div className="flex flex-col items-center">
+                <span className="text-[10px] font-black tracking-widest text-cyan-300 uppercase">
+                  ESCUDO PROTECTOR INICIAL
+                </span>
+                <span className="text-base font-black font-mono tracking-wider text-white">
+                  🛡️ {Math.ceil(player.invulnerableTimer!)}s INMUNIDAD
+                </span>
+              </div>
+            </div>
+          )}
+
           <div className="glass-panel px-7 py-3 rounded-2xl flex items-center gap-3.5 border border-amber-500/35 shadow-2xl backdrop-blur-md">
             <Radio className={`w-5 h-5 ${zone.isShrinking ? "text-red-400 animate-spin" : "text-emerald-400 animate-pulse"}`} />
             <div className="flex flex-col items-center">
@@ -605,7 +626,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
                     {WEAPON_DEFS[player.equippedWeapon || "MELEE"]?.name || "Garras"}
                   </span>
                   <span className="text-[9px] font-bold text-emerald-400">
-                    {player.equippedWeapon === "MELEE" ? "ZARPAZOS (50 DMG • +15% VELOCIDAD)" : (player.equippedWeapon === "GRENADE" ? "LANZABLE (100/70 DMG)" : (player.equippedWeapon === "SHOTGUN" ? "15x5 DMG (75)" : (player.equippedWeapon === "SNIPER" ? "50 DMG" : "20 DMG")))}
+                    {player.equippedWeapon === "MELEE" ? "ZARPAZOS (0.5s CD • 1/4 VIDA vs GARRAS)" : (player.equippedWeapon === "GRENADE" ? "LANZABLE (100/70 DMG)" : (player.equippedWeapon === "SHOTGUN" ? "15x5 DMG (75)" : (player.equippedWeapon === "SNIPER" ? "50 DMG • 0.4s CADENCIA" : "20 DMG")))}
                   </span>
                 </div>
               </div>
