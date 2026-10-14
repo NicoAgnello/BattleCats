@@ -572,6 +572,9 @@ export class JungleRoom extends Room<GameState> {
 
       if (attackerId) {
         const killer = this.state.players.get(attackerId);
+        // No cuenta matarse solo: la granada y la trampa propias llegan acá con el
+        // atacante igual a la víctima.
+        if (killer && attackerId !== player.id) killer.kills++;
         const killPayload = {
           killerId: attackerId,
           killerName: killer ? killer.name : "Alguien",
