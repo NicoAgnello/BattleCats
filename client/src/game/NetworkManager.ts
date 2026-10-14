@@ -19,6 +19,7 @@ export class NetworkClient {
   private client: Client;
   public room: Room<GameState> | null = null;
   public sessionId: string = "";
+  private cancelled = false;
 
   constructor() {
     console.log(`📡 NetworkClient apuntando a: ${SERVER_WS}`);
@@ -49,10 +50,18 @@ export class NetworkClient {
     }
     this.sessionId = this.room.sessionId;
     console.log(`✅ Sala conectada. SessionId: ${this.sessionId}`, options);
+    // Si se volvió al menú mientras el join estaba en vuelo, disconnect() no encontró
+    // sala que cerrar: hay que salir ahora o el jugador queda fantasma en el servidor.
+    if (this.cancelled) {
+      this.room.leave();
+      this.room = null;
+      throw new Error("Conexión cancelada al volver al menú");
+    }
     return this.room;
   }
 
   public disconnect() {
+    this.cancelled = true;
     if (this.room) {
       this.room.leave();
       this.room = null;

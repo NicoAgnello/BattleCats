@@ -1308,12 +1308,14 @@ export class MainScene extends Phaser.Scene {
       emitRoomInfo();
       emitIfChanged("alive", { alive: s.aliveCount || 1, total: s.players?.size || 1 });
       if (s.status === "VICTORY" && s.winnerName) {
-        emit("victory", {
+        emitIfChanged("victory", {
           winnerId: s.winnerId,
           winnerName: s.winnerName,
           isMe: s.winnerId === this.myId,
+          kills: s.players.get(s.winnerId)?.kills ?? 0,
         });
       } else if (s.status === "PLAYING" && lastStatus !== "PLAYING") {
+        lastEmitted.delete("victory");   // revancha: el mismo ganador debe volver a emitirse
         emit("playing", {});
       }
       lastStatus = s.status;
