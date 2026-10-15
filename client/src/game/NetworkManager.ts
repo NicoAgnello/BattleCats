@@ -108,6 +108,10 @@ export class NetworkClient {
   public sendStartMatch() {
     this.room?.send("startMatch");
   }
+
+  public sendChat(text: string) {
+    this.room?.send("chat", { text });
+  }
 }
 
 

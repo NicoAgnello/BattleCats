@@ -34,6 +34,7 @@ export class Player extends Schema {
   @type("number") invulnerableTimer: number = 0;
   @type("number") dashCooldown: number = 0;
   @type("number") trapCooldown: number = 0;
+  @type("number") stunTimer: number = 0;
   @type("number") kills: number = 0;
   @type("string") activeBuff: string = ""; // "SPEED", "TRIPLE", ""
   @type("number") buffTimer: number = 0;
@@ -51,6 +52,7 @@ export class Player extends Schema {
   invulnerableLeft = 0; // invulnerabilidad del inicio de partida
   dashLeft = 0;
   trapLeft = 0;
+  stunLeft = 0;
   shootCooldown = 0;
   buffLeft = 0;
   reloadLeft = 0;
@@ -64,6 +66,7 @@ export function syncPlayerTimers(p: Player) {
   p.invulnerableTimer = p.invulnerableLeft > 0 ? Math.ceil(p.invulnerableLeft) : 0;
   p.dashCooldown = tenths(p.dashLeft);
   p.trapCooldown = tenths(p.trapLeft);
+  p.stunTimer = tenths(p.stunLeft);
   p.buffTimer = tenths(p.buffLeft);
   p.reloadTimer = tenths(p.reloadLeft);
 }
@@ -96,7 +99,7 @@ export class Trap extends Schema {
   @type("number") y: number = 0;
   @type("string") ownerId: string = "";
   @type("boolean") active: boolean = true;
-  @type("number") damage: number = 35;
+  @type("number") damage: number = 0;
 }
 
 export class Bush extends Schema {
@@ -159,4 +162,6 @@ export class GameState extends Schema {
   @type("boolean") isCustomRoom: boolean = false;
   @type("string") roomCode: string = "";
   @type("string") hostId: string = "";
+  @type("number") lobbyCountdown: number = 0;
+  @type("string") spectatorQueue: string = "";
 }

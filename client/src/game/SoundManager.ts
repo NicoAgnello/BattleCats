@@ -263,6 +263,57 @@ class SoundManager {
     osc.stop(now + 0.36);
   }
 
+  public playStun() {
+    if (this.isMuted) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(520, now);
+    osc.frequency.linearRampToValueAtTime(320, now + 0.1);
+    osc.frequency.linearRampToValueAtTime(600, now + 0.2);
+    osc.frequency.linearRampToValueAtTime(260, now + 0.35);
+
+    gain.gain.setValueAtTime(0.3, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.42);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(now);
+    osc.stop(now + 0.43);
+  }
+
+  public playWeaponDrop() {
+    if (this.isMuted) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    [520, 360].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const t = now + idx * 0.07;
+
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.5, t + 0.12);
+
+      gain.gain.setValueAtTime(0.28, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(t);
+      osc.stop(t + 0.13);
+    });
+  }
+
   public playKill() {
     if (this.isMuted) return;
     const ctx = this.getContext();

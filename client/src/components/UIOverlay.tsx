@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { Heart, Flame, Skull, Zap, EyeOff, Radio, Wifi, WifiOff, Loader2, Volume2, VolumeX, Trophy, RotateCcw, Sparkles, Shield, Smile } from "lucide-react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Heart, Flame, Skull, Zap, EyeOff, Radio, Wifi, WifiOff, Loader2, Volume2, VolumeX, Trophy, RotateCcw, Sparkles, Shield, Smile, MessageCircle, Send, Clock, Users } from "lucide-react";
 import { soundManager } from "../game/SoundManager";
 
 interface PlayerState {
@@ -23,6 +23,7 @@ interface PlayerState {
   activeBuff: string;
   buffTimer: number;
   invulnerableTimer?: number;
+  stunTimer?: number;
 }
 
 interface ZoneState {
@@ -66,6 +67,7 @@ const DEFAULT_PLAYER: PlayerState = {
   activeBuff: "",
   buffTimer: 0,
   invulnerableTimer: 0,
+  stunTimer: 0,
 };
 
 interface RoomPlayer {
@@ -109,6 +111,15 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
     ping: 0,
   });
 
+  // ── Estado del Lobby y Espectadores ────────────────────────────────────────
+  const [lobbyState, setLobbyState] = useState<{ active: boolean; countdown: number } | null>(null);
+  const [spectatorQueue, setSpectatorQueue] = useState<{ inQueue: boolean; position: number } | null>(null);
+  const [chatMessages, setChatMessages] = useState<{ id: number; senderName: string; text: string; isSpectator: boolean; isSystem?: boolean }[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [spectatorChatOpen, setSpectatorChatOpen] = useState(true);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+
   const onRoomInfo = useCallback((e: Event) => setRoomInfo((e as CustomEvent).detail), []);
 
   const onConn = useCallback((e: Event) => setConn((e as CustomEvent).detail), []);
@@ -135,10 +146,53 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
   const onRestart = useCallback(() => {
     setVictory(null);
     setRedirectCountdown(null);
+    setLobbyState(null);
+    setSpectatorQueue(null);
   }, []);
   const onPlaying = useCallback(() => {
     setVictory(null);
     setRedirectCountdown(null);
+    setLobbyState(null); // La partida empieza: cerrar el lobby overlay
+  }, []);
+
+  // ── Handlers del Lobby ────────────────────────────────────────────────────
+  const onLobbyUpdate = useCallback((e: Event) => {
+    const d = (e as CustomEvent).detail;
+    if (d.status === "LOBBY") {
+      setLobbyState({
+        active: true,
+        countdown: d.countdown ?? 40,
+      });
+      setSpectatorQueue(null);
+    } else if (d.status === "PLAYING" || d.status === "VICTORY") {
+      setLobbyState(null);
+    }
+  }, []);
+
+  const onLobbyStart = useCallback((e: Event) => {
+    const d = (e as CustomEvent).detail;
+    setLobbyState({ active: true, countdown: d.countdown ?? 40 });
+    setSpectatorQueue(null);
+    setChatMessages(prev => [...prev, { id: Date.now(), senderName: "Sistema", text: `⏳ ¡Partida en ${d.countdown}s! Nadie se puede mover. Hablen por el chat general hasta que comience.`, isSpectator: false, isSystem: true }]);
+  }, []);
+
+  const onChatMessage = useCallback((e: Event) => {
+    const d = (e as CustomEvent).detail;
+    const msg = { id: Date.now() + Math.random(), senderName: d.senderName, text: d.text, isSpectator: !!d.isSpectator };
+    setChatMessages(prev => [...prev.slice(-49), msg]);
+    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+  }, []);
+
+  const onSpectatorJoined = useCallback((e: Event) => {
+    const d = (e as CustomEvent).detail;
+    setSpectatorQueue({ inQueue: true, position: d.queuePosition });
+    setLobbyState(null);
+    setChatMessages(prev => [...prev, { id: Date.now(), senderName: "Sistema", text: `👻 Eres fantasma espectador — en cola (#${d.queuePosition}) para la próxima partida. ¡Puedes ver la partida y chatear!`, isSpectator: true, isSystem: true }]);
+  }, []);
+
+  const onQueuePromotion = useCallback((e: Event) => {
+    setSpectatorQueue(null);
+    setChatMessages(prev => [...prev, { id: Date.now(), senderName: "Sistema", text: "🚀 ¡Comenzó tu turno para jugar! Has sido añadido a la partida.", isSpectator: false, isSystem: true }]);
   }, []);
 
   // Countdown auto redirect
@@ -189,6 +243,11 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
     window.addEventListener("killFeed-update", onKillFeed);
     window.addEventListener("style-update", onStyle);
     window.addEventListener("sse-telemetry", onSseTelemetry);
+    window.addEventListener("lobby-update", onLobbyUpdate);
+    window.addEventListener("lobbyStart-update", onLobbyStart);
+    window.addEventListener("chatMessage-update", onChatMessage);
+    window.addEventListener("spectatorJoined-update", onSpectatorJoined);
+    window.addEventListener("queuePromotion-update", onQueuePromotion);
 
     return () => {
       window.removeEventListener("roomInfo-update", onRoomInfo);
@@ -202,8 +261,18 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
       window.removeEventListener("killFeed-update", onKillFeed);
       window.removeEventListener("style-update", onStyle);
       window.removeEventListener("sse-telemetry", onSseTelemetry);
+      window.removeEventListener("lobby-update", onLobbyUpdate);
+      window.removeEventListener("lobbyStart-update", onLobbyStart);
+      window.removeEventListener("chatMessage-update", onChatMessage);
+      window.removeEventListener("spectatorJoined-update", onSpectatorJoined);
+      window.removeEventListener("queuePromotion-update", onQueuePromotion);
     };
-  }, [onRoomInfo, onConn, onPlayer, onZone, onAlive, onVictory, onRestart, onPlaying, onKillFeed, onStyle, onSseTelemetry]);
+  }, [onRoomInfo, onConn, onPlayer, onZone, onAlive, onVictory, onRestart, onPlaying, onKillFeed, onStyle, onSseTelemetry, onLobbyUpdate, onLobbyStart, onChatMessage, onSpectatorJoined, onQueuePromotion]);
+
+  // Auto-scroll al final del chat cuando llegan mensajes
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages]);
 
 
   const toggleMute = () => {
@@ -300,8 +369,206 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
 
   const emotes = ["🐾", "🔥", "💀", "😎", "😿", "🏆"];
 
+  // ── Chat: enviar mensaje ───────────────────────────────────────────────────
+  const sendChatMessage = () => {
+    const text = chatInput.trim();
+    if (!text) return;
+    window.dispatchEvent(new CustomEvent("send-chat", { detail: { text } }));
+    setChatInput("");
+  };
+
+  const handleChatKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") { e.preventDefault(); sendChatMessage(); }
+  };
+
+  // ── PANTALLA EXCLUSIVA DE LOBBY: Solo Cuenta Regresiva de 40s + Chat General ──
+  if (lobbyState?.active) {
+    return (
+      <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center font-game select-none" style={{ background: "rgba(2, 6, 23, 0.92)", backdropFilter: "blur(18px)" }}>
+        <div className="flex flex-col items-center gap-6 w-full max-w-lg px-4 pointer-events-auto">
+
+          {/* Header */}
+          <div className="flex items-center gap-3">
+            <span className="text-4xl animate-bounce">🐾</span>
+            <div className="text-center">
+              <h1 className="text-2xl font-black uppercase tracking-widest text-white drop-shadow">BattleCats.io</h1>
+              <p className="text-xs font-bold text-emerald-400 uppercase tracking-widest">
+                ⏳ Sala de Espera — Cuenta Regresiva
+              </p>
+            </div>
+            <span className="text-4xl animate-bounce" style={{ animationDelay: "0.2s" }}>🐾</span>
+          </div>
+
+          {/* Countdown grande circular */}
+          <div className="relative flex flex-col items-center">
+            <div
+              className="w-44 h-44 rounded-full flex flex-col items-center justify-center shadow-2xl border-4 transition-all duration-300"
+              style={{
+                background: "radial-gradient(circle, rgba(16,185,129,0.2) 0%, rgba(2,6,23,0.95) 80%)",
+                borderColor: lobbyState.countdown <= 10 ? "#f87171" : lobbyState.countdown <= 20 ? "#fbbf24" : "#10b981",
+                boxShadow: lobbyState.countdown <= 10 ? "0 0 50px rgba(248,113,113,0.5)" : "0 0 45px rgba(16,185,129,0.35)",
+              }}
+            >
+              <span className="text-[10px] font-extrabold tracking-widest text-slate-400 uppercase">Inicio en</span>
+              <span
+                className="font-black font-mono leading-none"
+                style={{
+                  fontSize: "clamp(2.8rem, 8vw, 4.4rem)",
+                  color: lobbyState.countdown <= 10 ? "#f87171" : lobbyState.countdown <= 20 ? "#fbbf24" : "#10b981",
+                }}
+              >
+                {lobbyState.countdown}s
+              </span>
+              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">¡Prepárate!</span>
+            </div>
+            <div className="mt-3 flex items-center gap-2 text-xs font-bold text-slate-300 bg-slate-900/80 px-4 py-1.5 rounded-full border border-slate-700/60 shadow-lg">
+              <Clock className="w-3.5 h-3.5 text-amber-400 animate-spin" />
+              <span>Nadie se puede mover hasta que termine la cuenta regresiva</span>
+            </div>
+          </div>
+
+          {/* Chat General */}
+          <div className="w-full glass-panel rounded-2xl border border-slate-700/60 shadow-2xl overflow-hidden flex flex-col" style={{ height: "270px" }}>
+            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-700/50 bg-slate-900/70">
+              <MessageCircle className="w-4 h-4 text-emerald-400" />
+              <span className="text-xs font-black uppercase tracking-wider text-emerald-400">Chat General</span>
+              <span className="ml-auto text-[10px] text-slate-400">Habla con los demás antes del combate</span>
+            </div>
+            <div
+              ref={chatScrollRef}
+              className="flex-1 overflow-y-auto px-3.5 py-2.5 space-y-1.5"
+              style={{ scrollbarWidth: "thin" }}
+            >
+              {chatMessages.length === 0 && (
+                <p className="text-xs text-slate-500 text-center py-6 italic">Sé el primero en saludar a tus rivales 🐾</p>
+              )}
+              {chatMessages.map(msg => (
+                <div key={msg.id} className={`text-xs flex gap-1.5 items-baseline ${msg.isSystem ? "text-amber-400 italic bg-amber-500/10 px-2 py-1 rounded-lg" : "text-slate-200"}` }>
+                  {!msg.isSystem && (
+                    <span className={`font-black whitespace-nowrap ${msg.isSpectator ? "text-cyan-400" : "text-emerald-400"}`}>
+                      {msg.isSpectator ? "👻" : "🐾"} {msg.senderName}:
+                    </span>
+                  )}
+                  <span className="break-all">{msg.text}</span>
+                </div>
+              ))}
+              <div ref={chatEndRef} />
+            </div>
+            <div className="flex gap-2 px-3 py-2 border-t border-slate-700/50 bg-slate-900/60">
+              <input
+                type="text"
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value.slice(0, 120))}
+                onKeyDown={e => {
+                  e.stopPropagation();
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    sendChatMessage();
+                  }
+                }}
+                onKeyUp={e => e.stopPropagation()}
+                placeholder="Escribe un mensaje en el chat... (Enter para enviar)"
+                className="flex-1 bg-slate-800/90 border border-slate-600/70 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500/70 transition"
+              />
+              <button
+                onClick={sendChatMessage}
+                className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center gap-1 cursor-pointer shadow-lg shadow-emerald-900/30"
+              >
+                <Send className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          <p className="text-[11px] text-slate-400 text-center">
+            💬 Usa este tiempo para coordinar. La partida arrancará automáticamente.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex flex-col justify-between p-5 select-none font-game opacity-85 transition-opacity">
+
+      {/* ── BANNER MODO ESPECTADOR (En cola para próxima partida) ── */}
+      {spectatorQueue && (
+        <div className="absolute top-5 left-1/2 -translate-x-1/2 z-40 pointer-events-auto flex items-center gap-3 px-5 py-2.5 rounded-2xl glass-panel border border-cyan-400/50 bg-slate-950/85 shadow-[0_0_30px_rgba(6,182,212,0.35)] animate-pulse">
+          <span className="text-2xl">👻</span>
+          <div className="flex flex-col">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-black uppercase tracking-wider text-cyan-300">Modo Espectador</span>
+              <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-200 text-[11px] font-black border border-cyan-400/40">
+                Cola #{spectatorQueue.position}
+              </span>
+            </div>
+            <span className="text-[10px] text-slate-300">
+              Viendo la partida en curso. ¡Entrarás a jugar automáticamente al comenzar la próxima!
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ── CHAT FLOTANTE DURANTE PARTIDA (Para espectadores y jugadores) ── */}
+      {(spectatorQueue || player.isGhost) && (
+        <div className="absolute bottom-6 left-6 z-40 pointer-events-auto flex flex-col w-80 glass-panel rounded-2xl border border-slate-700/60 shadow-2xl overflow-hidden bg-slate-950/85">
+          <div className="flex items-center justify-between px-3.5 py-1.5 border-b border-slate-700/50 bg-slate-900/60 cursor-pointer" onClick={() => setSpectatorChatOpen(!spectatorChatOpen)}>
+            <div className="flex items-center gap-1.5">
+              <MessageCircle className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="text-xs font-black uppercase tracking-wider text-cyan-400">Chat General</span>
+            </div>
+            <span className="text-[10px] text-slate-400 hover:text-white transition font-mono">
+              {spectatorChatOpen ? "▼" : "▲"}
+            </span>
+          </div>
+
+          {spectatorChatOpen && (
+            <>
+              <div
+                className="overflow-y-auto px-3 py-2 space-y-1"
+                style={{ maxHeight: "140px", scrollbarWidth: "thin" }}
+              >
+                {chatMessages.length === 0 && (
+                  <p className="text-[11px] text-slate-500 text-center py-2 italic">Sin mensajes aún</p>
+                )}
+                {chatMessages.map(msg => (
+                  <div key={msg.id} className={`text-xs flex gap-1.5 items-baseline ${msg.isSystem ? "text-amber-400 italic text-[11px]" : "text-slate-200"}` }>
+                    {!msg.isSystem && (
+                      <span className={`font-black whitespace-nowrap ${msg.isSpectator ? "text-cyan-400" : "text-emerald-400"}`}>
+                        {msg.isSpectator ? "👻" : "🐾"} {msg.senderName}:
+                      </span>
+                    )}
+                    <span className="break-all">{msg.text}</span>
+                  </div>
+                ))}
+                <div ref={chatEndRef} />
+              </div>
+              <div className="flex gap-1.5 px-2.5 py-2 border-t border-slate-700/50 bg-slate-900/40">
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={e => setChatInput(e.target.value.slice(0, 120))}
+                  onKeyDown={e => {
+                    e.stopPropagation();
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      sendChatMessage();
+                    }
+                  }}
+                  onKeyUp={e => e.stopPropagation()}
+                  placeholder="Escribe un mensaje..."
+                  className="flex-1 bg-slate-800/80 border border-slate-600/60 rounded-lg px-2.5 py-1 text-xs text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-500/60 transition"
+                />
+                <button
+                  onClick={sendChatMessage}
+                  className="px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition flex items-center cursor-pointer"
+                >
+                  <Send className="w-3 h-3" />
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* ── FILA SUPERIOR (HUD) ───────────────────────────── */}
       <div className="flex items-start justify-between gap-4 pointer-events-none">
@@ -523,6 +790,21 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
             </div>
           )}
 
+          {/* Banner de Stun / Aturdimiento */}
+          {(player.stunTimer ?? 0) > 0 && (
+            <div className="glass-panel px-6 py-2 rounded-2xl flex items-center gap-3 border-2 border-amber-400 bg-amber-950/85 shadow-[0_0_30px_rgba(251,191,36,0.6)] backdrop-blur-md animate-pulse">
+              <span className="text-xl animate-bounce">⚡</span>
+              <div className="flex flex-col items-center">
+                <span className="text-[10px] font-black tracking-widest text-amber-300 uppercase">
+                  ¡TRAMPA ESPECTRAL!
+                </span>
+                <span className="text-base font-black font-mono tracking-wider text-yellow-200">
+                  💫 ATURDIDO ({(player.stunTimer!).toFixed(1)}s)
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* Banner de Invulnerabilidad Inicial */}
           {(player.invulnerableTimer ?? 0) > 0 && (
             <div className="glass-panel px-6 py-2 rounded-2xl flex items-center gap-3 border-2 border-cyan-400 bg-cyan-950/80 shadow-[0_0_30px_rgba(56,189,248,0.5)] backdrop-blur-md animate-pulse">
@@ -668,7 +950,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
       )}
 
       {/* ── BARRA MODO FANTASMA (arriba, no tapa el centro de la pantalla) ── */}
-      {player.isGhost && !victory && (() => {
+      {player.isGhost && !victory && !spectatorQueue && (() => {
         const TRAP_COOLDOWN = 6.0; // igual que el servidor (JungleRoom: trapCooldown = 6.0)
         const cooldown = player.trapCooldown ?? 0;
         const ready = cooldown <= 0;

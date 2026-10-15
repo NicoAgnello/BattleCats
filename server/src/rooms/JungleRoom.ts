@@ -88,6 +88,71 @@ export const WEAPON_CONFIGS: Record<string, WeaponDef> = {
   },
 };
 
+export const ITEM_RESPAWN_TIME = 40.0; // Los items reaparecen cada 40 segundos
+export const POSSIBLE_LOOT = ["MEDKIT", "SHIELD", "SHOTGUN", "SNIPER", "GRENADE", "SPEED", "TRIPLE", "LASER"];
+
+export interface SegmentCircleHit {
+  hit: boolean;
+  t: number;      // 0..1
+  hitX: number;
+  hitY: number;
+}
+
+/**
+ * Detección Continua de Colisiones (CCD):
+ * Determina si el segmento de recta de (x1, y1) a (x2, y2) interseca un círculo con centro (cx, cy) y radio dado.
+ * Retorna el punto de contacto más temprano t in [0, 1] y las coordenadas exactas de colisión.
+ */
+export function lineSegmentCircleHit(
+  x1: number, y1: number,
+  x2: number, y2: number,
+  cx: number, cy: number,
+  radius: number
+): SegmentCircleHit | null {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const fx = x1 - cx;
+  const fy = y1 - cy;
+
+  const c = fx * fx + fy * fy - radius * radius;
+  if (c <= 0) {
+    // Si inicia dentro o en el borde:
+    // Si se mueve hacia el centro o tangencial (dot <= 0), colisiona de inmediato
+    const dot = dx * fx + dy * fy;
+    if (dot <= 0) {
+      return { hit: true, t: 0, hitX: x1, hitY: y1 };
+    }
+    return null;
+  }
+
+  const a = dx * dx + dy * dy;
+  if (a < 1e-6) {
+    return null;
+  }
+
+  const b = 2 * (dx * fx + dy * fy);
+  const discr = b * b - 4 * a * c;
+  if (discr < 0) {
+    return null;
+  }
+
+  const sqrtDiscr = Math.sqrt(discr);
+  const t = (-b - sqrtDiscr) / (2 * a);
+
+  if (t >= -1e-5 && t <= 1) {
+    const clampedT = Math.max(0, Math.min(1, t));
+    return {
+      hit: true,
+      t: clampedT,
+      hitX: x1 + clampedT * dx,
+      hitY: y1 + clampedT * dy,
+    };
+  }
+
+  return null;
+}
+
+
 export function parseWeaponSlots(availableWeapons: string | undefined): [string, string, string] {
   if (!availableWeapons) return ["", "", "MELEE"];
   const parts = availableWeapons.split(",");
@@ -148,12 +213,23 @@ export class JungleRoom extends Room<GameState> {
   private zoneShrinkTimer = 0;
   private startRadius = 3850;
   private targetRadius = 3850;
+  /** Contador interno del lobby (más preciso que el integer sincronizado) */
+  private lobbyCountdownLeft = 0;
+  /** IDs de sesión que llegaron durante PLAYING y esperan en cola para la próxima partida */
+  private spectatorQueueIds: string[] = [];
+  /** Timer para auto-iniciar nueva partida tras victoria */
+  private victoryTimeout: NodeJS.Timeout | null = null;
   private sseTickCounter = 0;
   private sseFullCounter = 0;
   /** Último estado de cada gato enviado por el tick SSE (para mandar solo cambios). */
   private sseLastSent = new Map<string, string>();
 
   private playerWeaponAmmo = new Map<string, Record<string, { ammo: number; reserveAmmo: number }>>();
+  private itemPickupDelays = new Map<string, number>();
+  /** Registro del último vértice/punta de spawn asignado a cada jugador para no repetirlo entre partidas */
+  private lastPlayerSpawnIndex = new Map<string, number>();
+  /** Vértice inicial reservado para el primer jugador humano en la primera partida */
+  private humanInitialVertex = -1;
 
   private botControllers: Map<string, BotController> = new Map();
   private botNames = [
@@ -164,6 +240,7 @@ export class JungleRoom extends Room<GameState> {
     "Michi Táctico",
     "Bigotes Letal",
     "Garra Silenciosa",
+    "Zarpazo Veloz",
   ];
 
   /** Evento SSE de esta sala: va solo a los clientes suscriptos a ella. Lleva igual
@@ -217,9 +294,27 @@ export class JungleRoom extends Room<GameState> {
     this.resetZone();
 
     // Register Message Handlers
+
+    // ── Chat General (disponible en lobby y durante partida) ──────────────
+    this.onMessage("chat", (client, data: { text: string }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player) return;
+      const text = String(data?.text || "").trim().slice(0, 120);
+      if (!text) return;
+      this.broadcast("chatMessage", {
+        senderId: client.sessionId,
+        senderName: player.name,
+        text,
+        isSpectator: player.isGhost,
+      });
+    });
+
     this.onMessage("move", (client, data: MovePayload) => {
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
+      // Bloquear movimiento durante el lobby o cuando está aturdido
+      if (this.state.status === "LOBBY") return;
+      if (player.stunLeft > 0) return;
 
       if (typeof data.rotation === "number") {
         player.rotation = data.rotation;
@@ -321,12 +416,16 @@ export class JungleRoom extends Room<GameState> {
     this.onMessage("interact", (client, data: { itemId?: string }) => {
       const player = this.state.players.get(client.sessionId);
       if (!player || player.isGhost) return;
+      if (this.state.status === "LOBBY") return;
+      if (player.stunLeft > 0) return;
       this.handlePlayerInteract(player, data?.itemId);
     });
 
     this.onMessage("dash", (client, data: { dirX?: number; dirY?: number }) => {
       const player = this.state.players.get(client.sessionId);
       if (!player || player.isGhost || player.dashLeft > 0) return;
+      if (this.state.status === "LOBBY") return;
+      if (player.stunLeft > 0) return;
 
       const isMelee = player.equippedWeapon === "MELEE";
       const cooldown = isMelee ? 1.8 : 2.5;
@@ -398,12 +497,16 @@ export class JungleRoom extends Room<GameState> {
     this.onMessage("reload", (client) => {
       const player = this.state.players.get(client.sessionId);
       if (!player || player.isGhost) return;
+      if (this.state.status === "LOBBY") return;
+      if (player.stunLeft > 0) return;
       this.startReload(player);
     });
 
     this.onMessage("shoot", (client, data: ShootPayload) => {
       const player = this.state.players.get(client.sessionId);
       if (!player || player.isGhost || player.shootCooldown > 0) return;
+      if (this.state.status === "LOBBY") return;
+      if (player.stunLeft > 0) return;
       if (player.isReloading) return;
 
       const w = player.equippedWeapon || "LASER";
@@ -437,6 +540,8 @@ export class JungleRoom extends Room<GameState> {
     this.onMessage("switchWeapon", (client, data: SwitchWeaponPayload) => {
       const player = this.state.players.get(client.sessionId);
       if (!player || player.isGhost) return;
+      if (this.state.status === "LOBBY") return;
+      if (player.stunLeft > 0) return;
       const valid = ["LASER", "SHOTGUN", "SNIPER", "GRENADE", "MELEE"];
       if (valid.includes(data.weapon)) {
         const [slot1, slot2] = parseWeaponSlots(player.availableWeapons);
@@ -459,16 +564,29 @@ export class JungleRoom extends Room<GameState> {
     this.onMessage("placeTrap", (client, data: TrapPayload) => {
       const player = this.state.players.get(client.sessionId);
       if (!player || !player.isGhost || player.trapLeft > 0) return;
+      if (this.state.status === "LOBBY") return;
+      // Los gatos que entran en modo espectador (en cola) no pueden usar las trampas
+      if (this.spectatorQueueIds.includes(client.sessionId)) return;
 
       const trap = new Trap();
       trap.id = `trap_${++this.trapIdCounter}_${Date.now()}`;
 
-      const posX = typeof data?.x === "number" ? data.x : player.x;
-      const posY = typeof data?.y === "number" ? data.y : player.y;
+      let posX = typeof data?.x === "number" ? data.x : player.x;
+      let posY = typeof data?.y === "number" ? data.y : player.y;
+
+      // El fantasma solo puede poner trampas en el área a su alrededor (doble de alcance que el cuchillo: 75 * 2 = 150px)
+      const maxTrapRange = (WEAPON_CONFIGS.MELEE?.range || 75) * 2;
+      const distFromPlayer = Math.hypot(posX - player.x, posY - player.y);
+      if (distFromPlayer > maxTrapRange) {
+        const angle = Math.atan2(posY - player.y, posX - player.x);
+        posX = player.x + Math.cos(angle) * maxTrapRange;
+        posY = player.y + Math.sin(angle) * maxTrapRange;
+      }
 
       trap.x = Math.max(40, Math.min(this.state.worldWidth - 40, posX));
       trap.y = Math.max(40, Math.min(this.state.worldHeight - 40, posY));
       trap.ownerId = client.sessionId;
+      trap.damage = 0; // Trampas de gatos muertos no causan daño
       trap.active = true;
 
       this.state.traps.set(trap.id, trap);
@@ -491,7 +609,8 @@ export class JungleRoom extends Room<GameState> {
           this.startCustomMatch();
         }
       } else {
-        this.restartMatch();
+        // Solo permitir restart manual si la partida terminó; si hay LOBBY activo, ignorar
+        if (this.state.status !== "LOBBY") this.restartMatch();
       }
     });
 
@@ -650,6 +769,81 @@ export class JungleRoom extends Room<GameState> {
       player.shield = 0;
       player.maxShield = 0;
     }
+  }
+
+  private dropPlayerEquippedWeapon(player: Player): { weapon: string; x: number; y: number; itemId: string } | null {
+    const wasOnlyClaws = hasOnlyClaws(player);
+    let [slot1, slot2] = parseWeaponSlots(player.availableWeapons);
+
+    // Determinar qué arma soltar: la que tiene en mano (si no es MELEE),
+    // o en su defecto la que tenga guardada en slot1 o slot2
+    let weaponToDrop = "";
+    if (player.equippedWeapon && player.equippedWeapon !== "MELEE") {
+      weaponToDrop = player.equippedWeapon;
+    } else if (slot1 && slot1 !== "MELEE") {
+      weaponToDrop = slot1;
+    } else if (slot2 && slot2 !== "MELEE") {
+      weaponToDrop = slot2;
+    }
+
+    if (!weaponToDrop || weaponToDrop === "MELEE") {
+      return null;
+    }
+
+    // Quitar del inventario/slots
+    if (slot1 === weaponToDrop) {
+      slot1 = "";
+    } else if (slot2 === weaponToDrop) {
+      slot2 = "";
+    }
+
+    // Quitar del almacén de munición
+    const store = this.playerWeaponAmmo.get(player.id);
+    if (store) {
+      delete (store as any)[weaponToDrop];
+    }
+
+    player.availableWeapons = formatWeaponSlots(slot1, slot2);
+
+    // Arrojar el arma hacia afuera con impulso (distancia entre 65 y 90 px para que vuele lejos de sus pies)
+    const throwAngle = Math.random() * Math.PI * 2;
+    const throwDist = 70 + Math.random() * 20; // 70 a 90 px
+    const dropX = Math.max(50, Math.min(this.state.worldWidth - 50, player.x + Math.cos(throwAngle) * throwDist));
+    const dropY = Math.max(50, Math.min(this.state.worldHeight - 50, player.y + Math.sin(throwAngle) * throwDist));
+
+    // Crear el ítem en el suelo para que pueda ser vuelto a agarrar
+    const dropItem = new ItemPickup();
+    dropItem.id = `drop_${++this.itemIdCounter}_${Date.now()}`;
+    dropItem.x = dropX;
+    dropItem.y = dropY;
+    dropItem.itemType = weaponToDrop;
+    dropItem.active = true;
+    dropItem.respawnTimer = 0;
+    this.state.items.set(dropItem.id, dropItem);
+    this.spatialGrid.insert({
+      id: dropItem.id,
+      x: dropItem.x,
+      y: dropItem.y,
+      radius: 24,
+      type: "item",
+      data: dropItem,
+    });
+
+    // Inmunidad de auto-recogida de 2.5s para que no sea absorbida instantáneamente
+    this.itemPickupDelays.set(dropItem.id, Date.now() + 2500);
+
+    // Revertir el arma en mano a garras
+    this.applyWeaponToPlayer(player, "MELEE");
+
+    // Sincronizar vida máxima y escudo
+    this.syncPlayerHealthAndShieldCapacity(player, wasOnlyClaws);
+
+    return {
+      weapon: weaponToDrop,
+      x: dropX,
+      y: dropY,
+      itemId: dropItem.id,
+    };
   }
 
   private savePlayerCurrentWeaponAmmo(player: Player) {
@@ -904,12 +1098,16 @@ export class JungleRoom extends Room<GameState> {
     for (const ent of nearby) {
       if (ent.type === "player") {
         const player = ent.data as Player;
-        if (player.isGhost) continue;
+        if (player.isGhost || player.invulnerableLeft > 0) continue;
+        if (player.name && player.name.startsWith("TEST_")) continue;
         const dist = Math.hypot(player.x - x, player.y - y);
-        if (dist < 140) {
-          const falloff = 1 - dist / 140;
-          const dmg = Math.floor(65 * falloff);
-          this.applyDamage(player, dmg, shooterId, "Barril Explosivo");
+        if (dist <= 140) {
+          // Consumir la totalidad del escudo en caso de tenerlo
+          if (player.shield > 0) {
+            player.shield = 0;
+          }
+          // Hará 70 de daño
+          this.applyDamage(player, 70, shooterId, "Barril Explosivo");
         }
       } else if (ent.type === "obstacle") {
         const obs = ent.data as Obstacle;
@@ -954,8 +1152,7 @@ export class JungleRoom extends Room<GameState> {
   }
 
   private spawnCrateLoot(x: number, y: number) {
-    const possible = ["MEDKIT", "SHIELD", "SHOTGUN", "SNIPER", "GRENADE", "SPEED", "TRIPLE", "LASER"];
-    const chosen = possible[Math.floor(Math.random() * possible.length)];
+    const chosen = POSSIBLE_LOOT[Math.floor(Math.random() * POSSIBLE_LOOT.length)];
 
     const item = new ItemPickup();
     item.id = `crate_loot_${++this.itemIdCounter}_${Date.now()}`;
@@ -975,66 +1172,155 @@ export class JungleRoom extends Room<GameState> {
     });
   }
 
-  private spawnBots() {
+  private addSingleBot(index: number, vertexIndex?: number, totalN?: number): Player {
+    const botId = `bot_${index + 1}`;
+    const existing = this.state.players.get(botId);
+    if (existing) return existing;
+
+    const colors = [1, 2, 3, 4, 0, 2, 3, 1];
+    const bot = new Player();
+    bot.id = botId;
+    bot.name = this.botNames[index % this.botNames.length];
+    bot.isBot = true;
+    bot.catColor = colors[index % colors.length];
+    bot.equippedWeapon = "MELEE";
+    bot.availableWeapons = ",,MELEE";
+
+    this.initPlayerWeapons(botId);
+    this.applyWeaponToPlayer(bot, "MELEE");
+
+    const N = totalN || 8;
+    const vIdx = vertexIndex !== undefined ? vertexIndex : (index % N);
+    this.lastPlayerSpawnIndex.set(botId, vIdx);
+
+    const centerX = this.state.zone.x;
+    const centerY = this.state.zone.y;
+    const spawnRadius = 2500;
+    const baseAngle = Math.PI / N;
+    const angle = baseAngle + (vIdx / N) * 2 * Math.PI;
+    const rawX = centerX + Math.cos(angle) * spawnRadius;
+    const rawY = centerY + Math.sin(angle) * spawnRadius;
+    const [safeX, safeY] = this.getSafeSpawnPosition(rawX, rawY, angle);
+
+    bot.x = safeX;
+    bot.y = safeY;
+    bot.rotation = Math.atan2(centerY - safeY, centerX - safeX);
+    bot.hp = 30;
+    bot.maxHp = 30;
+    bot.shield = 0;
+    bot.maxShield = 0;
+    bot.invulnerableLeft = 0;
+    bot.isGhost = false;
+    bot.isHidden = false;
+    bot.kills = 0;
+
+    this.state.players.set(botId, bot);
+    this.spatialGrid.insert({
+      id: botId,
+      x: bot.x,
+      y: bot.y,
+      radius: 22,
+      type: "player",
+      data: bot,
+    });
+
+    this.botControllers.set(botId, {
+      id: botId,
+      changeDirTimer: Math.random() * 2,
+      targetDx: 0,
+      targetDy: 0,
+      dashTimer: 4 + Math.random() * 4,
+      color: bot.catColor,
+    });
+
+    return bot;
+  }
+
+  private removeSingleBot(botId: string) {
+    this.state.players.delete(botId);
+    this.botControllers.delete(botId);
+    this.spatialGrid.remove(botId);
+    this.lastPlayerSpawnIndex.delete(botId);
+    this.playerWeaponAmmo.delete(botId);
+  }
+
+  /**
+   * Ajusta dinámicamente los bots para que cada partida tenga exactamente 8 personajes completados con bots.
+   * - Si hay H personas (H < 8): exactamente (8 - H) bots. Por ejemplo: 5 personas -> 3 bots (total 8).
+   * - A partir de 8 personas (H >= 8): 0 bots (todos los jugadores son humanos).
+   */
+  private adjustBotsForHumans(freedVertex?: number) {
+    if (this.state.isCustomRoom) return;
+
+    // Solo se ajusta en fases de preparación / lobby (no a mitad de un tiroteo en PLAYING)
+    if (this.state.status !== "WAITING" && this.state.status !== "LOBBY") return;
+
+    const humans = Array.from(this.state.players.values()).filter((p) => !p.isBot && !p.isGhost);
+    const humanCount = humans.length;
+    const targetBots = Math.max(0, 8 - humanCount);
+
+    const currentBots = Array.from(this.state.players.values()).filter((p) => p.isBot);
+
+    if (currentBots.length > targetBots) {
+      // Remover exceso de bots empezando por los de mayor número (bot_7, bot_6...)
+      const sortedBots = [...currentBots].sort((a, b) => {
+        const numA = parseInt(a.id.replace("bot_", ""), 10) || 0;
+        const numB = parseInt(b.id.replace("bot_", ""), 10) || 0;
+        return numB - numA;
+      });
+
+      const toRemove = currentBots.length - targetBots;
+      for (let i = 0; i < toRemove; i++) {
+        this.removeSingleBot(sortedBots[i].id);
+      }
+      console.log(`🤖 Bots ajustados: ${currentBots.length} -> ${targetBots} (Humanos: ${humanCount}, Total personajes: ${humanCount + targetBots})`);
+    } else if (currentBots.length < targetBots) {
+      // Necesitamos agregar bots para completar
+      const existingBotIds = new Set(currentBots.map((b) => b.id));
+      const toAdd = targetBots - currentBots.length;
+      let added = 0;
+
+      const N = 8;
+      const takenVertices = new Set(Array.from(this.lastPlayerSpawnIndex.values()));
+      const freeVertices = Array.from({ length: N }, (_, k) => k).filter((k) => !takenVertices.has(k));
+      if (freedVertex !== undefined && !freeVertices.includes(freedVertex)) {
+        freeVertices.unshift(freedVertex);
+      }
+
+      for (let i = 0; i < this.botNames.length && added < toAdd; i++) {
+        const candidateId = `bot_${i + 1}`;
+        if (!existingBotIds.has(candidateId)) {
+          const vIdx = freeVertices[added] !== undefined ? freeVertices[added] : i;
+          this.addSingleBot(i, vIdx, N);
+          added++;
+        }
+      }
+      console.log(`🤖 Bots ajustados: ${currentBots.length} -> ${targetBots} (Humanos: ${humanCount}, Total personajes: ${humanCount + targetBots})`);
+    }
+
+    this.updateAliveCount();
+  }
+
+  private spawnBots(count: number = 7) {
     this.botControllers.clear();
-    const colors = [1, 2, 3, 4, 0, 2, 3];   // skins 0..4
-    const totalBots = this.botNames.length;
-    // Reparto simétrico regular de 8 puntas (octágono): índice 0 reservado para el jugador humano
-    const N = totalBots + 1;
+    const totalBots = Math.min(count, this.botNames.length);
+    const N = 8;
     const centerX = this.state.zone.x;
     const centerY = this.state.zone.y;
     const spawnRadius = 2500;
     const baseAngle = Math.PI / N;
 
-    for (let i = 0; i < this.botNames.length; i++) {
-      const botId = `bot_${i + 1}`;
-      const bot = new Player();
-      bot.id = botId;
-      bot.name = this.botNames[i];
-      bot.isBot = true;
-      bot.catColor = colors[i % colors.length];
-      bot.equippedWeapon = "MELEE";
-      bot.availableWeapons = ",,MELEE";
+    // Asignar un vértice aleatorio inicial para el primer humano que entrará
+    this.humanInitialVertex = Math.floor(Math.random() * N);
+    const botVertices = Array.from({ length: N }, (_, k) => k).filter((k) => k !== this.humanInitialVertex);
+    // Mezcla aleatoria de las puntas asignadas a los bots
+    for (let i = botVertices.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [botVertices[i], botVertices[j]] = [botVertices[j], botVertices[i]];
+    }
 
-      this.initPlayerWeapons(botId);
-      this.applyWeaponToPlayer(bot, "MELEE");
-
-      // Vértices 1 a 7 del octágono simbólico
-      const angle = baseAngle + ((i + 1) / N) * 2 * Math.PI;
-      const rawX = centerX + Math.cos(angle) * spawnRadius;
-      const rawY = centerY + Math.sin(angle) * spawnRadius;
-      const [safeX, safeY] = this.getSafeSpawnPosition(rawX, rawY, angle);
-
-      bot.x = safeX;
-      bot.y = safeY;
-      bot.rotation = Math.atan2(centerY - safeY, centerX - safeX);
-      bot.hp = 30;
-      bot.maxHp = 30;
-      bot.shield = 0;
-      bot.maxShield = 0;
-      bot.invulnerableLeft = 15.0; // 15 segundos iniciales de invulnerabilidad
-      bot.isGhost = false;
-      bot.isHidden = false;
-      bot.kills = 0;
-
-      this.state.players.set(botId, bot);
-      this.spatialGrid.insert({
-        id: botId,
-        x: bot.x,
-        y: bot.y,
-        radius: 22,
-        type: "player",
-        data: bot,
-      });
-
-      this.botControllers.set(botId, {
-        id: botId,
-        changeDirTimer: Math.random() * 2,
-        targetDx: 0,
-        targetDy: 0,
-        dashTimer: 4 + Math.random() * 4,
-        color: bot.catColor,
-      });
+    for (let i = 0; i < totalBots; i++) {
+      this.addSingleBot(i, botVertices[i], N);
     }
   }
 
@@ -1048,57 +1334,40 @@ export class JungleRoom extends Room<GameState> {
 
     console.log(`Player connected: ${client.sessionId} (Name: ${playerName}, Skin: ${skinColor})`);
 
-    let player = this.state.players.get(client.sessionId);
-    if (!player) {
-      player = new Player();
-      player.id = client.sessionId;
+    // ── Sala personalizada (comportamiento sin cambios) ────────────────────
+    if (this.state.isCustomRoom) {
+      let player = this.state.players.get(client.sessionId);
+      if (!player) {
+        player = new Player();
+        player.id = client.sessionId;
+      }
       player.name = playerName;
       player.isBot = false;
       player.catColor = skinColor;
-    } else {
-      player.name = playerName;
-      player.catColor = skinColor;
-    }
 
-    // Vértice 0 del octágono simbólico para el jugador
-    const N = this.botNames.length + 1;
-    const baseAngle = Math.PI / N;
-    const angle = baseAngle;
-    const centerX = this.state.zone.x;
-    const centerY = this.state.zone.y;
-    const spawnRadius = 2500;
-    const rawX = centerX + Math.cos(angle) * spawnRadius;
-    const rawY = centerY + Math.sin(angle) * spawnRadius;
-    const [safeX, safeY] = this.getSafeSpawnPosition(rawX, rawY, angle);
-
-    player.x = safeX;
-    player.y = safeY;
-    player.rotation = Math.atan2(centerY - safeY, centerX - safeX);
-    player.hp = 30;
-    player.maxHp = 30;
-    player.shield = 0;
-    player.maxShield = 0;
-    player.invulnerableLeft = 15.0; // 15 segundos iniciales de invulnerabilidad
-    player.isGhost = false;
-    player.isHidden = false;
-    player.kills = 0;
-    player.activeBuff = "";
-    player.buffLeft = 0;
-    player.availableWeapons = ",,MELEE";
-    this.initPlayerWeapons(client.sessionId);
-    this.applyWeaponToPlayer(player, "MELEE");
-
-    this.state.players.set(client.sessionId, player);
-    this.spatialGrid.insert({
-      id: player.id,
-      x: player.x,
-      y: player.y,
-      radius: 22,
-      type: "player",
-      data: player,
-    });
-
-    if (this.state.isCustomRoom) {
+      const N = this.botNames.length + 1;
+      const baseAngle = Math.PI / N;
+      const vertexIndex = Math.floor(Math.random() * N);
+      this.lastPlayerSpawnIndex.set(client.sessionId, vertexIndex);
+      const angle = baseAngle + (vertexIndex / N) * 2 * Math.PI;
+      const centerX = this.state.zone.x;
+      const centerY = this.state.zone.y;
+      const spawnRadius = 2500;
+      const rawX = centerX + Math.cos(angle) * spawnRadius;
+      const rawY = centerY + Math.sin(angle) * spawnRadius;
+      const [safeX, safeY] = this.getSafeSpawnPosition(rawX, rawY, angle);
+      player.x = safeX; player.y = safeY;
+      player.rotation = Math.atan2(centerY - safeY, centerX - safeX);
+      player.hp = 30; player.maxHp = 30;
+      player.shield = 0; player.maxShield = 0;
+      player.invulnerableLeft = 0;
+      player.isGhost = false; player.isHidden = false;
+      player.kills = 0; player.activeBuff = ""; player.buffLeft = 0;
+      player.availableWeapons = ",,MELEE";
+      this.initPlayerWeapons(client.sessionId);
+      this.applyWeaponToPlayer(player, "MELEE");
+      this.state.players.set(client.sessionId, player);
+      this.spatialGrid.insert({ id: player.id, x: player.x, y: player.y, radius: 22, type: "player", data: player });
       if (!this.state.hostId || options?.isHost) {
         if (!this.state.hostId) {
           this.state.hostId = client.sessionId;
@@ -1106,22 +1375,157 @@ export class JungleRoom extends Room<GameState> {
         }
       }
       this.updateAliveCount();
-    } else {
-      if (this.state.status === "WAITING" || this.state.players.size <= 1) {
-        this.restartMatch();
-      } else {
-        this.updateAliveCount();
-      }
+      return;
     }
+
+    // ── Sala Clásica (con bots) ────────────────────────────────────────────
+    // Si hay una partida en curso, el jugador entra como fantasma espectador
+    // y queda en cola para la próxima partida.
+    if (this.state.status === "PLAYING" || this.state.status === "VICTORY") {
+      let player = this.state.players.get(client.sessionId);
+      if (!player) {
+        player = new Player();
+        player.id = client.sessionId;
+      }
+      player.name = playerName;
+      player.isBot = false;
+      player.catColor = skinColor;
+
+      // Spawn en centro del mapa como espectador ghost
+      player.x = this.state.zone.x + (Math.random() - 0.5) * 400;
+      player.y = this.state.zone.y + (Math.random() - 0.5) * 400;
+      player.rotation = 0;
+      player.hp = 0;
+      player.maxHp = 30;
+      player.shield = 0; player.maxShield = 0;
+      player.invulnerableLeft = 0;
+      player.isGhost = true;
+      player.isHidden = false;
+      player.kills = 0; player.activeBuff = ""; player.buffLeft = 0;
+      player.availableWeapons = ",,MELEE";
+      this.initPlayerWeapons(client.sessionId);
+      this.applyWeaponToPlayer(player, "MELEE");
+      this.state.players.set(client.sessionId, player);
+      this.spatialGrid.insert({ id: player.id, x: player.x, y: player.y, radius: 22, type: "player", data: player });
+
+      // Añadir a la cola de espera si no está ya
+      if (!this.spectatorQueueIds.includes(client.sessionId)) {
+        this.spectatorQueueIds.push(client.sessionId);
+        this.state.spectatorQueue = this.spectatorQueueIds.join(",");
+      }
+
+      console.log(`👻 ${playerName} unido como espectador - en cola para la próxima partida (#${this.spectatorQueueIds.length})`);
+      // Notificar al cliente que está como espectador en cola
+      client.send("spectatorJoined", { queuePosition: this.spectatorQueueIds.length });
+      this.updateAliveCount();
+      return;
+    }
+
+    // ── Estado WAITING o LOBBY: entrar como jugador normal ────────────────
+    let player = this.state.players.get(client.sessionId);
+    if (!player) {
+      player = new Player();
+      player.id = client.sessionId;
+    }
+    player.name = playerName;
+    player.isBot = false;
+    player.catColor = skinColor;
+
+    // Determinar cantidad de humanos incluyendo al nuevo
+    const existingHumans = Array.from(this.state.players.values()).filter((p) => !p.isBot && !p.isGhost && p.id !== client.sessionId);
+    const humanCount = existingHumans.length + 1;
+    const targetBots = Math.max(0, 8 - humanCount);
+    const currentBots = Array.from(this.state.players.values()).filter((p) => p.isBot);
+
+    const N = Math.max(8, humanCount);
+    let vertexIndex: number;
+
+    if (currentBots.length > targetBots) {
+      // Un bot le cede su lugar a este nuevo humano
+      const sortedBots = [...currentBots].sort((a, b) => {
+        const numA = parseInt(a.id.replace("bot_", ""), 10) || 0;
+        const numB = parseInt(b.id.replace("bot_", ""), 10) || 0;
+        return numB - numA;
+      });
+      const botToReplace = sortedBots[0];
+      const botVertex = this.lastPlayerSpawnIndex.get(botToReplace.id);
+      this.removeSingleBot(botToReplace.id);
+      vertexIndex = botVertex !== undefined ? botVertex : Math.floor(Math.random() * N);
+      console.log(`👤 Jugador humano #${humanCount} (${player.name}) reemplaza a ${botToReplace.name} en vértice ${vertexIndex}`);
+    } else if (this.humanInitialVertex >= 0) {
+      vertexIndex = this.humanInitialVertex;
+      this.humanInitialVertex = -1;
+    } else {
+      const taken = new Set(Array.from(this.lastPlayerSpawnIndex.values()));
+      const available = Array.from({ length: N }, (_, k) => k).filter((k) => !taken.has(k));
+      vertexIndex = available.length > 0 ? available[0] : Math.floor(Math.random() * N);
+    }
+    this.lastPlayerSpawnIndex.set(client.sessionId, vertexIndex);
+
+    const baseAngle = Math.PI / N;
+    const angle = baseAngle + (vertexIndex / N) * 2 * Math.PI;
+    const centerX = this.state.zone.x;
+    const centerY = this.state.zone.y;
+    const spawnRadius = 2500;
+    const rawX = centerX + Math.cos(angle) * spawnRadius;
+    const rawY = centerY + Math.sin(angle) * spawnRadius;
+    const [safeX, safeY] = this.getSafeSpawnPosition(rawX, rawY, angle);
+
+    player.x = safeX; player.y = safeY;
+    player.rotation = Math.atan2(centerY - safeY, centerX - safeX);
+    player.hp = 30; player.maxHp = 30;
+    player.shield = 0; player.maxShield = 0;
+    player.invulnerableLeft = 0;
+    player.isGhost = false; player.isHidden = false;
+    player.kills = 0; player.activeBuff = ""; player.buffLeft = 0;
+    player.availableWeapons = ",,MELEE";
+    this.initPlayerWeapons(client.sessionId);
+    this.applyWeaponToPlayer(player, "MELEE");
+
+    this.state.players.set(client.sessionId, player);
+    this.spatialGrid.insert({ id: player.id, x: player.x, y: player.y, radius: 22, type: "player", data: player });
+
+    // Asegurar balance exacto de bots
+    this.adjustBotsForHumans();
+
+    // Si este es el primer jugador real y estamos en WAITING → iniciar countdown de 40s
+    if (this.state.status === "WAITING" && humanCount === 1) {
+      this.startLobbyCountdown();
+    } else {
+      if (this.state.status === "LOBBY") {
+        client.send("lobbyStart", { countdown: this.state.lobbyCountdown });
+      }
+      this.updateAliveCount();
+    }
+  }
+
+  /** Inicia la cuenta regresiva del lobby de 40 segundos. */
+  private startLobbyCountdown() {
+    this.lobbyCountdownLeft = 40;
+    this.state.lobbyCountdown = 40;
+    this.state.status = "LOBBY";
+    console.log(`⏳ Iniciando countdown de lobby de 40 segundos`);
+    this.broadcast("lobbyStart", { countdown: 40 });
   }
 
   onLeave(client: Client, consented: boolean) {
     console.log(`Player left: ${client.sessionId}`);
+    const leavingPlayer = this.state.players.get(client.sessionId);
+    const wasHuman = leavingPlayer && !leavingPlayer.isBot && !leavingPlayer.isGhost;
+    const freedVertex = this.lastPlayerSpawnIndex.get(client.sessionId);
+
     this.state.players.delete(client.sessionId);
     this.sseLastSent.delete(client.sessionId);
     this.playerWeaponAmmo.delete(client.sessionId);
     this.spatialGrid.remove(client.sessionId);
-    this.updateAliveCount();
+    this.lastPlayerSpawnIndex.delete(client.sessionId);
+
+    // Quitar de la cola de espera si estaba
+    const qIdx = this.spectatorQueueIds.indexOf(client.sessionId);
+    if (qIdx !== -1) {
+      this.spectatorQueueIds.splice(qIdx, 1);
+      this.state.spectatorQueue = this.spectatorQueueIds.join(",");
+    }
 
     if (this.state.isCustomRoom && client.sessionId === this.state.hostId) {
       const remainingHumans = Array.from(this.state.players.values()).filter(p => !p.isBot && p.id !== client.sessionId);
@@ -1139,11 +1543,36 @@ export class JungleRoom extends Room<GameState> {
       }
     }
     if (!hasHuman) {
+      // Si no quedan humanos, volver a WAITING y cancelar el lobby si lo había
       this.state.status = "WAITING";
+      this.lobbyCountdownLeft = 0;
+      this.state.lobbyCountdown = 0;
+      if (!this.state.isCustomRoom) {
+        this.spawnBots(7);
+      }
+    } else if (!this.state.isCustomRoom && (this.state.status === "WAITING" || this.state.status === "LOBBY") && wasHuman) {
+      // Si se fue un humano durante el lobby, reponer bot para mantener exactamente 8 personajes
+      this.adjustBotsForHumans(freedVertex);
     }
+
+    this.updateAliveCount();
   }
 
   private update(dt: number) {
+    // ── Countdown del Lobby ───────────────────────────────────────────────
+    if (this.state.status === "LOBBY") {
+      this.lobbyCountdownLeft -= dt;
+      const rounded = Math.ceil(this.lobbyCountdownLeft);
+      if (rounded !== this.state.lobbyCountdown) {
+        this.state.lobbyCountdown = Math.max(0, rounded);
+      }
+      if (this.lobbyCountdownLeft <= 0) {
+        console.log("🚀 Countdown terminado — iniciando partida");
+        this.startMatchFromLobby();
+      }
+      return;
+    }
+
     if (this.state.status !== "PLAYING") {
       return;
     }
@@ -1167,6 +1596,7 @@ export class JungleRoom extends Room<GameState> {
       if (player.dashLeft > 0) player.dashLeft = Math.max(0, player.dashLeft - dt);
       if (player.trapLeft > 0) player.trapLeft = Math.max(0, player.trapLeft - dt);
       if (player.shootCooldown > 0) player.shootCooldown = Math.max(0, player.shootCooldown - dt);
+      if (player.stunLeft > 0) player.stunLeft = Math.max(0, player.stunLeft - dt);
 
       if (player.emoteTimer > 0) {
         player.emoteTimer -= dt;
@@ -1244,57 +1674,91 @@ export class JungleRoom extends Room<GameState> {
       }
 
       // Proyectiles convencionales (LASER, PELLET, SNIPER_BEAM): se simulan en px/py
-      // (sin sincronizar); el cliente los avanza con la misma velocidad.
-      proj.px += proj.vx * dt;
-      proj.py += proj.vy * dt;
+      // con Continuous Collision Detection (CCD) para evitar atravesar muros o piedras.
+      const prevX = proj.px;
+      const prevY = proj.py;
+      const nextX = prevX + proj.vx * dt;
+      const nextY = prevY + proj.vy * dt;
+      proj.px = nextX;
+      proj.py = nextY;
       proj.lifetime -= dt;
-      const px = proj.px, py = proj.py;
 
-      if (proj.lifetime <= 0 || px < 0 || px > this.state.worldWidth || py < 0 || py > this.state.worldHeight) {
+      if (proj.lifetime <= 0 || nextX < 0 || nextX > this.state.worldWidth || nextY < 0 || nextY > this.state.worldHeight) {
         projToDelete.add(key);
         return;
       }
 
-      // Collision check O(1) con Obstáculos en misma celda o celdas adyacentes
-      const nearbyObs = this.spatialGrid.queryRadius(px, py, proj.radius + 35, ["obstacle"]);
+      // Continuous Collision Detection (CCD) a lo largo del segmento (prevX, prevY) -> (nextX, nextY)
+      const segMidX = (prevX + nextX) * 0.5;
+      const segMidY = (prevY + nextY) * 0.5;
+      const segLen = Math.hypot(nextX - prevX, nextY - prevY);
+      const queryRadius = segLen * 0.5 + proj.radius + 60; // 60 cubre el radio de cualquier obstáculo (rocas 46, árboles 38, etc.)
+
+      let earliestHit: {
+        t: number;
+        hitX: number;
+        hitY: number;
+        type: "obstacle" | "player";
+        target: Obstacle | Player;
+      } | null = null;
+
+      // 1. Detección continua con Obstáculos (muros, piedras/rocas, cajas, barriles, árboles)
+      const nearbyObs = this.spatialGrid.queryRadius(segMidX, segMidY, queryRadius, ["obstacle"]);
       for (const ent of nearbyObs) {
-        if (projToDelete.has(key)) break;
         const obs = ent.data as Obstacle;
-        if (obs.destroyed) continue;
-        const dist = Math.hypot(obs.x - px, obs.y - py);
-        if (dist < obs.radius + proj.radius) {
-          projToDelete.add(key);
-          this.damageObstacle(obs, proj.damage, proj.ownerId);
-          this.broadcast("hit", { x: px, y: py, damage: proj.damage });
-          break;
+        if (!obs || obs.destroyed) continue;
+        const hit = lineSegmentCircleHit(prevX, prevY, nextX, nextY, obs.x, obs.y, obs.radius + proj.radius);
+        if (hit && (!earliestHit || hit.t < earliestHit.t)) {
+          earliestHit = {
+            t: hit.t,
+            hitX: hit.hitX,
+            hitY: hit.hitY,
+            type: "obstacle",
+            target: obs,
+          };
         }
       }
 
-      // Collision check O(1) con Jugadores en misma celda o celdas adyacentes
-      if (!projToDelete.has(key)) {
-        const nearbyPlayers = this.spatialGrid.queryRadius(px, py, proj.radius + 26, ["player"]);
-        for (const ent of nearbyPlayers) {
-          if (projToDelete.has(key)) break;
-          const player = ent.data as Player;
-          if (player.isGhost) continue;
-          if (player.id === proj.ownerId) continue;
+      // 2. Detección continua con Jugadores (radio 26 + radio bala)
+      const nearbyPlayers = this.spatialGrid.queryRadius(segMidX, segMidY, queryRadius, ["player"]);
+      for (const ent of nearbyPlayers) {
+        const player = ent.data as Player;
+        if (!player || player.isGhost || player.id === proj.ownerId) continue;
+        const hit = lineSegmentCircleHit(prevX, prevY, nextX, nextY, player.x, player.y, 26 + proj.radius);
+        if (hit && (!earliestHit || hit.t < earliestHit.t)) {
+          earliestHit = {
+            t: hit.t,
+            hitX: hit.hitX,
+            hitY: hit.hitY,
+            type: "player",
+            target: player,
+          };
+        }
+      }
 
-          const dist = Math.hypot(player.x - px, player.y - py);
-          if (dist < 26) {
-            projToDelete.add(key);
-            const wName = proj.projType === "SNIPER_BEAM" ? "Rifle Sniper" : proj.projType === "PELLET" ? "Escopeta" : "Pistola Láser";
-            const isInv = player.invulnerableLeft > 0;
-            this.applyDamage(player, proj.damage, proj.ownerId, wName);
-            this.broadcast("hit", {
-              x: player.x,
-              y: player.y,
-              damage: isInv ? 0 : proj.damage,
-              isInvulnerable: isInv,
-              victimId: player.id,
-              shooterId: proj.ownerId,
-            });
-            break;
-          }
+      // Si hubo impacto en este tick:
+      if (earliestHit) {
+        projToDelete.add(key);
+        proj.px = earliestHit.hitX;
+        proj.py = earliestHit.hitY;
+
+        if (earliestHit.type === "obstacle") {
+          const obs = earliestHit.target as Obstacle;
+          this.damageObstacle(obs, proj.damage, proj.ownerId);
+          this.broadcast("hit", { x: earliestHit.hitX, y: earliestHit.hitY, damage: proj.damage });
+        } else {
+          const player = earliestHit.target as Player;
+          const wName = proj.projType === "SNIPER_BEAM" ? "Rifle Sniper" : proj.projType === "PELLET" ? "Escopeta" : "Pistola Láser";
+          const isInv = player.invulnerableLeft > 0;
+          this.applyDamage(player, proj.damage, proj.ownerId, wName);
+          this.broadcast("hit", {
+            x: earliestHit.hitX,
+            y: earliestHit.hitY,
+            damage: isInv ? 0 : proj.damage,
+            isInvulnerable: isInv,
+            victimId: player.id,
+            shooterId: proj.ownerId,
+          });
         }
       }
     });
@@ -1315,8 +1779,20 @@ export class JungleRoom extends Room<GameState> {
         const dist = Math.hypot(player.x - trap.x, player.y - trap.y);
         if (dist < 32) {
           trapToDelete.add(key);
+          const stunDuration = 1.2;
+          player.stunLeft = Math.max(player.stunLeft, stunDuration);
+          player.isReloading = false;
+          player.reloadLeft = 0;
+          const dropData = this.dropPlayerEquippedWeapon(player);
           this.broadcast("trapExplode", { x: trap.x, y: trap.y, victimId: player.id });
-          this.applyDamage(player, trap.damage, trap.ownerId, "Trampa Espectral");
+          this.broadcast("playerStunned", {
+            id: player.id,
+            duration: stunDuration,
+            droppedWeapon: dropData?.weapon || "",
+            dropX: dropData?.x,
+            dropY: dropData?.y,
+            dropItemId: dropData?.itemId || "",
+          });
           break;
         }
       }
@@ -1369,6 +1845,7 @@ export class JungleRoom extends Room<GameState> {
     this.botControllers.forEach((ctrl) => {
       const bot = this.state.players.get(ctrl.id);
       if (!bot) return;
+      if (bot.stunLeft > 0) return;
 
       if (bot.isGhost) {
         ctrl.dashTimer -= dt;
@@ -1749,11 +2226,13 @@ export class JungleRoom extends Room<GameState> {
         this.syncPlayerHealthAndShieldCapacity(player, wasOnlyClaws);
       }
 
-      if (item.id.startsWith("drop_") || item.id.startsWith("crate_")) {
+      if (item.id.startsWith("drop_")) {
         this.state.items.delete(item.id);
+        this.spatialGrid.remove(item.id);
+        this.itemPickupDelays.delete(item.id);
       } else {
         item.active = false;
-        item.respawnTimer = 22.0;
+        item.respawnTimer = ITEM_RESPAWN_TIME;
       }
     } else {
       // Consumibles: Si va solo con garras no puede equiparse escudos
@@ -1761,8 +2240,14 @@ export class JungleRoom extends Room<GameState> {
         return;
       }
 
-      item.active = false;
-      item.respawnTimer = 16.0;
+      if (item.id.startsWith("drop_")) {
+        this.state.items.delete(item.id);
+        this.spatialGrid.remove(item.id);
+        this.itemPickupDelays.delete(item.id);
+      } else {
+        item.active = false;
+        item.respawnTimer = ITEM_RESPAWN_TIME;
+      }
 
       if (item.itemType === "MEDKIT") {
         player.hp = Math.min(player.maxHp, player.hp + 40);
@@ -1792,13 +2277,18 @@ export class JungleRoom extends Room<GameState> {
       if (!item.active) {
         item.respawnTimer -= dt;
         if (item.respawnTimer <= 0) {
+          // Variar aleatoriamente el item al reaparecer (sin repetir el anterior)
+          const choices = POSSIBLE_LOOT.filter((t) => t !== item.itemType);
+          item.itemType = choices[Math.floor(Math.random() * choices.length)];
           item.active = true;
         }
         return;
       }
 
       this.state.players.forEach((player) => {
-        if (!item.active || player.isGhost) return;
+        if (!item.active || player.isGhost || player.stunLeft > 0) return;
+        const delay = this.itemPickupDelays.get(item.id);
+        if (delay && Date.now() < delay) return;
 
         const dist = Math.hypot(player.x - item.x, player.y - item.y);
         if (dist < 34) {
@@ -1818,8 +2308,14 @@ export class JungleRoom extends Room<GameState> {
                   if (player.equippedWeapon === item.itemType) {
                     player.reserveAmmo = store[item.itemType].reserveAmmo;
                   }
-                  item.active = false;
-                  item.respawnTimer = 18.0;
+                  if (item.id.startsWith("drop_")) {
+                    this.state.items.delete(item.id);
+                    this.spatialGrid.remove(item.id);
+                    this.itemPickupDelays.delete(item.id);
+                  } else {
+                    item.active = false;
+                    item.respawnTimer = ITEM_RESPAWN_TIME;
+                  }
                   this.broadcast("itemPicked", {
                     id: item.id,
                     itemType: item.itemType,
@@ -1833,8 +2329,14 @@ export class JungleRoom extends Room<GameState> {
             } else if (!slot1) {
               // Auto-recoger en Slot 1 vacío
               const wasOnlyClaws = hasOnlyClaws(player);
-              item.active = false;
-              item.respawnTimer = 18.0;
+              if (item.id.startsWith("drop_")) {
+                this.state.items.delete(item.id);
+                this.spatialGrid.remove(item.id);
+                this.itemPickupDelays.delete(item.id);
+              } else {
+                item.active = false;
+                item.respawnTimer = ITEM_RESPAWN_TIME;
+              }
               this.savePlayerCurrentWeaponAmmo(player);
               slot1 = item.itemType;
               const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
@@ -1859,8 +2361,14 @@ export class JungleRoom extends Room<GameState> {
             } else if (!slot2) {
               // Auto-recoger en Slot 2 vacío (permite llevar 2 armas a la vez)
               const wasOnlyClaws = hasOnlyClaws(player);
-              item.active = false;
-              item.respawnTimer = 18.0;
+              if (item.id.startsWith("drop_")) {
+                this.state.items.delete(item.id);
+                this.spatialGrid.remove(item.id);
+                this.itemPickupDelays.delete(item.id);
+              } else {
+                item.active = false;
+                item.respawnTimer = ITEM_RESPAWN_TIME;
+              }
               this.savePlayerCurrentWeaponAmmo(player);
               slot2 = item.itemType;
               const cfg = WEAPON_CONFIGS[item.itemType] || WEAPON_CONFIGS.LASER;
@@ -1909,8 +2417,14 @@ export class JungleRoom extends Room<GameState> {
           }
 
           if (picked) {
-            item.active = false;
-            item.respawnTimer = 16.0;
+            if (item.id.startsWith("drop_")) {
+              this.state.items.delete(item.id);
+              this.spatialGrid.remove(item.id);
+              this.itemPickupDelays.delete(item.id);
+            } else {
+              item.active = false;
+              item.respawnTimer = ITEM_RESPAWN_TIME;
+            }
             this.broadcast("itemPicked", {
               id: item.id,
               itemType: item.itemType,
@@ -1949,16 +2463,93 @@ export class JungleRoom extends Room<GameState> {
         winnerName: lastAlivePlayer.name,
         kills: lastAlivePlayer.kills,
       });
+
+      // Auto-iniciar la nueva partida tras 8s de celebración para dar paso a los espectadores en cola
+      if (!this.state.isCustomRoom) {
+        if (this.victoryTimeout) clearTimeout(this.victoryTimeout);
+        this.victoryTimeout = setTimeout(() => {
+          if (this.state.status === "VICTORY") {
+            console.log("🔄 Auto-iniciando nueva partida tras victoria para integrar a la cola de espera...");
+            this.restartMatch();
+          }
+        }, 8000);
+      }
     }
   }
 
-  private restartMatch() {
-    this.resetZone();
+  /** Se llama cuando la cuenta regresiva del lobby (40s) termina: arranca la partida activa */
+  private startMatchFromLobby() {
+    this.adjustBotsForHumans();
     this.state.status = "PLAYING";
+    this.state.lobbyCountdown = 0;
+    this.lobbyCountdownLeft = 0;
+    // 15 segundos de invulnerabilidad inicial al comenzar la acción
+    this.state.players.forEach((player) => {
+      if (!player.isGhost) {
+        player.invulnerableLeft = 15.0;
+      }
+    });
+    this.updateAliveCount();
+    this.broadcast("matchStarted", {});
+    console.log("🚀 Partida iniciada tras la cuenta regresiva del lobby!");
+  }
+
+  /** Genera una permutación aleatoria de vértices de spawn (0..N-1) garantizando que
+   * ningún jugador repita la punta/spawnpoint que tuvo en la partida anterior. */
+  private generateNonRepeatingSpawnIndices(players: Player[], N: number): number[] {
+    if (N <= 1) return [0];
+
+    const baseIndices = Array.from({ length: N }, (_, idx) => idx);
+
+    // Intentamos hasta 100 permutaciones aleatorias (derangement respecto a la partida previa)
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const perm = [...baseIndices];
+      for (let i = N - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [perm[i], perm[j]] = [perm[j], perm[i]];
+      }
+
+      // Verificamos si algún jugador repite su spawnpoint previo
+      let hasRepeat = false;
+      for (let i = 0; i < players.length; i++) {
+        const p = players[i];
+        const lastIdx = this.lastPlayerSpawnIndex.get(p.id);
+        if (lastIdx !== undefined && perm[i] === lastIdx) {
+          hasRepeat = true;
+          break;
+        }
+      }
+
+      if (!hasRepeat) {
+        return perm;
+      }
+    }
+
+    // Respaldo garantizado: desplazar si la búsqueda aleatoria se agotó
+    const perm = [...baseIndices];
+    for (let i = 0; i < players.length; i++) {
+      const p = players[i];
+      const lastIdx = this.lastPlayerSpawnIndex.get(p.id);
+      if (lastIdx !== undefined && perm[i] === lastIdx) {
+        const swapWith = (i + 1) % N;
+        [perm[i], perm[swapWith]] = [perm[swapWith], perm[i]];
+      }
+    }
+    return perm;
+  }
+
+  private restartMatch() {
+    if (this.victoryTimeout) {
+      clearTimeout(this.victoryTimeout);
+      this.victoryTimeout = null;
+    }
+
+    this.resetZone();
     this.state.winnerId = "";
     this.state.winnerName = "";
     this.state.projectiles.clear();
     this.state.traps.clear();
+    this.itemPickupDelays.clear();
 
     // Limpiar y repoblar la grilla espacial autoritativa
     this.spatialGrid.clear();
@@ -1991,9 +2582,21 @@ export class JungleRoom extends Room<GameState> {
       });
     });
 
+    // Promover jugadores en cola de espera a participantes activos
+    const queued = [...this.spectatorQueueIds];
+    this.spectatorQueueIds = [];
+    this.state.spectatorQueue = "";
+    queued.forEach((id) => {
+      const qp = this.state.players.get(id);
+      if (qp) qp.isGhost = false; // se revive abajo con reposition completo
+    });
+
+    // Ajustar bots para que la nueva partida tenga exactamente 8 personajes completados con bots
+    this.adjustBotsForHumans();
+
     // Revive and reposition all players symmetrically in a regular polygon (e.g. octagon for 8 players)
     const allPlayers = Array.from(this.state.players.values());
-    const humans = allPlayers.filter((p) => !p.isBot);
+    const humans = allPlayers.filter((p) => !p.isBot && !p.isGhost);
     const bots = allPlayers.filter((p) => p.isBot);
     const orderedPlayers = [...humans, ...bots];
     const N = orderedPlayers.length || 8;
@@ -2002,8 +2605,14 @@ export class JungleRoom extends Room<GameState> {
     const spawnRadius = 2500;
     const baseAngle = Math.PI / N;
 
+    // Asignar puntas/vértices aleatorios garantizando que ningún jugador repita la de la partida anterior
+    const spawnIndices = this.generateNonRepeatingSpawnIndices(orderedPlayers, N);
+
     orderedPlayers.forEach((player, i) => {
-      const angle = baseAngle + (i / N) * 2 * Math.PI;
+      const vertexIndex = spawnIndices[i];
+      this.lastPlayerSpawnIndex.set(player.id, vertexIndex);
+
+      const angle = baseAngle + (vertexIndex / N) * 2 * Math.PI;
       const rawX = centerX + Math.cos(angle) * spawnRadius;
       const rawY = centerY + Math.sin(angle) * spawnRadius;
       const [safeX, safeY] = this.getSafeSpawnPosition(rawX, rawY, angle);
@@ -2015,7 +2624,7 @@ export class JungleRoom extends Room<GameState> {
       player.maxHp = 30;
       player.shield = 0;
       player.maxShield = 0;
-      player.invulnerableLeft = 15.0; // 15 segundos iniciales de invulnerabilidad para todos
+      player.invulnerableLeft = 0; // se activará al comenzar la partida tras el lobby
       player.availableWeapons = ",,MELEE";
       this.initPlayerWeapons(player.id);
       this.applyWeaponToPlayer(player, "MELEE");
@@ -2027,6 +2636,7 @@ export class JungleRoom extends Room<GameState> {
       player.dashLeft = 0;
       player.shootCooldown = 0;
       player.trapLeft = 0;
+      player.stunLeft = 0;
 
       this.spatialGrid.insert({
         id: player.id,
@@ -2038,8 +2648,17 @@ export class JungleRoom extends Room<GameState> {
       });
     });
 
+    // Notificar a los que venían en cola que ya están en la partida
+    if (queued.length > 0) {
+      this.broadcast("queuePromotion", { count: queued.length });
+      console.log(`✅ ${queued.length} jugadores de la cola promovidos a la nueva partida`);
+    }
+
     this.updateAliveCount();
     this.broadcast("matchRestarted", {});
+
+    // Iniciar cuenta regresiva de 40s del lobby para la nueva partida
+    this.startLobbyCountdown();
   }
 
   private startCustomMatch() {
@@ -2091,8 +2710,13 @@ export class JungleRoom extends Room<GameState> {
     const spawnRadius = 2500;
     const baseAngle = Math.PI / N;
 
+    const spawnIndices = this.generateNonRepeatingSpawnIndices(humans, N);
+
     humans.forEach((player, i) => {
-      const angle = baseAngle + (i / N) * 2 * Math.PI;
+      const vertexIndex = spawnIndices[i];
+      this.lastPlayerSpawnIndex.set(player.id, vertexIndex);
+
+      const angle = baseAngle + (vertexIndex / N) * 2 * Math.PI;
       const rawX = centerX + Math.cos(angle) * spawnRadius;
       const rawY = centerY + Math.sin(angle) * spawnRadius;
       const [safeX, safeY] = this.getSafeSpawnPosition(rawX, rawY, angle);

@@ -108,6 +108,7 @@ interface VPlayer {
   reloadTimer: number;
   maxReloadTimer: number;
   dashCooldown: number;
+  trapCooldown?: number;
   isRolling?: boolean;
   isGhost: boolean; isHidden: boolean;
   isMe: boolean;
@@ -116,6 +117,8 @@ interface VPlayer {
   invulnerableTimer: number;
   invulnerableShieldGfx?: Phaser.GameObjects.Graphics;
   invulnerableBadge?: Phaser.GameObjects.Text;
+  stunTimer?: number;
+  stunStarsContainer?: Phaser.GameObjects.Container;
   // Performance flags
   lastGhost: boolean;
   tomb?: { box: Phaser.GameObjects.Container; kitten: Phaser.GameObjects.Sprite | null; angle: number };
@@ -221,10 +224,68 @@ interface VItem {
   g: Phaser.GameObjects.Graphics;
   weaponGfx: Phaser.GameObjects.Graphics;
   icon: Phaser.GameObjects.Text;
+  itemSprite?: Phaser.GameObjects.Sprite | null;
   itemType: string;
   active: boolean;
   x: number;
   y: number;
+}
+
+export interface SegmentCircleHit {
+  hit: boolean;
+  t: number;
+  hitX: number;
+  hitY: number;
+}
+
+/**
+ * Continuous Collision Detection (CCD) de segmento de recta contra círculo.
+ */
+export function lineSegmentCircleHit(
+  x1: number, y1: number,
+  x2: number, y2: number,
+  cx: number, cy: number,
+  radius: number
+): SegmentCircleHit | null {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const fx = x1 - cx;
+  const fy = y1 - cy;
+
+  const c = fx * fx + fy * fy - radius * radius;
+  if (c <= 0) {
+    const dot = dx * fx + dy * fy;
+    if (dot <= 0) {
+      return { hit: true, t: 0, hitX: x1, hitY: y1 };
+    }
+    return null;
+  }
+
+  const a = dx * dx + dy * dy;
+  if (a < 1e-6) {
+    return null;
+  }
+
+  const b = 2 * (dx * fx + dy * fy);
+  const discr = b * b - 4 * a * c;
+  if (discr < 0) {
+    return null;
+  }
+
+  const sqrtDiscr = Math.sqrt(discr);
+  const t = (-b - sqrtDiscr) / (2 * a);
+
+  if (t >= -1e-5 && t <= 1) {
+    const clampedT = Math.max(0, Math.min(1, t));
+    return {
+      hit: true,
+      t: clampedT,
+      hitX: x1 + clampedT * dx,
+      hitY: y1 + clampedT * dy,
+    };
+  }
+
+  return null;
 }
 
 /* ─── Bala Local Pre-alocada (Object Pool de 200 Balas) ────────── */
@@ -297,6 +358,7 @@ export class MainScene extends Phaser.Scene {
   } = {};
   private room!: Room<GameState>;
   private myId = "";
+  private isSpectatorQueued = false;
 
   // Window-level smooth aiming (evita que se trabe el apuntado sobre el HUD)
   private windowPointerX: number = window.innerWidth / 2;
@@ -330,6 +392,7 @@ export class MainScene extends Phaser.Scene {
   private minimapGfx!: Phaser.GameObjects.Graphics;
   private crosshairGfx!: Phaser.GameObjects.Graphics;
   private aimConeGfx!: Phaser.GameObjects.Graphics;
+  private ghostTrapRangeGfx!: Phaser.GameObjects.Graphics;
 
   private zone = { x: 4000, y: 4000, r: 3850 };
 
@@ -351,6 +414,7 @@ export class MainScene extends Phaser.Scene {
   private interactStatsText!: Phaser.GameObjects.Text;
   private nearestItem: VItem | null = null;
   private lootBeaconGfx!: Phaser.GameObjects.Graphics;
+  private barrelDangerGfx!: Phaser.GameObjects.Graphics;
 
   // Footsteps & water movement tracking
   private lastFootstepDist = 0;
@@ -409,7 +473,8 @@ export class MainScene extends Phaser.Scene {
 
     // 2. Gráficos de Zona de Tinta y Beacons de Loot
     this.zoneGfx = this.add.graphics().setDepth(8);
-    this.lootBeaconGfx = this.add.graphics().setDepth(24);
+    this.barrelDangerGfx = this.add.graphics().setDepth(25);
+    this.lootBeaconGfx = this.add.graphics().setDepth(26);
 
     // 3. Object Pools (Arcade Groups) para partículas y Ghost Trails
     this.sparksPool = this.add.group({
@@ -441,6 +506,7 @@ export class MainScene extends Phaser.Scene {
 
     // 4. Retícula Crosshair y Arco de Apuntado
     this.aimConeGfx = this.add.graphics().setDepth(50);
+    this.ghostTrapRangeGfx = this.add.graphics().setDepth(52);
     this.crosshairGfx = this.add.graphics().setDepth(180);
 
     // 5. Minimapa (overlay sobre cámara)
@@ -603,8 +669,22 @@ export class MainScene extends Phaser.Scene {
         this.executeLocalShoot(me);
       }
 
-      if (ptr.rightButtonDown() && me.isGhost) {
-        this.net.sendPlaceTrap(wp.x, wp.y);
+      const isSpectator = this.isSpectatorQueued || (this.room?.state?.spectatorQueue ? this.room.state.spectatorQueue.split(",").includes(this.myId) : false);
+
+      if (ptr.rightButtonDown() && me.isGhost && !isSpectator) {
+        if ((me.trapCooldown || 0) > 0) return;
+        const maxTrapRange = 75 * 2; // Doble de alcance que el cuchillo (150px)
+        let placeX = wp.x;
+        let placeY = wp.y;
+        const dist = Math.hypot(placeX - me.container.x, placeY - me.container.y);
+        if (dist > maxTrapRange) {
+          const angle = Math.atan2(placeY - me.container.y, placeX - me.container.x);
+          placeX = me.container.x + Math.cos(angle) * maxTrapRange;
+          placeY = me.container.y + Math.sin(angle) * maxTrapRange;
+        }
+
+        this.net.sendPlaceTrap(placeX, placeY);
+        me.trapCooldown = 6.0;
         soundManager.playTrapPlace();
       }
     });
@@ -627,6 +707,10 @@ export class MainScene extends Phaser.Scene {
 
     this.onWindow("send-emote", (e: any) => {
       if (e.detail?.emote) this.triggerEmote(e.detail.emote);
+    });
+
+    this.onWindow("send-chat", (e: any) => {
+      if (e.detail?.text) this.net.sendChat(e.detail.text);
     });
 
     // 8. Integración con Pipeline Ultra-Rápido SSE (Server-Sent Events)
@@ -751,7 +835,7 @@ export class MainScene extends Phaser.Scene {
   }
 
   private executeLocalShoot(me: VPlayer) {
-    if (me.isGhost || me.isReloading || this.localShootCooldown > 0) return;
+    if (me.isGhost || me.isReloading || this.localShootCooldown > 0 || (me.stunTimer || 0) > 0) return;
 
     const w = me.equippedWeapon || "LASER";
     const cfg = WEAPON_CONFIGS[w] || WEAPON_CONFIGS.LASER;
@@ -1013,7 +1097,7 @@ export class MainScene extends Phaser.Scene {
 
   private tryReload() {
     const me = this.players.get(this.myId);
-    if (!me || me.isGhost || me.isReloading) return;
+    if (!me || me.isGhost || me.isReloading || (me.stunTimer || 0) > 0) return;
     if (me.equippedWeapon === "MELEE" || me.equippedWeapon === "GRENADE") return;
     if (typeof me.ammo === "number" && typeof me.maxAmmo === "number" && me.ammo >= me.maxAmmo) return;
     if (typeof me.reserveAmmo === "number" && me.reserveAmmo <= 0) {
@@ -1032,7 +1116,10 @@ export class MainScene extends Phaser.Scene {
   }
 
   private performLocalDash(me: VPlayer) {
-    if (me.isGhost || (me.dashCooldown || 0) > 0) return;
+    if (this.room?.state?.status === "LOBBY") return;
+    const isTyping = typeof document !== "undefined" && (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA");
+    if (isTyping) return;
+    if (me.isGhost || (me.dashCooldown || 0) > 0 || (me.stunTimer || 0) > 0) return;
 
     let dx = 0;
     let dy = 0;
@@ -1179,9 +1266,105 @@ export class MainScene extends Phaser.Scene {
     });
   }
 
+  public playStunEffect(p: VPlayer, duration: number) {
+    if (p.stunStarsContainer) {
+      p.stunStarsContainer.destroy();
+      p.stunStarsContainer = undefined;
+    }
+
+    const stars = this.add.container(0, -32);
+    const g = this.add.graphics();
+    const starColors = [0xfde047, 0xfacc15, 0xfbbf24];
+    for (let i = 0; i < 3; i++) {
+      const ang = (i / 3) * Math.PI * 2;
+      const sx = Math.cos(ang) * 16;
+      const sy = Math.sin(ang) * 6;
+      g.fillStyle(starColors[i], 1);
+      g.fillCircle(sx, sy, 3.5);
+      g.fillStyle(0xffffff, 0.9);
+      g.fillCircle(sx, sy, 1.5);
+    }
+    stars.add(g);
+    p.container.add(stars);
+    p.stunStarsContainer = stars;
+
+    this.tweens.add({
+      targets: stars,
+      angle: 360,
+      duration: 600,
+      repeat: Math.ceil((duration * 1000) / 600),
+      ease: "Linear",
+    });
+
+    this.tweens.add({
+      targets: p.catSprite,
+      x: { from: -3, to: 3 },
+      duration: 70,
+      yoyo: true,
+      repeat: Math.floor((duration * 1000) / 140),
+      ease: "Sine.easeInOut",
+      onComplete: () => {
+        p.catSprite.x = 0;
+      },
+    });
+
+    this.time.delayedCall(duration * 1000, () => {
+      if (stars.active) {
+        this.tweens.add({
+          targets: stars,
+          alpha: 0,
+          duration: 150,
+          onComplete: () => {
+            stars.destroy();
+            if (p.stunStarsContainer === stars) {
+              p.stunStarsContainer = undefined;
+            }
+          },
+        });
+      }
+    });
+  }
+
+  public animateThrownWeapon(fromX: number, fromY: number, toX: number, toY: number, weaponType: string) {
+    const hold = getWeaponHold(weaponType);
+    let obj: Phaser.GameObjects.GameObject;
+    if (hold?.sprite && this.textures.exists(hold.sprite)) {
+      const img = this.add.image(fromX, fromY, hold.sprite).setDepth(85).setScale(1.2);
+      obj = img;
+    } else {
+      const icon = weaponType === "SHOTGUN" ? "💥" : weaponType === "SNIPER" ? "🎯" : weaponType === "GRENADE" ? "💣" : "🔫";
+      const txt = this.add.text(fromX, fromY, icon, { fontSize: "20px" }).setDepth(85).setOrigin(0.5);
+      obj = txt;
+    }
+
+    const duration = 380;
+    const startTime = this.time.now;
+
+    const timer = this.time.addEvent({
+      delay: 16,
+      repeat: Math.floor(duration / 16),
+      callback: () => {
+        const elapsed = this.time.now - startTime;
+        const t = Math.min(1, elapsed / duration);
+        const curX = Phaser.Math.Linear(fromX, toX, t);
+        const baseY = Phaser.Math.Linear(fromY, toY, t);
+        const arcHeight = 45 * 4 * t * (1 - t);
+        (obj as any).setPosition(curX, baseY - arcHeight);
+        (obj as any).rotation += 0.28;
+
+        if (t >= 1) {
+          timer.remove();
+          this.createSparksFX(toX, toY, 0x94a3b8);
+          soundManager.playWeaponDrop();
+          (obj as any).destroy();
+        }
+      },
+    });
+  }
+
   private switchWeapon(w: string) {
     const me = this.players.get(this.myId);
-    if (!me || me.isGhost) return;
+    if (!me || me.isGhost || (me.stunTimer || 0) > 0) return;
     const [s1, s2] = parseWeaponSlots(me.availableWeapons);
     if (w !== "MELEE" && w !== s1 && w !== s2) {
       soundManager.playEmptyClick();
@@ -1205,6 +1388,7 @@ export class MainScene extends Phaser.Scene {
         isGhost: me.isGhost,
         activeBuff: "",
         dashCooldown: me.dashCooldown,
+        stunTimer: me.stunTimer ?? 0,
       });
       emit("ammo", {
         weapon: w,
@@ -1307,6 +1491,13 @@ export class MainScene extends Phaser.Scene {
       syncZone();
       emitRoomInfo();
       emitIfChanged("alive", { alive: s.aliveCount || 1, total: s.players?.size || 1 });
+      // Emitir estado del lobby para el countdown
+      emitIfChanged("lobby", { countdown: s.lobbyCountdown, status: s.status, spectatorQueue: s.spectatorQueue });
+      if (s.spectatorQueue) {
+        this.isSpectatorQueued = s.spectatorQueue.split(",").includes(this.myId);
+      } else {
+        this.isSpectatorQueued = false;
+      }
       if (s.status === "VICTORY" && s.winnerName) {
         emitIfChanged("victory", {
           winnerId: s.winnerId,
@@ -1363,7 +1554,9 @@ export class MainScene extends Phaser.Scene {
     s.projectiles.onRemove((_: Projectile, id: string) => {
       const v = this.projs.get(id);
       if (v) {
-        this.createSparksFX(v.g.x, v.g.y, 0xffd23f);
+        if (v.g.visible) {
+          this.createSparksFX(v.g.x, v.g.y, 0xffd23f);
+        }
         v.g.destroy();
         v.trail.destroy();
         this.projs.delete(id);
@@ -1391,6 +1584,11 @@ export class MainScene extends Phaser.Scene {
       if (d.isInvulnerable || d.damage === 0) {
         this.createSparksFX(d.x, d.y, 0x38bdf8);
         this.showDamageText(d.x, d.y - 18, "🛡️ INMUNE", "#38bdf8");
+        return;
+      }
+      if (!d.victimId) {
+        // Impacto contra obstáculo físico (muro, piedra/roca, etc.)
+        this.createSparksFX(d.x, d.y, 0xfacc15);
         return;
       }
       // sin número de daño flotante: el daño se marca en la barra de vida (destello rojo)
@@ -1515,8 +1713,85 @@ export class MainScene extends Phaser.Scene {
       });
     });
 
+    this.room.onMessage("playerStunned", (d: any) => {
+      const p = this.players.get(d.id);
+      if (p) {
+        p.stunTimer = d.duration ?? 1.2;
+        p.isReloading = false;
+        p.reloadSpinnerContainer.setVisible(false);
+        p.reloadProgressGfx.clear();
+        this.playStunEffect(p, d.duration ?? 1.2);
+
+        if (d.droppedWeapon) {
+          p.equippedWeapon = "MELEE";
+          this.redrawAim(p, true);
+          this.drawCat(p);
+        }
+      }
+      if (d.droppedWeapon && typeof d.dropX === "number" && typeof d.dropY === "number") {
+        const fromX = p ? p.container.x : d.dropX;
+        const fromY = p ? p.container.y : d.dropY;
+        this.animateThrownWeapon(fromX, fromY, d.dropX, d.dropY, d.droppedWeapon);
+      }
+      if (d.id === this.myId) {
+        soundManager.playStun();
+        this.showDamageText(p ? p.container.x : 0, (p ? p.container.y : 0) - 45, "⚡ ¡ATURDIDO!", "#facc15");
+        if (d.droppedWeapon) {
+          this.showDamageText(p ? p.container.x : 0, (p ? p.container.y : 0) - 25, `💥 ¡SOLTASTE TU ${d.droppedWeapon}!`, "#fb923c");
+        }
+      } else if (p) {
+        this.showDamageText(p.container.x, p.container.y - 45, "⚡ ¡STUN!", "#facc15");
+        if (d.droppedWeapon) {
+          this.showDamageText(p.container.x, p.container.y - 25, `💥 Soltó arma`, "#fb923c");
+        }
+      }
+    });
+
     this.room.onMessage("matchRestarted", () => {
+      this.isSpectatorQueued = false;
+      const me = this.players.get(this.myId);
+      if (me) {
+        me.container.setPosition(me.tx, me.ty);
+        this.camTarget.x = me.tx;
+        this.camTarget.y = me.ty;
+        this.cameras.main.scrollX = me.tx - this.cameras.main.width / 2;
+        this.cameras.main.scrollY = me.ty - this.cameras.main.height / 2;
+      }
       emit("restart", {});
+      emit("playing", {});
+    });
+
+    this.room.onMessage("matchStarted", () => {
+      this.isSpectatorQueued = false;
+      emit("playing", {});
+      emit("matchStarted", {});
+    });
+
+    // ── Lobby Countdown ─────────────────────────────────────────────
+    this.room.onMessage("lobbyStart", (d: any) => {
+      emit("lobbyStart", { countdown: d.countdown });
+    });
+
+    // ── Chat General ─────────────────────────────────────────────────
+    this.room.onMessage("chatMessage", (d: any) => {
+      emit("chatMessage", {
+        senderId: d.senderId,
+        senderName: d.senderName,
+        text: d.text,
+        isSpectator: d.isSpectator,
+      });
+    });
+
+    // ── Espectador en cola ────────────────────────────────────────────
+    this.room.onMessage("spectatorJoined", (d: any) => {
+      this.isSpectatorQueued = true;
+      emit("spectatorJoined", { queuePosition: d.queuePosition });
+    });
+
+    // ── Promoción de cola a partida ───────────────────────────────────
+    this.room.onMessage("queuePromotion", (d: any) => {
+      this.isSpectatorQueued = false;
+      emit("queuePromotion", { count: d.count });
     });
   }
 
@@ -2738,17 +3013,32 @@ export class MainScene extends Phaser.Scene {
       container.setSize(48, 48);
       container.setInteractive({ useHandCursor: true });
       container.on("pointerdown", () => this.tryInteract(id));
+      if (id.startsWith("drop_")) {
+        container.setScale(0.3);
+        container.setAlpha(0);
+        this.tweens.add({
+          targets: container,
+          scaleX: 1,
+          scaleY: 1,
+          alpha: 1,
+          duration: 350,
+          ease: "Back.easeOut",
+        });
+      }
       this.tweens.add({
         targets: itemSprite, y: -5, duration: 900 + Math.random() * 250,
         yoyo: true, repeat: -1, ease: "Sine.easeInOut",
       });
       const icon = this.add.text(0, 0, "");
-      const vi: VItem = { id, container, g, weaponGfx, icon, itemType: item.itemType, active: item.active, x: item.x, y: item.y };
+      const vi: VItem = { id, container, g, weaponGfx, icon, itemSprite, itemType: item.itemType, active: item.active, x: item.x, y: item.y };
       this.items.set(id, vi);
       this.itemSpatialGrid.insert(vi);
       container.setVisible(item.active && this.isInCameraView(item.x, item.y, 100));
       item.onChange(() => {
         vi.active = item.active;
+        if (vi.itemType !== item.itemType) {
+          this.updateItemVisuals(vi, item.itemType);
+        }
         container.setVisible(item.active && this.isInCameraView(item.x, item.y, 100));
       });
       return;
@@ -2800,8 +3090,53 @@ export class MainScene extends Phaser.Scene {
 
     item.onChange(() => {
       vi.active = item.active;
+      if (vi.itemType !== item.itemType) {
+        this.updateItemVisuals(vi, item.itemType);
+      }
       container.setVisible(item.active && this.isInCameraView(item.x, item.y, 100));
     });
+  }
+
+  /** Actualiza los visuales (sprite pixel art o gráficos vectoriales) cuando el ítem reaparece con otro tipo aleatorio */
+  private updateItemVisuals(vi: VItem, newItemType: string) {
+    vi.itemType = newItemType;
+
+    if (vi.itemSprite) {
+      this.tweens.killTweensOf(vi.itemSprite);
+      vi.itemSprite.destroy();
+      vi.itemSprite = null;
+    }
+    vi.weaponGfx.clear();
+    vi.icon.setText("");
+
+    const newSprite = makeItemSprite(this, newItemType);
+    if (newSprite) {
+      vi.itemSprite = newSprite;
+      vi.container.add(newSprite);
+      this.tweens.add({
+        targets: newSprite,
+        y: -5,
+        duration: 900 + Math.random() * 250,
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.easeInOut",
+      });
+      return;
+    }
+
+    // Respaldo vectorial
+    let color = 0x10b981;
+    let emoji = "🧪";
+    const isGun = ["SHOTGUN", "SNIPER", "GRENADE", "LASER"].includes(newItemType);
+    if (newItemType === "SHIELD") { color = 0x38bdf8; emoji = "🛡️"; }
+    else if (newItemType === "SPEED") { color = 0xf59e0b; emoji = "⚡"; }
+    else if (newItemType === "TRIPLE") { color = 0xa855f7; emoji = "🌟"; }
+    else if (newItemType === "SHOTGUN") { color = 0xef4444; emoji = "💥"; }
+    else if (newItemType === "SNIPER") { color = 0x06b6d4; emoji = "🎯"; }
+    else if (newItemType === "GRENADE") { color = 0x84cc16; emoji = "💣"; }
+
+    this.drawLootGraphic(vi.weaponGfx, newItemType, color);
+    vi.icon.setText(isGun ? "" : emoji);
   }
 
   private drawLootGraphic(wg: Phaser.GameObjects.Graphics, type: string, _color: number) {
@@ -2855,7 +3190,7 @@ export class MainScene extends Phaser.Scene {
 
   private tryInteract(specificItemId?: string) {
     const me = this.players.get(this.myId);
-    if (!me || me.isGhost) return;
+    if (!me || me.isGhost || (me.stunTimer || 0) > 0) return;
 
     let targetItem = this.nearestItem;
     if (specificItemId && this.items.has(specificItemId)) {
@@ -3003,6 +3338,8 @@ export class MainScene extends Phaser.Scene {
       reloadTimer: p.reloadTimer ?? 0,
       maxReloadTimer: p.maxReloadTimer ?? 2.0,
       dashCooldown: p.dashCooldown ?? 0,
+      trapCooldown: p.trapCooldown ?? 0,
+      stunTimer: p.stunTimer ?? 0,
       isRolling: false,
       isGhost: !!p.isGhost, isHidden: !!p.isHidden,
       isMe, catColor: p.catColor || 0,
@@ -3283,6 +3620,8 @@ export class MainScene extends Phaser.Scene {
     v.reloadTimer = p.reloadTimer ?? 0;
     v.maxReloadTimer = p.maxReloadTimer ?? 2.0;
     v.dashCooldown = p.dashCooldown ?? v.dashCooldown ?? 0;
+    v.trapCooldown = p.trapCooldown ?? v.trapCooldown ?? 0;
+    v.stunTimer = p.stunTimer ?? 0;
     v.invulnerableTimer = p.invulnerableTimer ?? v.invulnerableTimer;
 
     if (!v.isReloading && prevReloading) {
@@ -3359,6 +3698,7 @@ export class MainScene extends Phaser.Scene {
         isHidden: v.isHidden,
         dashCooldown: p.dashCooldown ?? 0,
         trapCooldown: p.trapCooldown ?? 0,
+        stunTimer: p.stunTimer ?? 0,
         kills: p.kills ?? 0,
         activeBuff: newBuff,
         buffTimer: p.buffTimer ?? 0,
@@ -3743,12 +4083,17 @@ export class MainScene extends Phaser.Scene {
     // 1. Client-Side Prediction y Retícula / Arco de Apuntado
     if (me && this.keys) {
       const isGhost = me.isGhost;
+      const isLobby = this.room?.state?.status === "LOBBY";
+      const isTyping = typeof document !== "undefined" && (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA");
+      const isStunned = (me.stunTimer ?? 0) > 0;
 
       let dx = 0, dy = 0;
-      if (this.keys.W.isDown) dy -= 1;
-      if (this.keys.S.isDown) dy += 1;
-      if (this.keys.A.isDown) dx -= 1;
-      if (this.keys.D.isDown) dx += 1;
+      if (!isLobby && !isTyping && !isStunned) {
+        if (this.keys.W.isDown) dy -= 1;
+        if (this.keys.S.isDown) dy += 1;
+        if (this.keys.A.isDown) dx -= 1;
+        if (this.keys.D.isDown) dx += 1;
+      }
 
       const ptrX = this.windowPointerX ?? this.input.activePointer.x;
       const ptrY = this.windowPointerY ?? this.input.activePointer.y;
@@ -3765,12 +4110,23 @@ export class MainScene extends Phaser.Scene {
         me.dashCooldown = Math.max(0, me.dashCooldown - delta / 1000);
       }
 
+      if (typeof me.trapCooldown === "number" && me.trapCooldown > 0) {
+        me.trapCooldown = Math.max(0, me.trapCooldown - delta / 1000);
+      }
+
+      if (typeof me.stunTimer === "number" && me.stunTimer > 0) {
+        me.stunTimer = Math.max(0, me.stunTimer - delta / 1000);
+      }
+
       if (this.localShootCooldown > 0) {
         this.localShootCooldown = Math.max(0, this.localShootCooldown - delta / 1000);
       }
 
       // Auto-Disparo Continuo y Fluido al sostener clic izquierdo presionado (Suroi Auto-Fire)
       const isFiring =
+        !isLobby &&
+        !isTyping &&
+        !isStunned &&
         ((this.input.activePointer.isDown && this.input.activePointer.leftButtonDown()) ||
           this.isWindowPointerDown) &&
         !me.isGhost &&
@@ -3896,17 +4252,14 @@ export class MainScene extends Phaser.Scene {
       let localInStructure: StructureDef | null = null;
       for (let i = 0; i < this.vStructures.length; i++) {
         const vst = this.vStructures[i];
-        let inside = false;
-        if (!me.isGhost) {
-          const halfW = vst.def.width / 2;
-          const halfH = vst.def.height / 2;
-          inside = (
-            me.container.x >= vst.def.x - halfW &&
-            me.container.x <= vst.def.x + halfW &&
-            me.container.y >= vst.def.y - halfH &&
-            me.container.y <= vst.def.y + halfH
-          );
-        }
+        const halfW = vst.def.width / 2;
+        const halfH = vst.def.height / 2;
+        const inside = (
+          me.container.x >= vst.def.x - halfW &&
+          me.container.x <= vst.def.x + halfW &&
+          me.container.y >= vst.def.y - halfH &&
+          me.container.y <= vst.def.y + halfH
+        );
         vst.isInside = inside;
         if (inside) {
           localInStructure = vst.def;
@@ -3928,6 +4281,11 @@ export class MainScene extends Phaser.Scene {
 
       // Sistema de Detección de Proximidad y Prompt de Loot ([F] Recoger / Cambiar)
       this.updateLootInteraction(me, time);
+
+      // Indicador del Radio de Impacto de Barriles Explosivos
+      this.updateBarrelHazardIndicators(me, time);
+    } else {
+      this.barrelDangerGfx?.clear();
     }
 
     // 2. Interpolación Suave (Lerp) para Jugadores Remotos y Frustum Culling
@@ -4096,10 +4454,43 @@ export class MainScene extends Phaser.Scene {
         v.tx += v.vx * (delta / 1000);
         v.ty += v.vy * (delta / 1000);
       }
+      const prevX = v.g.x;
+      const prevY = v.g.y;
       v.g.x += v.vx * dtSecProj;
       v.g.y += v.vy * dtSecProj;
       v.g.x = Phaser.Math.Linear(v.g.x, v.tx, 0.25);
       v.g.y = Phaser.Math.Linear(v.g.y, v.ty, 0.25);
+
+      // Colisión contra obstáculos para proyectiles remotos
+      if (v.projType !== "GRENADE" && v.g.visible) {
+        const segMidX = (prevX + v.g.x) * 0.5;
+        const segMidY = (prevY + v.g.y) * 0.5;
+        const segLen = Math.hypot(v.g.x - prevX, v.g.y - prevY);
+        const queryRadius = segLen * 0.5 + 60;
+        const candidates = this.obstacleSpatialGrid.queryNear(segMidX, segMidY, queryRadius);
+        let earliestHit: { hitX: number; hitY: number; t: number } | null = null;
+        for (let j = 0; j < candidates.length; j++) {
+          const obs = candidates[j];
+          if (obs.destroyed) continue;
+          const hit = lineSegmentCircleHit(prevX, prevY, v.g.x, v.g.y, obs.x, obs.y, obs.radius + 6);
+          if (hit && (!earliestHit || hit.t < earliestHit.t)) {
+            earliestHit = hit;
+          }
+        }
+        if (earliestHit) {
+          v.g.x = earliestHit.hitX;
+          v.g.y = earliestHit.hitY;
+          if (this.isInCameraView(v.g.x, v.g.y, 80)) {
+            this.createSparksFX(v.g.x, v.g.y, 0xfacc15);
+          }
+          v.g.setVisible(false);
+          if (v.trail.visible) {
+            v.trail.clear();
+            v.trail.setVisible(false);
+          }
+          return;
+        }
+      }
 
       const canSee = this.canSeeWorldPoint(v.g.x, v.g.y);
       const inCam = canSee && this.isInCameraView(v.g.x, v.g.y, 80);
@@ -4198,8 +4589,38 @@ export class MainScene extends Phaser.Scene {
 
       const prevX = b.x;
       const prevY = b.y;
-      b.x += b.vx * dtSecBullet;
-      b.y += b.vy * dtSecBullet;
+      const nextX = b.x + b.vx * dtSecBullet;
+      const nextY = b.y + b.vy * dtSecBullet;
+
+      // Colisión continua con obstáculos (muros, piedras/rocas, etc.)
+      const segMidX = (prevX + nextX) * 0.5;
+      const segMidY = (prevY + nextY) * 0.5;
+      const segLen = Math.hypot(nextX - prevX, nextY - prevY);
+      const queryRadius = segLen * 0.5 + b.radius + 60;
+      const candidates = this.obstacleSpatialGrid.queryNear(segMidX, segMidY, queryRadius);
+
+      let earliestObsHit: { t: number; hitX: number; hitY: number } | null = null;
+      for (let j = 0; j < candidates.length; j++) {
+        const obs = candidates[j];
+        if (obs.destroyed) continue;
+        const hit = lineSegmentCircleHit(prevX, prevY, nextX, nextY, obs.x, obs.y, obs.radius + b.radius);
+        if (hit && (!earliestObsHit || hit.t < earliestObsHit.t)) {
+          earliestObsHit = hit;
+        }
+      }
+
+      if (earliestObsHit) {
+        b.x = earliestObsHit.hitX;
+        b.y = earliestObsHit.hitY;
+        if (this.isInCameraView(b.x, b.y, 80)) {
+          this.createSparksFX(b.x, b.y, 0xfacc15);
+        }
+        b.deactivate();
+        continue;
+      }
+
+      b.x = nextX;
+      b.y = nextY;
 
       const inCam = this.isInCameraView(b.x, b.y, 80);
       if (!inCam) {
@@ -4357,6 +4778,108 @@ export class MainScene extends Phaser.Scene {
     } else {
       this.interactPromptGfx.setVisible(false);
       this.lootBeaconGfx.clear();
+    }
+  }
+
+  /* ── Indicador de Radio de Impacto de Barriles Explosivos ─────── */
+  private updateBarrelHazardIndicators(me: VPlayer, time: number) {
+    if (!this.barrelDangerGfx) return;
+    this.barrelDangerGfx.clear();
+    if (!me || !me.container) return;
+
+    const myX = me.container.x;
+    const myY = me.container.y;
+    const WARN_DISTANCE = 340; // Distancia para comenzar a advertir visualmente el peligro
+    const EXPLOSION_RADIUS = 140; // Radio exacto del impacto de la explosión
+
+    // Consultamos los obstáculos cercanos con la grilla espacial en O(1)
+    const nearby = this.obstacleSpatialGrid.queryNear(myX, myY, WARN_DISTANCE + 50);
+    const seen = new Set<string>();
+
+    for (let i = 0; i < nearby.length; i++) {
+      const vo = nearby[i];
+      if (seen.has(vo.id)) continue;
+      seen.add(vo.id);
+
+      if (vo.obsType !== "BARREL" || vo.destroyed) continue;
+
+      const dist = Math.hypot(myX - vo.x, myY - vo.y);
+      if (dist > WARN_DISTANCE) continue;
+
+      // Respetar línea de visión / oclusión táctica dentro y fuera de estructuras
+      if (!this.canSeeWorldPoint(vo.x, vo.y)) continue;
+
+      const isInsideBlast = dist <= EXPLOSION_RADIUS;
+      const proximityT = Phaser.Math.Clamp(
+        1 - (dist - EXPLOSION_RADIUS) / (WARN_DISTANCE - EXPLOSION_RADIUS),
+        0,
+        1
+      );
+
+      // Ritmo de pulso: rápido y urgente si está dentro del radio mortal; rítmico si se acerca
+      const pulseSpeed = isInsideBlast ? 90 : 220;
+      const pulse = 0.5 + 0.5 * Math.sin(time / pulseSpeed);
+
+      // Transparencia dinámica según cercanía
+      const fillAlpha = isInsideBlast
+        ? 0.16 + 0.08 * pulse
+        : (0.05 + 0.03 * pulse) * (0.35 + 0.65 * proximityT);
+
+      const borderAlpha = isInsideBlast
+        ? 0.85 + 0.15 * pulse
+        : (0.45 + 0.35 * pulse) * (0.35 + 0.65 * proximityT);
+
+      // Colores de alerta
+      const hazardColor = isInsideBlast ? 0xff1e1e : 0xef4444;
+      const accentColor = isInsideBlast ? 0xffffff : 0xfca5a5;
+
+      // 1. Relleno suave translúcido del área de impacto en el suelo
+      this.barrelDangerGfx.fillStyle(hazardColor, fillAlpha);
+      this.barrelDangerGfx.fillCircle(vo.x, vo.y, EXPLOSION_RADIUS);
+
+      // 2. Línea perimetral continua de precisión (radio 140px)
+      this.barrelDangerGfx.lineStyle(1.5, hazardColor, borderAlpha * 0.7);
+      this.barrelDangerGfx.strokeCircle(vo.x, vo.y, EXPLOSION_RADIUS);
+
+      // 3. Borde discontinuo/almenado táctico animado (estilo militar)
+      const segments = 16;
+      const step = (Math.PI * 2) / segments;
+      const dashRatio = 0.62;
+      const rotOffset = time * (isInsideBlast ? 0.0018 : 0.0008);
+
+      this.barrelDangerGfx.lineStyle(isInsideBlast ? 3 : 2, hazardColor, borderAlpha);
+      for (let s = 0; s < segments; s++) {
+        const startAng = s * step + rotOffset;
+        const endAng = startAng + step * dashRatio;
+        this.barrelDangerGfx.beginPath();
+        this.barrelDangerGfx.arc(vo.x, vo.y, EXPLOSION_RADIUS, startAng, endAng);
+        this.barrelDangerGfx.strokePath();
+      }
+
+      // 4. Muescas tácticas apuntando hacia el interior en 8 direcciones
+      const tickCount = 8;
+      const tickStep = (Math.PI * 2) / tickCount;
+      const tickLen = isInsideBlast ? 12 : 8;
+      this.barrelDangerGfx.lineStyle(2, accentColor, borderAlpha * 0.8);
+      for (let k = 0; k < tickCount; k++) {
+        const ang = k * tickStep;
+        const cos = Math.cos(ang);
+        const sin = Math.sin(ang);
+        const x1 = vo.x + cos * EXPLOSION_RADIUS;
+        const y1 = vo.y + sin * EXPLOSION_RADIUS;
+        const x2 = vo.x + cos * (EXPLOSION_RADIUS - tickLen);
+        const y2 = vo.y + sin * (EXPLOSION_RADIUS - tickLen);
+        this.barrelDangerGfx.lineBetween(x1, y1, x2, y2);
+      }
+
+      // 5. Si el jugador está dentro del rango mortal, onda expansiva de peligro inminente
+      if (isInsideBlast) {
+        const waveProgress = (time % 800) / 800;
+        const waveRadius = waveProgress * EXPLOSION_RADIUS;
+        const waveAlpha = (1 - waveProgress) * 0.45;
+        this.barrelDangerGfx.lineStyle(1.5, 0xff2222, waveAlpha);
+        this.barrelDangerGfx.strokeCircle(vo.x, vo.y, waveRadius);
+      }
     }
   }
 
@@ -4566,7 +5089,11 @@ export class MainScene extends Phaser.Scene {
     const cg = this.crosshairGfx, ag = this.aimConeGfx;
     cg.clear();
     ag.clear();
-    if (me.isGhost) return;
+    if (me.isGhost) {
+      this.drawGhostTrapRange(me, wx, wy);
+      return;
+    }
+    this.ghostTrapRangeGfx.clear();
 
     // Retícula pixel: cruz con hueco central + punto
     const cx = Math.round(wx / 3), cy = Math.round(wy / 3);
@@ -4630,7 +5157,11 @@ export class MainScene extends Phaser.Scene {
       ag.clear();
     }
 
-    if (me.isGhost) return;
+    if (me.isGhost) {
+      this.drawGhostTrapRange(me, wx, wy);
+      return;
+    }
+    this.ghostTrapRangeGfx.clear();
 
     // Retícula Crosshair en la posición del ratón
     if (!grenadeOnly) {
@@ -4736,6 +5267,52 @@ export class MainScene extends Phaser.Scene {
       ag.lineBetween(px, py, endX, endY);
       ag.fillStyle(0x10b981, 0.9);
       ag.fillCircle(endX, endY, 4);
+    }
+  }
+
+  private drawGhostTrapRange(me: VPlayer, wx: number, wy: number) {
+    const g = this.ghostTrapRangeGfx;
+    g.clear();
+
+    const isSpectator = this.isSpectatorQueued || (this.room?.state?.spectatorQueue ? this.room.state.spectatorQueue.split(",").includes(this.myId) : false);
+    if (!me.isGhost || isSpectator) return;
+
+    const px = me.container.x;
+    const py = me.container.y;
+    const maxRange = 75 * 2; // 150px (doble de alcance de MELEE / cuchillo)
+    const cooldown = me.trapCooldown || 0;
+    const ready = cooldown <= 0;
+
+    // Área circular que rodea al fantasma (doble de alcance que el cuchillo)
+    const baseAlpha = ready ? 0.09 : 0.03;
+    g.fillStyle(0x06b6d4, baseAlpha);
+    g.fillCircle(px, py, maxRange);
+
+    // Borde circular del área de colocación
+    const strokeAlpha = ready ? 0.5 : 0.2;
+    g.lineStyle(2, ready ? 0x22d3ee : 0x64748b, strokeAlpha);
+    g.strokeCircle(px, py, maxRange);
+
+    // Marcador de posición objetivo bajo el ratón (restringido al radio de 150px)
+    let tx = wx;
+    let ty = wy;
+    const dist = Math.hypot(tx - px, ty - py);
+    if (dist > maxRange) {
+      const angle = Math.atan2(ty - py, tx - px);
+      tx = px + Math.cos(angle) * maxRange;
+      ty = py + Math.sin(angle) * maxRange;
+    }
+
+    if (ready) {
+      // Línea conectora tenue hacia el punto donde caerá la trampa
+      g.lineStyle(1.5, 0x38bdf8, 0.4);
+      g.lineBetween(px, py, tx, ty);
+
+      // Retícula previa de trampa
+      g.lineStyle(2, 0x38bdf8, 0.9);
+      g.strokeCircle(tx, ty, 8);
+      g.fillStyle(0x06b6d4, 0.6);
+      g.fillCircle(tx, ty, 3);
     }
   }
 
