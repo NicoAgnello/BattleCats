@@ -367,351 +367,141 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
   const activeSkinObj = SKINS.find((s) => s.id === selectedSkin) || SKINS[0];
 
   return (
-    <div className="hud relative w-screen h-screen overflow-x-hidden overflow-y-auto flex flex-col justify-between gap-4 p-4 sm:p-6 select-none">
-      {/* ── 1. Fondo de Gameplay en Vivo / Video Estilo Diep.io ──── */}
+    <div className="hud relative w-screen h-screen overflow-x-hidden overflow-y-auto flex flex-col gap-4 p-4 sm:p-6 select-none">
       <GameplayBackground />
 
-      {/* ── 2. Barra Superior (Diep.io Style Buttons) ─────────────── */}
-      <header className="relative z-10 flex items-center justify-between w-full max-w-7xl mx-auto">
-        {/* Botones Izquierda: Shop, VIP, Audio */}
-        <div className="flex items-center gap-2.5">
-          {/* Botón Tienda / Skins */}
-          <button
-            onClick={() => {
-              setShowShopModal(true);
-              soundManager.playClick();
-            }}
-            className="diep-btn-pill flex items-center gap-2 px-3.5 py-1.5 bg-[#00b2e1] text-white font-bold text-[13px]  "
-          >
-            <span className="text-sm">🛍️</span>
-            <span>Shop & Skins</span>
-          </button>
-
-          {/* Botón Pase Felino */}
-          <button
-            onClick={() => {
-              setShowShopModal(true);
-              soundManager.playClick();
-            }}
-            className="diep-btn-pill hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-[#eab308] text-slate-950 font-black text-[13px]  "
-          >
-            <span>👑</span>
-            <span>Pase Felino</span>
-          </button>
-
-          {/* Toggle Audio BGM */}
-          <button
-            onClick={handleToggleMusic}
-            title={musicEnabled ? "Silenciar Música" : "Activar Música"}
-            className={`diep-btn-pill flex items-center gap-1.5 px-2.5 py-1.5 text-[13px] font-bold ${
-              musicEnabled ? "bg-emerald-600 text-white" : "bg-slate-800 text-slate-400"
-            }`}
-          >
-            <span>{musicEnabled ? "🎵" : "🔇"}</span>
-            <span className="hidden md:inline">{musicEnabled ? "Música ON" : "Música OFF"}</span>
-          </button>
-
-          {/* Toggle SFX */}
-          <button
-            onClick={handleToggleSfx}
-            title={sfxEnabled ? "Silenciar Efectos" : "Activar Efectos"}
-            className={`diep-btn-pill flex items-center gap-1.5 px-2.5 py-1.5 text-[13px] font-bold ${
-              sfxEnabled ? "bg-cyan-600 text-white" : "bg-slate-800 text-slate-400"
-            }`}
-          >
-            <span>{sfxEnabled ? "🔊" : "🔈"}</span>
-            <span className="hidden md:inline">{sfxEnabled ? "SFX ON" : "SFX OFF"}</span>
-          </button>
-        </div>
-
-        {/* Botones Derecha: Custom Games & Menú */}
-        <div className="flex items-center gap-2.5">
-          <button
-            onClick={() => {
-              setShowRulesModal(true);
-              soundManager.playClick();
-            }}
-            className="diep-btn-pill flex items-center gap-1.5 px-3 py-1.5 bg-[#ec4899] text-white font-bold text-[13px]  "
-          >
-            <span>🎮</span>
-            <span>Controles</span>
-          </button>
-
-          <div className="px-3 py-1.5 bg-slate-900/80 border-2 border-slate-700/80 text-emerald-400 text-[13px] font-bold flex items-center gap-1.5">
-            <span className="w-2 h-2 bg-emerald-400 animate-ping" />
-            <span className="hidden sm:inline">Servidor 60Hz</span>
-          </div>
-        </div>
+      {/* ── Barra superior: armario, controles y sonido ── */}
+      <header className="relative z-10 flex flex-wrap items-center justify-end gap-3 w-full max-w-5xl mx-auto">
+        <button
+          onClick={() => { setShowShopModal(true); soundManager.playClick(); }}
+          className="hud-chip h-[30px] px-3 text-[14px] cursor-pointer"
+        >
+          Armario
+        </button>
+        <button
+          onClick={() => { setShowRulesModal(true); soundManager.playClick(); }}
+          className="hud-chip h-[30px] px-3 text-[14px] cursor-pointer"
+        >
+          Controles
+        </button>
+        <button
+          onClick={handleToggleMusic}
+          aria-pressed={musicEnabled}
+          className="hud-chip h-[30px] px-3 text-[14px] cursor-pointer"
+          style={{ color: musicEnabled ? "#6ee7b7" : "var(--hud-dim)" }}
+        >
+          Música {musicEnabled ? "sí" : "no"}
+        </button>
+        <button
+          onClick={handleToggleSfx}
+          aria-pressed={sfxEnabled}
+          className="hud-chip h-[30px] px-3 text-[14px] cursor-pointer"
+          style={{ color: sfxEnabled ? "#6ee7b7" : "var(--hud-dim)" }}
+        >
+          Efectos {sfxEnabled ? "sí" : "no"}
+        </button>
       </header>
 
-      {/* ── 3. Panel Central Flotante Estilo Diep.io ─────────────── */}
-      <main className="relative z-10 flex flex-col items-center justify-center my-auto w-full max-w-lg mx-auto space-y-4">
-        
-        {/* Logo Gigante Estilo Diep.io */}
-        <div className="text-center relative">
-          <div className="inline-block relative">
-            <h1 className="diep-title text-4xl sm:text-6xl md:text-7xl font-black select-none flex items-center justify-center gap-1">
+      {/* ── Dos columnas en pantallas anchas: personaje | cómo jugar. Una sola en el celular ── */}
+      <main className="relative z-10 my-auto w-full max-w-5xl mx-auto grid gap-8 lg:gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center">
+
+        {/* Izquierda: logo y personaje */}
+        <section className="flex flex-col items-center gap-6">
+          <div className="text-center">
+            <h1 className="diep-title text-5xl sm:text-6xl xl:text-7xl flex items-center justify-center gap-1">
               <span>BATTLE</span>
               <span className="text-[#00b2e1]">CATS</span>
-              <span className="text-emerald-400 text-3xl sm:text-5xl">.io</span>
             </h1>
-            {/* Orejitas felinas decorativas arriba del logo */}
-            <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 flex items-center gap-14 pointer-events-none opacity-90">
-              <span className="text-2xl transform -rotate-12">🐱</span>
-              <span className="text-2xl transform rotate-12">🐾</span>
-            </div>
-          </div>
-          <p className="text-[13px] sm:text-xs font-bold text-slate-300 mt-1 ">
-            TOP-DOWN BATTLE ROYALE • MEGA-MAPA 8000x8000
-          </p>
-        </div>
-
-        {/* Fila de Selectores Superiores: Game Mode & Region */}
-        <div className="grid grid-cols-2 gap-2.5 w-full">
-          {/* Game Mode */}
-          <div className="flex flex-col gap-1">
-            <span className="text-[13px] font-bold text-slate-300 ">Game Mode</span>
-            <div className="diep-btn-pill flex items-center justify-between px-3.5 py-2.5 bg-[#84cc16] text-slate-950 font-bold text-[13px] cursor-pointer ">
-              <span>Battle Royale (Solo)</span>
-              <span className="text-[13px]">▾</span>
-            </div>
+            <p className="text-[15px] mt-3" style={{ color: "var(--hud-dim)" }}>
+              Battle royale de gatos para jugar con amigos en la red.
+            </p>
           </div>
 
-          {/* Region */}
-          <div className="flex flex-col gap-1">
-            <span className="text-[13px] font-bold text-slate-300 ">Región / Servidor</span>
-            <div className="diep-btn-pill flex items-center justify-between px-3.5 py-2.5 bg-slate-800 text-slate-100 border-slate-900 font-bold text-[13px] cursor-pointer ">
-              <span className="flex items-center gap-1.5 truncate">
-                <span>🌎</span>
-                <span>LATAM (Local)</span>
+          <div className="diep-grid-blueprint w-full max-w-md px-4 pt-4 pb-3 flex flex-col items-center gap-3">
+            <div className="flex items-center justify-between w-full">
+              <span
+                style={{ backgroundColor: activeSkinObj.rarityColor }}
+                className="text-[13px] text-slate-950 px-2 py-0.5"
+              >
+                {activeSkinObj.rarity}
               </span>
-              <span className="text-emerald-400 text-[12px] whitespace-nowrap">🟢 14ms</span>
-            </div>
-          </div>
-        </div>
-
-        {/* ── Spotlight de Skin con Navegación Rápida & Grid Diep.io ── */}
-        <div className="w-full diep-grid-blueprint border-4 border-slate-950 p-3.5 relative overflow-hidden flex flex-col items-center">
-          
-          {/* Badge de Rareza en esquina */}
-          <div className="absolute top-2.5 right-2.5 flex items-center gap-2">
-            <span
-              style={{ backgroundColor: activeSkinObj.rarityColor }}
-              className="text-[12px] font-black text-slate-950 px-2 py-0.5  "
-            >
-              {activeSkinObj.rarity}
-            </span>
-            <button
-              onClick={() => setShowShopModal(true)}
-              className="text-[13px] font-bold text-cyan-400 hover:text-cyan-300 underline"
-            >
-              Armario ➔
-            </button>
-          </div>
-
-          {/* Carrusel de Skin con Flechas Diep.io */}
-          <div className="flex items-center justify-between w-full px-2 py-1">
-            {/* Flecha Izquierda */}
-            <button
-              type="button"
-              onClick={() => cycleSkin(-1)}
-              className="diep-btn-pill w-9 h-9 bg-slate-800/90 hover:bg-slate-700 text-white flex items-center justify-center font-black text-lg"
-              title="Skin Anterior"
-            >
-              ◀
-            </button>
-
-            {/* Avatar Central en Escenario 3D */}
-            <div className="flex flex-col items-center cursor-pointer" onClick={() => cycleSkin(1)}>
-              <div
-                style={{ filter: `drop-shadow(0 0 16px ${activeSkinObj.glow})` }}
-                className="transition-transform duration-200 hover:scale-105"
-              >
-                <PixelPortrait
-                  name={activeSkinObj.portrait}
-                  scale={2}
-                  fallback={
-                    <CatAvatar3D
-                      colorHex={activeSkinObj.color}
-                      earInnerHex={activeSkinObj.earInner}
-                      size={84}
-                      isSelected={true}
-                    />
-                  }
-                />
-              </div>
-
-              <div className="text-center mt-1">
-                <span className="font-black text-sm text-white block">
-                  {activeSkinObj.name}
-                </span>
-                <span className="text-[13px] font-medium text-slate-300 block">
-                  {activeSkinObj.title}
-                </span>
-              </div>
-            </div>
-
-            {/* Flecha Derecha */}
-            <button
-              type="button"
-              onClick={() => cycleSkin(1)}
-              className="diep-btn-pill w-9 h-9 bg-slate-800/90 hover:bg-slate-700 text-white flex items-center justify-center font-black text-lg"
-              title="Siguiente Skin"
-            >
-              ▶
-            </button>
-          </div>
-
-          {/* Paleta rápida de puntos de color (uno por personaje) para cambio con 1 click */}
-          <div className="flex items-center justify-center gap-2 pt-2 border-t border-slate-700/60 w-full mt-2">
-            {SKINS.map((s) => (
               <button
-                key={s.id}
-                type="button"
-                onClick={() => {
-                  setSelectedSkin(s.id);
-                  soundManager.playClick();
-                }}
-                style={{ backgroundColor: s.color }}
-                className={`w-5 h-5 border-2 transition-all ${
-                  selectedSkin === s.id
-                    ? "border-white scale-125 "
-                    : "border-slate-900 opacity-60 hover:opacity-100"
-                }`}
-                title={`${s.name} (${s.rarity})`}
-              />
-            ))}
-          </div>
-        </div>
-
-        {/* ── Selector de Modo: Sala Privada (principal) vs Partida Rápida ── */}
-        <div className="hud-panel w-full p-2 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              setGameMode("CUSTOM");
-              soundManager.playClick();
-              setRoomError(null);
-            }}
-            className={`flex-1 py-2 px-3 font-black text-[13px] transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              gameMode === "CUSTOM"
-                ? "bg-[#10b981] text-slate-950 scale-[1.02]"
-                : "text-slate-400 hover:text-white hover:bg-slate-800/60"
-            }`}
-          >
-            <span>👑</span>
-            <span>Sala Privada (Sin Bots)</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setGameMode("CLASSIC");
-              soundManager.playClick();
-              setRoomError(null);
-            }}
-            className={`flex-1 py-2 px-3 font-black text-[13px] transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              gameMode === "CLASSIC"
-                ? "bg-[#00b2e1] text-white scale-[1.02]"
-                : "text-slate-400 hover:text-white hover:bg-slate-800/60"
-            }`}
-          >
-            <span>🌐</span>
-            <span>Partida Rápida (Bots)</span>
-          </button>
-        </div>
-
-        {/* Panel de Configuración de Sala Personalizada */}
-        {gameMode === "CUSTOM" && (
-          <div className="hud-panel w-full flex flex-col gap-2.5 p-3">
-            {/* Sub-Tabs: Crear Sala vs Unirse con Código */}
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setCustomTab("CREATE");
-                  soundManager.playClick();
-                  setRoomError(null);
-                }}
-                className={`flex-1 py-1.5 px-2 text-[13px] font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
-                  customTab === "CREATE"
-                    ? "bg-emerald-500/25 border border-emerald-400 text-emerald-300 font-black "
-                    : "bg-slate-800/60 border border-slate-700/60 text-slate-400 hover:text-white"
-                }`}
+                onClick={() => setShowShopModal(true)}
+                className="text-[14px] underline cursor-pointer"
+                style={{ color: "var(--hud-shield)" }}
               >
-                <span>👑</span>
-                <span>Crear Sala</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setCustomTab("JOIN");
-                  soundManager.playClick();
-                  setRoomError(null);
-                }}
-                className={`flex-1 py-1.5 px-2 text-[13px] font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
-                  customTab === "JOIN"
-                    ? "bg-emerald-500/25 border border-emerald-400 text-emerald-300 font-black "
-                    : "bg-slate-800/60 border border-slate-700/60 text-slate-400 hover:text-white"
-                }`}
-              >
-                <span>🐾</span>
-                <span>Unirse con Código</span>
+                Ver todos
               </button>
             </div>
 
-            {/* Código generado si es Host */}
-            {customTab === "CREATE" ? (
-              <div className="flex items-center justify-between bg-slate-950/80 px-3 py-2 border border-slate-800">
-                <div className="flex flex-col">
-                  <span className="text-[12px] font-bold text-slate-400">Código de 4 dígitos:</span>
-                  <span className="room-code text-2xl text-amber-400">{generatedCode}</span>
+            <div className="flex items-center justify-between w-full">
+              <button
+                type="button"
+                onClick={() => cycleSkin(-1)}
+                className="hud-chip w-10 h-10 justify-center text-[18px] cursor-pointer"
+                aria-label="Personaje anterior"
+              >
+                ◀
+              </button>
+
+              <button type="button" className="flex flex-col items-center cursor-pointer" onClick={() => cycleSkin(1)} aria-label="Siguiente personaje">
+                <div className="lg:hidden">
+                  <PixelPortrait
+                    name={activeSkinObj.portrait}
+                    scale={2}
+                    fallback={<CatAvatar3D colorHex={activeSkinObj.color} earInnerHex={activeSkinObj.earInner} size={84} isSelected={true} />}
+                  />
                 </div>
-                <button
-                  type="button"
-                  onClick={regenerateCode}
-                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[13px] font-bold transition flex items-center gap-1 cursor-pointer"
-                  title="Generar otro código de 4 números"
-                >
-                  <span>🔄</span>
-                  <span>Cambiar</span>
-                </button>
-              </div>
-            ) : (
-              /* Input de código si se une como invitado */
-              <div className="flex flex-col gap-1">
-                <label className="text-[12px] font-black text-slate-400 ">
-                  Código de 4 números de la sala:
-                </label>
-                <input
-                  type="text"
-                  maxLength={4}
-                  value={joinCode}
-                  onChange={(e) => {
-                    setJoinCode(e.target.value.replace(/\D/g, "").slice(0, 4));
-                    setRoomError(null);
-                  }}
-                  placeholder="Ej: 4582"
-                  className="w-full text-center py-2 px-4 border-2 border-emerald-500/50 bg-slate-950 text-amber-400 room-code text-2xl outline-none focus:ring-2 focus:ring-emerald-400 "
-                />
-              </div>
-            )}
+                <div className="hidden lg:block">
+                  <PixelPortrait
+                    name={activeSkinObj.portrait}
+                    scale={3}
+                    fallback={<CatAvatar3D colorHex={activeSkinObj.color} earInnerHex={activeSkinObj.earInner} size={120} isSelected={true} />}
+                  />
+                </div>
+              </button>
 
-            {/* Límite y Reglas de la sala */}
-            <div className="text-[12px] text-slate-400 font-medium text-center">
-              👥 <b>Límite: 20 jugadores</b> · Sin bots · {customTab === "CREATE" ? "Comienzas la partida cuando decidas" : "Esperarás a que el host inicie"}
+              <button
+                type="button"
+                onClick={() => cycleSkin(1)}
+                className="hud-chip w-10 h-10 justify-center text-[18px] cursor-pointer"
+                aria-label="Personaje siguiente"
+              >
+                ▶
+              </button>
             </div>
 
-            {roomError && (
-              <div className="text-[13px] font-bold text-red-400 bg-red-950/40 border border-red-500/40 px-3 py-1.5 text-center animate-shake">
-                ⚠️ {roomError}
-              </div>
-            )}
-          </div>
-        )}
+            <div className="text-center">
+              <span className="text-[20px] block leading-tight">{activeSkinObj.name}</span>
+              <span className="text-[14px] block" style={{ color: "var(--hud-dim)" }}>{activeSkinObj.title}</span>
+            </div>
 
-        {/* ── Input de Apodo Estilo Diep.io y Botón de Inicio ─────────── */}
+            <div className="flex items-center justify-center gap-2.5 pt-1">
+              {SKINS.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedSkin(s.id);
+                    soundManager.playClick();
+                  }}
+                  style={{
+                    backgroundColor: s.color,
+                    boxShadow: selectedSkin === s.id
+                      ? "0 0 0 2px var(--hud-ink), 0 0 0 4px var(--hud-gold)"
+                      : "0 0 0 2px var(--hud-ink)",
+                    opacity: selectedSkin === s.id ? 1 : 0.6,
+                  }}
+                  className="w-4 h-4 cursor-pointer hover:opacity-100"
+                  title={`${s.name} (${s.rarity})`}
+                  aria-label={s.name}
+                />
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* Derecha: nombre, modo y arranque */}
         <form
           onSubmit={
             gameMode === "CLASSIC"
@@ -720,115 +510,158 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
               ? handleCreateRoom
               : handleJoinRoom
           }
-          className="w-full space-y-2.5"
+          className="flex flex-col gap-4 w-full max-w-md mx-auto"
         >
-          <div className="relative flex items-center w-full">
-            <span className="absolute left-4 text-slate-500 text-base pointer-events-none">
-              🐾
-            </span>
-            <input
-              type="text"
-              maxLength={16}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="This is the tale of..."
-              className="w-full pl-11 pr-14 py-3.5 border-4 border-slate-950 bg-white text-slate-950 placeholder-slate-400 font-bold text-sm sm:text-base outline-none focus:ring-4 focus:ring-cyan-400/50"
-            />
-            <span className="absolute right-4 text-[13px] font-mono font-bold text-slate-400 pointer-events-none">
-              {name.length}/16
-            </span>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[14px]" style={{ color: "var(--hud-dim)" }}>Tu nombre</span>
+            <div className="relative">
+              <input
+                type="text"
+                maxLength={16}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Michi Alfa"
+                className="w-full h-[44px] pl-3 pr-14 text-[17px] outline-none"
+                style={{ background: "#120e18", color: "var(--hud-text)", boxShadow: "0 0 0 2px var(--hud-ink), inset 0 2px 0 var(--hud-shade), 0 0 0 4px var(--hud-bevel)" }}
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[13px] pointer-events-none" style={{ color: "var(--hud-dim)" }}>
+                {name.length}/16
+              </span>
+            </div>
+          </label>
+
+          {/* Modo: sala privada (principal) o partida rápida con bots */}
+          <div className="hud-panel p-2 flex items-center gap-2">
+            {([
+              { id: "CUSTOM", label: "Sala privada", sub: "con amigos" },
+              { id: "CLASSIC", label: "Partida rápida", sub: "con bots" },
+            ] as const).map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => {
+                  setGameMode(m.id);
+                  soundManager.playClick();
+                  setRoomError(null);
+                }}
+                aria-pressed={gameMode === m.id}
+                className="flex-1 py-2 px-3 flex flex-col items-center cursor-pointer"
+                style={gameMode === m.id
+                  ? { background: m.id === "CUSTOM" ? "#10b981" : "#0ea5e9", color: "var(--hud-ink)", boxShadow: "inset 0 2px 0 rgba(255,255,255,0.35)" }
+                  : { color: "var(--hud-dim)" }}
+              >
+                <span className="text-[16px] leading-tight">{m.label}</span>
+                <span className="text-[13px] leading-tight opacity-80">{m.sub}</span>
+              </button>
+            ))}
           </div>
 
-          {/* Botón Principal (Play / Crear Sala / Unirse) */}
+          {gameMode === "CUSTOM" && (
+            <div className="hud-panel flex flex-col gap-3 p-3">
+              <div className="flex items-center gap-2">
+                {([
+                  { id: "CREATE", label: "Crear sala" },
+                  { id: "JOIN", label: "Unirme con código" },
+                ] as const).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => {
+                      setCustomTab(tab.id);
+                      soundManager.playClick();
+                      setRoomError(null);
+                    }}
+                    aria-pressed={customTab === tab.id}
+                    className="hud-chip flex-1 justify-center h-[30px] text-[14px] cursor-pointer"
+                    style={customTab === tab.id
+                      ? { color: "var(--hud-gold)", boxShadow: "0 0 0 2px var(--hud-ink), inset 0 0 0 2px var(--hud-gold)" }
+                      : { color: "var(--hud-dim)" }}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              {customTab === "CREATE" ? (
+                <div className="flex items-center justify-between px-3 py-2" style={{ background: "#120e18", boxShadow: "0 0 0 2px var(--hud-ink)" }}>
+                  <div className="flex flex-col">
+                    <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Código de tu sala</span>
+                    <span className="room-code text-[28px] leading-tight" style={{ color: "var(--hud-gold)" }}>{generatedCode}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={regenerateCode}
+                    className="hud-chip h-[30px] cursor-pointer"
+                    title="Generar otro código de 4 números"
+                  >
+                    Otro código
+                  </button>
+                </div>
+              ) : (
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Código de 4 números que te pasaron</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={4}
+                    value={joinCode}
+                    onChange={(e) => {
+                      setJoinCode(e.target.value.replace(/\D/g, "").slice(0, 4));
+                      setRoomError(null);
+                    }}
+                    placeholder="4582"
+                    className="room-code w-full h-[48px] text-center text-[28px] outline-none"
+                    style={{ background: "#120e18", color: "var(--hud-gold)", boxShadow: "0 0 0 2px var(--hud-ink), inset 0 2px 0 var(--hud-shade)" }}
+                  />
+                </label>
+              )}
+
+              <p className="text-[13px] text-center" style={{ color: "var(--hud-dim)" }}>
+                Hasta 20 jugadores, sin bots. {customTab === "CREATE" ? "Arrancás la partida cuando quieras." : "Arranca cuando el anfitrión quiera."}
+              </p>
+
+              {roomError && (
+                <p role="alert" className="text-[14px] text-center px-3 py-2" style={{ color: "#fca5a5", background: "#3a1218", boxShadow: "0 0 0 2px var(--hud-ink)" }}>
+                  {roomError}
+                </p>
+              )}
+            </div>
+          )}
+
           <button
             type="submit"
             disabled={checkingRoom}
-            className={`w-full py-3.5 px-6 font-black text-lg sm:text-xl cursor-pointer flex items-center justify-center gap-2 transition-transform transform active:scale-95 ${
-              gameMode === "CLASSIC"
-                ? "diep-btn-play text-white"
-                : customTab === "CREATE"
-                ? "hud-btn !text-[22px]"
-                : "hud-btn hud-btn-blue !text-[22px]"
-            }`}
+            className={`w-full h-[60px] px-6 cursor-pointer flex items-center justify-center gap-2 ${
+              gameMode === "CUSTOM" && customTab === "CREATE" ? "hud-btn" : "hud-btn hud-btn-blue"
+            } !text-[22px]`}
           >
-            {checkingRoom ? (
-              <span>Conectando... ⏳</span>
-            ) : gameMode === "CLASSIC" ? (
-              <>
-                <span>Play!</span>
-                <span>⚔️</span>
-              </>
-            ) : customTab === "CREATE" ? (
-              <>
-                <span>Crear sala <span className="room-code">{generatedCode}</span></span>
-                <span>👑</span>
-              </>
-            ) : (
-              <>
-                <span>Unirse a Sala</span>
-                <span>🐾</span>
-              </>
-            )}
+            {checkingRoom
+              ? "Conectando…"
+              : gameMode === "CLASSIC"
+              ? "Jugar"
+              : customTab === "CREATE"
+              ? <>Crear sala <span className="room-code">{generatedCode}</span></>
+              : "Unirme a la sala"}
           </button>
+
+          {gameMode === "CUSTOM" && (
+            <button
+              type="button"
+              onClick={handleCopyPartyLink}
+              className="hud-chip w-full justify-center h-[34px] text-[14px] cursor-pointer"
+            >
+              {partyLinkCopied ? "Enlace copiado" : "Copiar enlace para invitar"}
+            </button>
+          )}
         </form>
-
-        {/* Botón Secundario: Copy Party Link */}
-        <button
-          type="button"
-          onClick={handleCopyPartyLink}
-          className="diep-btn-pill w-full py-2.5 px-4 bg-[#0284c7] hover:bg-[#0369a1] text-white font-bold text-[13px] flex items-center justify-center gap-2 cursor-pointer"
-        >
-          <span>🔗</span>
-          <span>{partyLinkCopied ? "¡Enlace Copiado al Portapapeles!" : (gameMode === "CUSTOM" ? "Copiar Enlace de la Sala" : "Copy Party Link")}</span>
-        </button>
-
       </main>
 
-      {/* ── 4. Pie de Página & Widgets de Esquina (Diep.io Style) ─── */}
-      <footer className="relative z-10 flex items-end justify-between w-full max-w-7xl mx-auto">
-        {/* Esquina Inferior Izquierda: Idioma & Reglas */}
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center gap-2">
-            <button className="diep-btn-pill px-3 py-1 bg-slate-900 border-slate-800 text-white text-[13px] font-bold">
-              🇪🇸 ES ▾
-            </button>
-            <button
-              onClick={() => setShowRulesModal(true)}
-              className="diep-btn-pill px-3 py-1 bg-slate-900 border-slate-800 text-slate-200 text-[13px] font-bold"
-            >
-              📜 Reglas
-            </button>
-          </div>
-
-          <div className="hidden sm:flex items-center gap-2 text-[13px] text-slate-400 font-medium">
-            <span>WASD para mover</span>
-            <span>•</span>
-            <span>Mouse para apuntar y disparar</span>
-            <span>•</span>
-            <span>Espacio para Roll/Dash</span>
-          </div>
-        </div>
-
-        {/* Esquina Inferior Derecha: Notificación de Actualización & Radar */}
-        <div className="flex items-center gap-3">
-          <div className="text-right hidden md:block">
-            <div className="inline-block bg-emerald-500 text-slate-950 font-black text-[12px] px-2 py-0.5 mb-0.5">
-              ¡NUEVO!
-            </div>
-            <div className="text-[13px] font-bold text-slate-200">
-              Mega-Mapa 8000x8000 & Edificios
-            </div>
-            <div className="text-[12px] text-slate-400">
-              Oclusión de tejados y sigilo táctico
-            </div>
-          </div>
-
-          {/* Minimapa Decorativo Diep.io */}
-          <div className="w-14 h-14 border-2 border-cyan-400/80 bg-slate-950/80 p-1 flex items-center justify-center relative overflow-hidden">
-            <div className="w-10 h-10 border border-red-500/80 border-dashed animate-spin" />
-            <div className="w-2 h-2 bg-emerald-400 absolute" />
-          </div>
-        </div>
+      {/* ── Pie: lo básico para jugar ── */}
+      <footer className="relative z-10 hidden sm:flex flex-wrap items-center justify-center gap-5 w-full max-w-5xl mx-auto text-[13px]" style={{ color: "var(--hud-dim)" }}>
+        <span className="flex items-center gap-1.5"><span className="hud-key">WASD</span> Moverse</span>
+        <span className="flex items-center gap-1.5"><span className="hud-key">Mouse</span> Apuntar y disparar</span>
+        <span className="flex items-center gap-1.5"><span className="hud-key">Espacio</span> Dash</span>
+        <span className="flex items-center gap-1.5"><span className="hud-key">F</span> Agarrar</span>
       </footer>
 
       {/* ── 5. Modal de Tienda / Armario de Skins Estilo Diep.io ───── */}
