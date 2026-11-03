@@ -1,420 +1,310 @@
 import React, { useEffect, useRef } from "react";
 
-interface BgCat {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  angle: number;
-  targetAngle: number;
-  color: string;
-  name: string;
-  weapon: string;
-  shootTimer: number;
-  rollTimer: number;
-  isRolling: boolean;
-  rollAngle: number;
+/* ─── Fondo del menú: un pedazo de la jungla hecho con los sprites del juego ───
+ * Pasto, un tramo de río, árboles, arbustos, rocas y cajas, con gatos de los cinco
+ * skins caminando y algún fantasmita. Se dibuja a resolución baja (1 px del mundo =
+ * SCALE px de pantalla, como en el juego) y la cámara se pasea despacio.
+ * Antes era un video grabado con el HUD viejo: este no se desactualiza al cambiar el arte.
+ */
+
+const SCALE = 3;                 // igual que CAT_SPRITE_SCALE del juego
+const PAN_EXTRA = 160;           // px del mundo de más a lo ancho para el paneo
+const PAN_PERIOD_MS = 90_000;    // ida y vuelta de la cámara
+const FPS = 30;
+
+const GRASS = ["#355a24", "#3f6a2b", "#497a32", "#53893a", "#5c9641", "#67a348", "#74b052"];
+const DIRT = ["#6b4a2f", "#7a5634", "#8a6240"];
+const SAND = ["#b8a070", "#c9b27a", "#d8c690"];
+const WATER = ["#245096", "#2a5ca8", "#2f63b8", "#3a72c4"];
+const FLOWERS = ["#f2f0e6", "#f0cf5a", "#e05a9a", "#b07ae0"];
+
+const CAT_SKINS = [
+  "juego-felino-naranja-bosque",
+  "juego-felino-gris-urbano",
+  "juego-felino-negro-selva",
+  "juego-felino-crema-desierto",
+  "juego-felino-blanco-nieve",
+];
+
+/** Hoja de sprites con sus frames tal como los exporta Aseprite (public/sprites/*.json). */
+interface Frame { x: number; y: number; w: number; h: number }
+interface Sheet { img: HTMLImageElement; frames: Frame[]; w: number; h: number }
+
+/** Ruido determinístico para que la escena sea siempre la misma. */
+function rng(seed: number) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const hash2 = (x: number, y: number) => {
+  const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return n - Math.floor(n);
+};
+/** Ruido suave (bilineal) para manchas de pasto y tierra. */
+function smooth(x: number, y: number, cell: number) {
+  const gx = Math.floor(x / cell), gy = Math.floor(y / cell);
+  const fx = x / cell - gx, fy = y / cell - gy;
+  const a = hash2(gx, gy), b = hash2(gx + 1, gy), c = hash2(gx, gy + 1), d = hash2(gx + 1, gy + 1);
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
 }
 
-interface BgBullet {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  color: string;
-  life: number;
-  radius: number;
+async function loadSheet(name: string): Promise<Sheet | null> {
+  try {
+    const meta = await fetch(`sprites/${name}.json`).then((r) => r.json());
+    const frames: Frame[] = Object.values(meta.frames as Record<string, { frame: Frame }>).map((f) => f.frame);
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = reject;
+      im.src = `sprites/${name}.png`;
+    });
+    return { img, frames, w: frames[0].w, h: frames[0].h };
+  } catch {
+    return null;
+  }
 }
 
-interface BgParticle {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  color: string;
-  life: number;
-  maxLife: number;
-  size: number;
+function drawFrame(ctx: CanvasRenderingContext2D, s: Sheet, i: number, x: number, y: number) {
+  const f = s.frames[i % s.frames.length];
+  ctx.drawImage(s.img, f.x, f.y, f.w, f.h, Math.round(x), Math.round(y), f.w, f.h);
 }
 
-interface BgShape {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  rot: number;
-  vRot: number;
-  type: "crate" | "barrel" | "poly";
-  size: number;
-  hp: number;
+interface Walker {
+  sheet: Sheet; x: number; y: number; tx: number; ty: number;
+  angle: number; pause: number; frame: number;
 }
+interface Ghost { x: number; y: number; phase: number; speed: number }
 
 export const GameplayBackground: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [videoLoaded, setVideoLoaded] = React.useState(false);
-
-  useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.play().catch(() => {});
-    }
-  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
-    let animId = 0;
-    let width = (canvas.width = window.innerWidth);
-    let height = (canvas.height = window.innerHeight);
+    let cancelled = false;
+    let raf = 0;
+    let ground: HTMLCanvasElement | null = null;   // pasto, río, rocas y cajas
+    let canopy: HTMLCanvasElement | null = null;   // árboles y arbustos (tapan a los gatos)
+    let worldW = 0, worldH = 0, viewW = 0, viewH = 0;
+    let riverX = (_y: number) => 0;
+    const walkers: Walker[] = [];
+    const ghosts: Ghost[] = [];
+    let sheets: Record<string, Sheet | null> = {};
 
-    const handleResize = () => {
-      if (!canvas) return;
-      width = canvas.width = window.innerWidth;
-      height = canvas.height = window.innerHeight;
-    };
-    window.addEventListener("resize", handleResize);
+    const inRiver = (x: number, y: number, pad = 0) => Math.abs(x - riverX(y)) < 16 + pad;
 
-    // Initial autonomous bots
-    const catColors = ["#10b981", "#ef4444", "#8b5cf6", "#f97316", "#06b6d4", "#eab308"];
-    const catNames = ["Alpha", "Shadow", "Garfield", "Blaze", "Viper", "Ghost"];
-    const weapons = ["LASER", "SHOTGUN", "SNIPER"];
+    /** Arma las capas fijas del mundo para el tamaño de pantalla actual. */
+    const buildWorld = () => {
+      viewW = Math.ceil(window.innerWidth / SCALE);
+      viewH = Math.ceil(window.innerHeight / SCALE);
+      worldW = viewW + PAN_EXTRA;
+      worldH = viewH;
+      canvas.width = viewW;
+      canvas.height = viewH;
+      ctx.imageSmoothingEnabled = false;
 
-    const cats: BgCat[] = Array.from({ length: 6 }).map((_, i) => ({
-      x: 100 + Math.random() * (width - 200),
-      y: 100 + Math.random() * (height - 200),
-      vx: (Math.random() - 0.5) * 1.5,
-      vy: (Math.random() - 0.5) * 1.5,
-      angle: Math.random() * Math.PI * 2,
-      targetAngle: Math.random() * Math.PI * 2,
-      color: catColors[i % catColors.length],
-      name: catNames[i % catNames.length],
-      weapon: weapons[i % weapons.length],
-      shootTimer: Math.random() * 60,
-      rollTimer: 180 + Math.random() * 240,
-      isRolling: false,
-      rollAngle: 0,
-    }));
+      riverX = (y: number) => worldW * 0.66 + Math.sin(y / 38) * 14 + Math.sin(y / 17) * 4;
 
-    const bullets: BgBullet[] = [];
-    const particles: BgParticle[] = [];
-
-    // Floating shapes & crates (diep.io + battlecats style)
-    const shapes: BgShape[] = Array.from({ length: 14 }).map(() => ({
-      x: Math.random() * width,
-      y: Math.random() * height,
-      vx: (Math.random() - 0.5) * 0.4,
-      vy: (Math.random() - 0.5) * 0.4,
-      rot: Math.random() * Math.PI * 2,
-      vRot: (Math.random() - 0.5) * 0.02,
-      type: Math.random() > 0.5 ? "crate" : Math.random() > 0.5 ? "barrel" : "poly",
-      size: 18 + Math.random() * 14,
-      hp: 100,
-    }));
-
-    let gridOffset = 0;
-
-    const spawnSparks = (x: number, y: number, color: string, count = 6) => {
-      for (let i = 0; i < count; i++) {
-        const ang = Math.random() * Math.PI * 2;
-        const spd = 1.5 + Math.random() * 3.5;
-        particles.push({
-          x,
-          y,
-          vx: Math.cos(ang) * spd,
-          vy: Math.sin(ang) * spd,
-          color,
-          life: 20 + Math.random() * 15,
-          maxLife: 35,
-          size: 2 + Math.random() * 2.5,
-        });
-      }
-    };
-
-    const render = () => {
-      // 1. Clear & Background diep.io arena style (soft slate-900 / grid)
-      ctx.fillStyle = "#0a0f1d";
-      ctx.fillRect(0, 0, width, height);
-
-      // 2. Subtle diep.io square grid
-      const gridSize = 40;
-      gridOffset = (gridOffset + 0.15) % gridSize;
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.04)";
-      ctx.lineWidth = 1;
-
-      ctx.beginPath();
-      for (let x = -gridOffset; x < width; x += gridSize) {
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, height);
-      }
-      for (let y = -gridOffset; y < height; y += gridSize) {
-        ctx.moveTo(0, y);
-        ctx.lineTo(width, y);
-      }
-      ctx.stroke();
-
-      // 3. Update & Draw Shapes (Crates / Barrels / Polygons)
-      shapes.forEach((s) => {
-        s.x += s.vx;
-        s.y += s.vy;
-        s.rot += s.vRot;
-        if (s.x < -30) s.x = width + 30;
-        if (s.x > width + 30) s.x = -30;
-        if (s.y < -30) s.y = height + 30;
-        if (s.y > height + 30) s.y = -30;
-
-        ctx.save();
-        ctx.translate(s.x, s.y);
-        ctx.rotate(s.rot);
-
-        if (s.type === "crate") {
-          // Wooden crate style
-          ctx.fillStyle = "rgba(103, 75, 36, 0.75)";
-          ctx.fillRect(-s.size, -s.size, s.size * 2, s.size * 2);
-          ctx.strokeStyle = "rgba(158, 116, 55, 0.9)";
-          ctx.lineWidth = 2.5;
-          ctx.strokeRect(-s.size, -s.size, s.size * 2, s.size * 2);
-          ctx.beginPath();
-          ctx.moveTo(-s.size, -s.size);
-          ctx.lineTo(s.size, s.size);
-          ctx.stroke();
-        } else if (s.type === "barrel") {
-          // Red explosive barrel
-          ctx.fillStyle = "rgba(185, 28, 28, 0.75)";
-          ctx.beginPath();
-          ctx.arc(0, 0, s.size, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.strokeStyle = "#facc15";
-          ctx.lineWidth = 2;
-          ctx.stroke();
-        } else {
-          // Diep.io style geometric polygon (triangle/pentagon)
-          ctx.fillStyle = "rgba(56, 189, 248, 0.4)";
-          ctx.strokeStyle = "rgba(14, 165, 233, 0.8)";
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          for (let p = 0; p < 5; p++) {
-            const pa = (p * Math.PI * 2) / 5;
-            const px = Math.cos(pa) * s.size;
-            const py = Math.sin(pa) * s.size;
-            if (p === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
+      ground = document.createElement("canvas");
+      ground.width = worldW; ground.height = worldH;
+      const g = ground.getContext("2d")!;
+      const img = g.createImageData(worldW, worldH);
+      const put = (i: number, hex: string) => {
+        img.data[i] = parseInt(hex.slice(1, 3), 16);
+        img.data[i + 1] = parseInt(hex.slice(3, 5), 16);
+        img.data[i + 2] = parseInt(hex.slice(5, 7), 16);
+        img.data[i + 3] = 255;
+      };
+      for (let y = 0; y < worldH; y++) {
+        const rx = riverX(y);
+        for (let x = 0; x < worldW; x++) {
+          const i = (y * worldW + x) * 4;
+          const d = Math.abs(x - rx);
+          const j = hash2(x, y);
+          if (d < 13) {
+            put(i, WATER[Math.min(WATER.length - 1, Math.floor((smooth(x, y, 9) * 0.7 + j * 0.3) * WATER.length))]);
+          } else if (d < 16) {
+            put(i, SAND[Math.floor(j * SAND.length)]);
+          } else {
+            const n = smooth(x, y, 14) * 0.75 + smooth(x, y, 5) * 0.25;
+            if (smooth(x + 500, y, 26) > 0.78) {
+              put(i, DIRT[Math.floor(j * DIRT.length)]);
+            } else if (j > 0.994) {
+              put(i, FLOWERS[Math.floor(hash2(y, x) * FLOWERS.length)]);
+            } else {
+              put(i, GRASS[Math.min(GRASS.length - 1, Math.floor((n * 0.85 + j * 0.15) * GRASS.length))]);
+            }
           }
-          ctx.closePath();
-          ctx.fill();
-          ctx.stroke();
         }
-        ctx.restore();
-      });
+      }
+      g.putImageData(img, 0, 0);
 
-      // 4. Update & Draw Bullets
-      for (let i = bullets.length - 1; i >= 0; i--) {
-        const b = bullets[i];
-        b.x += b.vx;
-        b.y += b.vy;
-        b.life--;
-
-        // Glow trail
-        ctx.fillStyle = b.color;
-        ctx.shadowColor = b.color;
-        ctx.shadowBlur = 8;
-        ctx.beginPath();
-        ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.shadowBlur = 0;
-
-        // Check collision with shapes
-        for (let s of shapes) {
-          const dist = Math.hypot(b.x - s.x, b.y - s.y);
-          if (dist < s.size + b.radius) {
-            spawnSparks(b.x, b.y, b.color, 5);
-            b.life = 0;
+      canopy = document.createElement("canvas");
+      canopy.width = worldW; canopy.height = worldH;
+      const c = canopy.getContext("2d")!;
+      const r = rng(7);
+      /** `variants`: primer frame de cada variante (cajas y barriles tienen 3 etapas de daño por variante). */
+      const place = (s: Sheet | null, n: number, layer: CanvasRenderingContext2D, variants: number[]) => {
+        if (!s) return;
+        for (let k = 0; k < n; k++) {
+          for (let tries = 0; tries < 20; tries++) {
+            const x = r() * (worldW - s.w), y = r() * (worldH - s.h);
+            if (inRiver(x + s.w / 2, y + s.h / 2, s.w / 2)) continue;
+            drawFrame(layer, s, variants[Math.floor(r() * variants.length)], x, y);
             break;
           }
         }
+      };
+      const area = (worldW * worldH) / 40000;   // cantidad de cosas según el tamaño
+      place(sheets.roca, Math.round(area * 1.2), g, [0, 1, 2, 3]);
+      place(sheets.caja, Math.round(area * 0.8), g, [0, 3, 6]);
+      place(sheets.barril, Math.round(area * 0.4), g, [0, 3]);
+      place(sheets.arbusto, Math.round(area * 1.2), c, [0, 1, 2, 3, 4, 5, 6, 7]);
+      place(sheets.arbol, Math.round(area * 1.0), c, [0, 1, 2, 3]);
 
-        if (b.life <= 0 || b.x < 0 || b.x > width || b.y < 0 || b.y > height) {
-          bullets.splice(i, 1);
-        }
+      walkers.length = 0;
+      ghosts.length = 0;
+      const cats = CAT_SKINS.map((n) => sheets[n]).filter((s): s is Sheet => !!s);
+      for (let k = 0; k < Math.max(8, Math.round(area * 2.4)) && cats.length; k++) {
+        let x = r() * worldW, y = r() * worldH;
+        if (inRiver(x, y, 10)) x = (x + worldW / 3) % worldW;
+        walkers.push({ sheet: cats[k % cats.length], x, y, tx: x, ty: y, angle: r() * Math.PI * 2, pause: r() * 3, frame: r() * 6 });
       }
-
-      // 5. Update & Draw Autonomous Cats
-      cats.forEach((cat, idx) => {
-        // Wandering AI
-        cat.x += cat.vx;
-        cat.y += cat.vy;
-
-        // Bounce on borders
-        if (cat.x < 60) { cat.x = 60; cat.vx = Math.abs(cat.vx); }
-        if (cat.x > width - 60) { cat.x = width - 60; cat.vx = -Math.abs(cat.vx); }
-        if (cat.y < 60) { cat.y = 60; cat.vy = Math.abs(cat.vy); }
-        if (cat.y > height - 60) { cat.y = height - 60; cat.vy = -Math.abs(cat.vy); }
-
-        // Find nearest target to aim
-        const target = shapes[idx % shapes.length];
-        if (target) {
-          const targetAng = Math.atan2(target.y - cat.y, target.x - cat.x);
-          cat.angle += (targetAng - cat.angle) * 0.05;
-        }
-
-        // Shoot timer
-        cat.shootTimer++;
-        if (cat.shootTimer > 45 + (idx % 3) * 20) {
-          cat.shootTimer = 0;
-          const spd = 7;
-          const bx = cat.x + Math.cos(cat.angle) * 24;
-          const by = cat.y + Math.sin(cat.angle) * 24;
-          bullets.push({
-            x: bx,
-            y: by,
-            vx: Math.cos(cat.angle) * spd,
-            vy: Math.sin(cat.angle) * spd,
-            color: cat.color,
-            life: 80,
-            radius: 3.5,
-          });
-          spawnSparks(bx, by, cat.color, 2);
-        }
-
-        // Roll timer
-        cat.rollTimer--;
-        if (cat.rollTimer <= 0) {
-          cat.rollTimer = 220 + Math.random() * 180;
-          cat.isRolling = true;
-          cat.rollAngle = 0;
-        }
-        if (cat.isRolling) {
-          cat.rollAngle += 0.25;
-          if (cat.rollAngle >= Math.PI * 2) {
-            cat.isRolling = false;
-            cat.rollAngle = 0;
-          }
-        }
-
-        // Draw Cat
-        ctx.save();
-        ctx.translate(cat.x, cat.y);
-        ctx.rotate(cat.angle + (cat.isRolling ? cat.rollAngle : 0));
-
-        // Hands / Paws
-        ctx.fillStyle = cat.color;
-        ctx.strokeStyle = "#000000";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(16, -11, 5, 0, Math.PI * 2);
-        ctx.arc(16, 11, 5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-
-        // Gun barrel
-        ctx.fillStyle = "#334155";
-        ctx.fillRect(8, -4, 18, 8);
-        ctx.strokeRect(8, -4, 18, 8);
-
-        // Body Circle (Diep / Suroi style)
-        ctx.fillStyle = cat.color;
-        ctx.beginPath();
-        ctx.arc(0, 0, 19, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-
-        // Cat Ears
-        ctx.fillStyle = cat.color;
-        ctx.beginPath();
-        ctx.moveTo(-10, -16);
-        ctx.lineTo(-4, -26);
-        ctx.lineTo(4, -18);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-
-        ctx.beginPath();
-        ctx.moveTo(-10, 16);
-        ctx.lineTo(-4, 26);
-        ctx.lineTo(4, 18);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-
-        // Face details
-        ctx.fillStyle = "#ffffff";
-        ctx.beginPath();
-        ctx.arc(7, -5, 3.5, 0, Math.PI * 2);
-        ctx.arc(7, 5, 3.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = "#000000";
-        ctx.beginPath();
-        ctx.arc(8, -5, 1.8, 0, Math.PI * 2);
-        ctx.arc(8, 5, 1.8, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.restore();
-
-        // Cat Name tag
-        ctx.font = "bold 10px Outfit, Inter, sans-serif";
-        ctx.fillStyle = "rgba(255, 255, 255, 0.65)";
-        ctx.textAlign = "center";
-        ctx.fillText(cat.name, cat.x, cat.y - 28);
-      });
-
-      // 6. Draw Sparks / Particles
-      for (let i = particles.length - 1; i >= 0; i--) {
-        const p = particles[i];
-        p.x += p.vx;
-        p.y += p.vy;
-        p.life--;
-        const alpha = Math.max(0, p.life / p.maxLife);
-        ctx.fillStyle = p.color;
-        ctx.globalAlpha = alpha;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = 1;
-        if (p.life <= 0) particles.splice(i, 1);
+      for (let k = 0; k < 3; k++) {
+        ghosts.push({ x: r() * worldW, y: r() * worldH, phase: r() * Math.PI * 2, speed: 4 + r() * 4 });
       }
-
-      animId = requestAnimationFrame(render);
     };
 
-    render();
+    const update = (dt: number) => {
+      const r = Math.random;
+      for (const w of walkers) {
+        if (w.pause > 0) { w.pause -= dt; continue; }
+        const dx = w.tx - w.x, dy = w.ty - w.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 2) {
+          w.pause = 1 + r() * 3;
+          for (let tries = 0; tries < 10; tries++) {
+            const tx = Math.max(16, Math.min(worldW - 16, w.x + (r() - 0.5) * 160));
+            const ty = Math.max(16, Math.min(worldH - 16, w.y + (r() - 0.5) * 120));
+            if (!inRiver(tx, ty, 10) && !inRiver((tx + w.x) / 2, (ty + w.y) / 2, 10)) { w.tx = tx; w.ty = ty; break; }
+          }
+          continue;
+        }
+        const speed = 22;   // px del mundo por segundo
+        w.x += (dx / dist) * speed * dt;
+        w.y += (dy / dist) * speed * dt;
+        w.angle = Math.atan2(dy, dx);
+        w.frame += dt * 10;
+      }
+      for (const g of ghosts) {
+        g.phase += dt;
+        g.x += g.speed * dt;
+        if (g.x > worldW + 12) g.x = -12;
+      }
+    };
+
+    const draw = (now: number) => {
+      if (!ground || !canopy) return;
+      const pan = reduceMotion ? PAN_EXTRA / 2 : (0.5 - 0.5 * Math.cos((now / PAN_PERIOD_MS) * Math.PI * 2)) * PAN_EXTRA;
+      const camX = Math.round(pan);
+      ctx.drawImage(ground, camX, 0, viewW, viewH, 0, 0, viewW, viewH);
+
+      for (const w of walkers) {
+        const sx = w.x - camX;
+        if (sx < -32 || sx > viewW + 32) continue;
+        const moving = w.pause <= 0;
+        const frame = moving ? 4 + (Math.floor(w.frame) % 6) : Math.floor(now / 250) % 4;
+        ctx.save();
+        ctx.translate(Math.round(sx), Math.round(w.y));
+        ctx.rotate(w.angle);
+        drawFrame(ctx, w.sheet, frame, -16, -16);
+        ctx.restore();
+      }
+
+      ctx.drawImage(canopy, camX, 0, viewW, viewH, 0, 0, viewW, viewH);
+
+      const ghostSheet = sheets.fantasma;
+      if (ghostSheet) {
+        ctx.globalAlpha = 0.7;
+        for (const g of ghosts) {
+          drawFrame(ctx, ghostSheet, Math.floor(g.phase * 3) % 2, g.x - camX, g.y + Math.sin(g.phase * 2) * 3);
+        }
+        ctx.globalAlpha = 1;
+      }
+    };
+
+    let last = performance.now();
+    let acc = 0;
+    const loop = (now: number) => {
+      raf = requestAnimationFrame(loop);
+      const dt = Math.min(0.1, (now - last) / 1000);
+      last = now;
+      acc += dt;
+      if (acc < 1 / FPS) return;
+      update(acc);
+      acc = 0;
+      draw(now);
+    };
+
+    Promise.all([
+      ...CAT_SKINS.map((n) => loadSheet(n).then((s) => [n, s] as const)),
+      loadSheet("mundo-arbol").then((s) => ["arbol", s] as const),
+      loadSheet("mundo-arbusto").then((s) => ["arbusto", s] as const),
+      loadSheet("mundo-roca").then((s) => ["roca", s] as const),
+      loadSheet("mundo-caja").then((s) => ["caja", s] as const),
+      loadSheet("mundo-barril").then((s) => ["barril", s] as const),
+      loadSheet("efecto-gatito-fantasma").then((s) => ["fantasma", s] as const),
+    ]).then((list) => {
+      if (cancelled) return;
+      sheets = Object.fromEntries(list);
+      buildWorld();
+      if (reduceMotion) draw(0);
+      else raf = requestAnimationFrame(loop);
+    });
+
+    let resizeTimer = 0;
+    const onResize = () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        buildWorld();
+        if (reduceMotion) draw(0);
+      }, 150);
+    };
+    // Con la pestaña oculta no se anima (ahorra CPU mientras jugás en otra ventana)
+    const onVisibility = () => {
+      cancelAnimationFrame(raf);
+      if (!document.hidden && !reduceMotion && ground) {
+        last = performance.now();
+        raf = requestAnimationFrame(loop);
+      }
+    };
+    window.addEventListener("resize", onResize);
+    document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
-      window.removeEventListener("resize", handleResize);
-      cancelAnimationFrame(animId);
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      clearTimeout(resizeTimer);
+      window.removeEventListener("resize", onResize);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
 
   return (
-    <div className="fixed inset-0 pointer-events-none overflow-hidden z-0 select-none">
-      {/* 1. Procedural 60 FPS Canvas Background as Instant Fallback Base */}
-      <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
-
-      {/* 2. Video Loop Background de Gameplay Real de BattleCats */}
-      <video
-        ref={videoRef}
-        autoPlay
-        loop
-        muted
-        playsInline
-        onCanPlay={() => setVideoLoaded(true)}
-        className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 ${
-          videoLoaded ? "opacity-75" : "opacity-0"
-        }`}
-      >
-        <source src="/gameplay.mp4" type="video/mp4" />
-        <source src="/gameplay.webm" type="video/webm" />
-      </video>
-
-      {/* 3. Cuadrícula diep.io sutil superpuesta para textura milimetrada perfecta */}
-      <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.035)_1px,transparent_1px)] bg-[size:36px_36px] pointer-events-none" />
-
-      {/* 4. Viñeta y Gradiente Suave para Máximo Contraste del Menú Central */}
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(10,15,29,0.22)_0%,rgba(10,15,29,0.72)_65%,rgba(2,6,23,0.95)_100%)] pointer-events-none" />
-
-      {/* 5. Glow Perimetral Oscuro Diep.io */}
-      <div className="absolute inset-0 shadow-[inset_0_0_140px_rgba(0,0,0,0.85)] pointer-events-none" />
+    <div className="fixed inset-0 pointer-events-none overflow-hidden z-0 select-none" style={{ background: "#0b0810" }}>
+      <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" style={{ imageRendering: "pixelated" }} />
+      {/* Oscurecido parejo + bordes más oscuros, para que el menú se lea encima */}
+      <div className="absolute inset-0" style={{ background: "rgba(11, 8, 16, 0.55)" }} />
+      <div className="absolute inset-0" style={{ background: "radial-gradient(ellipse at center, transparent 40%, rgba(11, 8, 16, 0.75) 100%)" }} />
     </div>
   );
 };

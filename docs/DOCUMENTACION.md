@@ -74,8 +74,8 @@ BattleCats/
 ├── client/                   FRONTEND (React + Vite + Phaser 3)
 │   ├── index.html, vite.config.ts, tailwind.config.js, postcss.config.js, tsconfig.json
 │   ├── public/
-│   │   ├── sprites/          Hojas de sprites pixel art (PNG + JSON estilo Aseprite) y manifest.json
-│   │   └── gameplay.mp4/.webm  Video de fondo de la pantalla de inicio
+│   │   └── sprites/          Hojas de sprites pixel art (PNG + JSON estilo Aseprite) y manifest.json;
+│   │                         también arman el fondo animado del menú (GameplayBackground.tsx)
 │   └── src/
 │       ├── main.tsx          Entrada de React
 │       ├── App.tsx           Alterna entre StartScreen y juego (GameCanvas + UIOverlay + DebugOverlay)
