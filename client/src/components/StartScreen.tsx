@@ -203,7 +203,9 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
   const [partyLinkCopied, setPartyLinkCopied] = useState(false);
 
   // Modo de Juego: CLASSIC (con bots) vs CUSTOM (sala privada sin bots)
-  const [gameMode, setGameMode] = useState<"CLASSIC" | "CUSTOM">("CLASSIC");
+  // La sala privada es el modo principal (jugar con amigos en la red); la partida
+  // rápida con bots queda como segunda opción
+  const [gameMode, setGameMode] = useState<"CLASSIC" | "CUSTOM">("CUSTOM");
   const [customTab, setCustomTab] = useState<"CREATE" | "JOIN">("CREATE");
   const [generatedCode, setGeneratedCode] = useState(() => Math.floor(1000 + Math.random() * 9000).toString());
   const [joinCode, setJoinCode] = useState("");
@@ -365,7 +367,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
   const activeSkinObj = SKINS.find((s) => s.id === selectedSkin) || SKINS[0];
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden flex flex-col justify-between p-4 sm:p-6 select-none font-game">
+    <div className="relative w-screen h-screen overflow-x-hidden overflow-y-auto flex flex-col justify-between gap-4 p-4 sm:p-6 select-none font-game">
       {/* ── 1. Fondo de Gameplay en Vivo / Video Estilo Diep.io ──── */}
       <GameplayBackground />
 
@@ -448,10 +450,10 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
         {/* Logo Gigante Estilo Diep.io */}
         <div className="text-center relative">
           <div className="inline-block relative">
-            <h1 className="diep-title text-5xl sm:text-6xl md:text-7xl font-black tracking-tight select-none flex items-center justify-center gap-1">
+            <h1 className="diep-title text-4xl sm:text-6xl md:text-7xl font-black tracking-tight select-none flex items-center justify-center gap-1">
               <span>BATTLE</span>
               <span className="text-[#00b2e1]">CATS</span>
-              <span className="text-emerald-400 text-4xl sm:text-5xl font-mono">.io</span>
+              <span className="text-emerald-400 text-3xl sm:text-5xl font-mono">.io</span>
             </h1>
             {/* Orejitas felinas decorativas arriba del logo */}
             <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 flex items-center gap-14 pointer-events-none opacity-90">
@@ -582,25 +584,8 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
           </div>
         </div>
 
-        {/* ── Selector de Modo: Partida Rápida vs Sala Personalizada ── */}
+        {/* ── Selector de Modo: Sala Privada (principal) vs Partida Rápida ── */}
         <div className="w-full bg-slate-900/90 p-1.5 rounded-2xl border-2 border-slate-800 shadow-xl flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => {
-              setGameMode("CLASSIC");
-              soundManager.playClick();
-              setRoomError(null);
-            }}
-            className={`flex-1 py-2 px-3 rounded-xl font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-              gameMode === "CLASSIC"
-                ? "bg-[#00b2e1] text-white shadow-lg scale-[1.02]"
-                : "text-slate-400 hover:text-white hover:bg-slate-800/60"
-            }`}
-          >
-            <span>🌐</span>
-            <span>Partida Rápida (Bots)</span>
-          </button>
-
           <button
             type="button"
             onClick={() => {
@@ -616,6 +601,23 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
           >
             <span>👑</span>
             <span>Sala Privada (Sin Bots)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setGameMode("CLASSIC");
+              soundManager.playClick();
+              setRoomError(null);
+            }}
+            className={`flex-1 py-2 px-3 rounded-xl font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+              gameMode === "CLASSIC"
+                ? "bg-[#00b2e1] text-white shadow-lg scale-[1.02]"
+                : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+            }`}
+          >
+            <span>🌐</span>
+            <span>Partida Rápida (Bots)</span>
           </button>
         </div>
 

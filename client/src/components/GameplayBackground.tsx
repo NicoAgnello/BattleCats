@@ -387,7 +387,7 @@ export const GameplayBackground: React.FC = () => {
   }, []);
 
   return (
-    <div className="absolute inset-0 pointer-events-none overflow-hidden z-0 select-none">
+    <div className="fixed inset-0 pointer-events-none overflow-hidden z-0 select-none">
       {/* 1. Procedural 60 FPS Canvas Background as Instant Fallback Base */}
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
 
