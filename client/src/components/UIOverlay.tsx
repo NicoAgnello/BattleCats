@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Zap, EyeOff, Volume2, VolumeX, Trophy, Smile, MessageCircle, Send } from "lucide-react";
 import { soundManager } from "../game/SoundManager";
+import { getMoveMode, setMoveMode, MOVE_MODE_EVENT, type MoveMode } from "../game/controls";
 import { PixelPortrait } from "./PixelPortrait";
 import { SKINS, type PlayerConfig } from "./StartScreen";
 
@@ -174,6 +175,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
   const [roomInfo, setRoomInfo] = useState<RoomInfo | null>(null);
   const [codeCopied, setCodeCopied] = useState(false);
   const [showKeys, setShowKeys] = useState(true);
+  const [moveMode, setMoveModeState] = useState<MoveMode>(getMoveMode);
   const [keysEpoch, setKeysEpoch] = useState(0);
   const [sseInfo, setSseInfo] = useState<{ connected: boolean; tickRate: number; ping: number }>({
     connected: false,
@@ -285,6 +287,13 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
     const id = setTimeout(() => setShowKeys(false), KEYS_HINT_MS);
     return () => clearTimeout(id);
   }, [keysEpoch]);
+
+  // Modo de movimiento: el botón del HUD y la escena se enteran por el mismo evento
+  useEffect(() => {
+    const onMode = (e: Event) => setMoveModeState((e as CustomEvent).detail);
+    window.addEventListener(MOVE_MODE_EVENT, onMode);
+    return () => window.removeEventListener(MOVE_MODE_EVENT, onMode);
+  }, []);
 
   // Countdown auto redirect
   useEffect(() => {
@@ -552,12 +561,17 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
 
           {/* Estado de la conexión, SSE, sonido y menú */}
           <div className="flex items-center gap-2.5 pointer-events-none">
-            <span className="hud-chip" title="Conexión con el servidor de juego (WebSocket)">
+            {/* Conectado: solo el cuadrado verde. El texto aparece cuando hay un problema. */}
+            <span
+              className="hud-chip"
+              title={conn === "CONNECTED" ? "Conectado al servidor de juego (WebSocket)" : "Conexión con el servidor de juego (WebSocket)"}
+              aria-label={conn === "CONNECTED" ? "Conectado" : undefined}
+            >
               <span
                 className="w-2 h-2"
                 style={{ background: conn === "CONNECTED" ? "#10b981" : conn === "CONNECTING" ? "#f59e0b" : "#ef4444" }}
               />
-              {conn === "CONNECTED" ? "Conectado" : conn === "CONNECTING" ? "Conectando…" : "Sin conexión"}
+              {conn === "CONNECTING" ? "Conectando…" : conn === "ERROR" ? "Sin conexión" : null}
             </span>
             <span className="hud-chip" title="Server-Sent Events: telemetría del servidor. El ping se mide ida y vuelta por WebSocket.">
               <span style={{ color: "var(--hud-shield)" }}>SSE {sseInfo.tickRate} Hz</span>
@@ -570,6 +584,15 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
               aria-label={isMuted ? "Activar sonido" : "Silenciar"}
             >
               {isMuted ? <VolumeX className="w-3.5 h-3.5 text-red-400" /> : <Volume2 className="w-3.5 h-3.5" />}
+            </button>
+            <button
+              // sin foco: si no, el Espacio del dash volvería a apretar este botón
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setMoveMode(moveMode === "AIM" ? "CLASSIC" : "AIM")}
+              className="hud-chip pointer-events-auto cursor-pointer whitespace-nowrap"
+              title="Cambiar el modo de movimiento. Clásico: W va hacia arriba. Mira: W avanza hacia el mouse y A/D se mueven de costado."
+            >
+              WASD: <span style={{ color: "var(--hud-gold)" }}>{moveMode === "AIM" ? "mira" : "clásico"}</span>
             </button>
             {onOpenMenu && (
               <button onClick={onOpenMenu} className="hud-chip pointer-events-auto cursor-pointer" title="Volver al menú principal">

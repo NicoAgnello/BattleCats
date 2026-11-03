@@ -3,6 +3,7 @@ import { Room } from "colyseus.js";
 import { NetworkClient } from "../NetworkManager";
 import { GameState, Player, Projectile, Trap, Bush, ItemPickup, Obstacle } from "../schema/GameState";
 import { soundManager } from "../SoundManager";
+import { getMoveMode, keysToDirection, MOVE_MODE_EVENT, MoveMode } from "../controls";
 import { STRUCTURES, StructureDef } from "../structures";
 import { buildStructureArt } from "../structureArt";
 import { inRiver, onBridge, RIVER_PATH } from "../river";
@@ -15,6 +16,9 @@ import {
   effectAnimKey, playCatDash, makeItemSprite, worldFrame, worldFrameAt, worldVariant, worldVariantCount,
   CAT_SPRITE_SCALE,
 } from "../catSprites";
+
+/** Radio (px del mundo) alrededor del gato donde el mouse no cambia la dirección de avance. */
+const MOVE_AIM_DEADZONE = 30;
 
 /** Letra pixel del juego (la misma del HUD; se precarga en main.tsx). */
 const GAME_FONT = "'Pixelify Sans Variable', Outfit, sans-serif";
@@ -401,8 +405,13 @@ export class MainScene extends Phaser.Scene {
   private styleScore = 0;
   private wasInBush = false;
 
-  private lastSentDx = 0;
-  private lastSentDy = 0;
+  /** Teclas (W−S, D−A) del último envío: en modo "hacia la mira" la dirección cambia
+   *  con cada movimiento del mouse, así que el envío inmediato se dispara por teclas. */
+  private lastSentForward = 0;
+  private lastSentStrafe = 0;
+  /** Modo de movimiento (ver game/controls.ts) y último ángulo usado para moverse. */
+  private moveMode: MoveMode = getMoveMode();
+  private lastMoveAim = 0;
   private lastSentRot = 0;
   private lastMoveSendTime = 0;
 
@@ -711,6 +720,10 @@ export class MainScene extends Phaser.Scene {
       if (e.detail?.emote) this.triggerEmote(e.detail.emote);
     });
 
+    this.onWindow(MOVE_MODE_EVENT, (e: any) => {
+      if (e.detail === "AIM" || e.detail === "CLASSIC") this.moveMode = e.detail;
+    });
+
     this.onWindow("send-chat", (e: any) => {
       if (e.detail?.text) this.net.sendChat(e.detail.text);
     });
@@ -1000,36 +1013,30 @@ export class MainScene extends Phaser.Scene {
     // (sin texto "RECARGANDO...": lo indica el ícono pixel de flechas girando)
   }
 
+  /** Ángulo que usa el modo "hacia la mira". Con el mouse casi encima del gato el
+   *  ángulo salta de un lado a otro, así que ahí se mantiene el último. */
+  private moveAim(me: VPlayer, wx: number, wy: number, aim: number): number {
+    if (Math.hypot(wx - me.container.x, wy - me.container.y) > MOVE_AIM_DEADZONE) this.lastMoveAim = aim;
+    return this.lastMoveAim;
+  }
+
   private performLocalDash(me: VPlayer) {
     if (this.room?.state?.status === "LOBBY") return;
     const isTyping = typeof document !== "undefined" && (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA");
     if (isTyping) return;
     if (me.isGhost || (me.dashCooldown || 0) > 0 || (me.stunTimer || 0) > 0) return;
 
-    let dx = 0;
-    let dy = 0;
-    if (this.keys.W.isDown) dy -= 1;
-    if (this.keys.S.isDown) dy += 1;
-    if (this.keys.A.isDown) dx -= 1;
-    if (this.keys.D.isDown) dx += 1;
-
-    let dirX = 0;
-    let dirY = 0;
+    const forward = (this.keys.W.isDown ? 1 : 0) - (this.keys.S.isDown ? 1 : 0);
+    const strafe = (this.keys.D.isDown ? 1 : 0) - (this.keys.A.isDown ? 1 : 0);
+    const ptrX = this.windowPointerX ?? this.input.activePointer.x;
+    const ptrY = this.windowPointerY ?? this.input.activePointer.y;
+    const wp = this.cameras.main.getWorldPoint(ptrX, ptrY);
+    const angle = Phaser.Math.Angle.Between(me.container.x, me.container.y, wp.x, wp.y);
+    // Con teclas: hacia donde lleva el movimiento (según el modo). Quieto: hacia el mouse.
+    const [dx, dy] = keysToDirection(forward, strafe, this.moveAim(me, wp.x, wp.y, angle), this.moveMode);
     const mag = Math.hypot(dx, dy);
-
-    if (mag > 0) {
-      // Movimiento con WASD activo: se desplaza hacia la dirección de WASD
-      dirX = dx / mag;
-      dirY = dy / mag;
-    } else {
-      // Estacionario (sin movimiento): se desplaza hacia donde apunta el cursor del ratón
-      const ptrX = this.windowPointerX ?? this.input.activePointer.x;
-      const ptrY = this.windowPointerY ?? this.input.activePointer.y;
-      const wp = this.cameras.main.getWorldPoint(ptrX, ptrY);
-      const angle = Phaser.Math.Angle.Between(me.container.x, me.container.y, wp.x, wp.y);
-      dirX = Math.cos(angle);
-      dirY = Math.sin(angle);
-    }
+    const dirX = mag > 0 ? dx / mag : Math.cos(angle);
+    const dirY = mag > 0 ? dy / mag : Math.sin(angle);
 
     const isMelee = me.equippedWeapon === "MELEE";
     const isRoll = !isMelee;
@@ -4008,18 +4015,19 @@ export class MainScene extends Phaser.Scene {
       const isTyping = typeof document !== "undefined" && (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA");
       const isStunned = (me.stunTimer ?? 0) > 0;
 
-      let dx = 0, dy = 0;
+      let forward = 0, strafe = 0;
       if (!isLobby && !isTyping && !isStunned) {
-        if (this.keys.W.isDown) dy -= 1;
-        if (this.keys.S.isDown) dy += 1;
-        if (this.keys.A.isDown) dx -= 1;
-        if (this.keys.D.isDown) dx += 1;
+        if (this.keys.W.isDown) forward += 1;
+        if (this.keys.S.isDown) forward -= 1;
+        if (this.keys.D.isDown) strafe += 1;
+        if (this.keys.A.isDown) strafe -= 1;
       }
 
       const ptrX = this.windowPointerX ?? this.input.activePointer.x;
       const ptrY = this.windowPointerY ?? this.input.activePointer.y;
       const wp = this.cameras.main.getWorldPoint(ptrX, ptrY);
       const rot = Phaser.Math.Angle.Between(me.container.x, me.container.y, wp.x, wp.y);
+      const [dx, dy] = keysToDirection(forward, strafe, this.moveAim(me, wp.x, wp.y, rot), this.moveMode);
 
       // Rotación 0ms ultra reactiva (Responsive Rotation estilo Suroi)
       me.tr = rot;
@@ -4134,14 +4142,14 @@ export class MainScene extends Phaser.Scene {
       const rotDiff = Math.abs(rot - this.lastSentRot);
       const sinceLast = time - this.lastMoveSendTime;
       if (
-        dx !== this.lastSentDx ||
-        dy !== this.lastSentDy ||
-        ((dx !== 0 || dy !== 0 || rotDiff > 0.02) && sinceLast >= 16) ||
+        forward !== this.lastSentForward ||
+        strafe !== this.lastSentStrafe ||
+        ((forward !== 0 || strafe !== 0 || rotDiff > 0.02) && sinceLast >= 16) ||
         sinceLast >= 100
       ) {
         this.net.sendMove(dx, dy, rot, me.container.x, me.container.y);
-        this.lastSentDx = dx;
-        this.lastSentDy = dy;
+        this.lastSentForward = forward;
+        this.lastSentStrafe = strafe;
         this.lastSentRot = rot;
         this.lastMoveSendTime = time;
       }

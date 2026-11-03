@@ -185,18 +185,29 @@ Para cada funcionalidad se indica **cómo funciona**, **qué archivos interviene
 
 **Cómo funciona.**
 
-1. **Cliente (`MainScene.update`):** lee WASD, calcula la dirección normalizada y mueve a su propio gato **de inmediato** (velocidad 220 px/s; ×1,15 con garras; ×1,4 con buff de velocidad; ×0,75 dentro del río). Aplica choque contra obstáculos con una grilla espacial local. La rotación del gato sigue al mouse.
-2. **Envío:** manda `move { dx, dy, rotation, x, y }` al servidor al instante si cambia la dirección; si no, hasta cada ~16 ms mientras se mueve o gira, y cada 100 ms si está quieto. Incluye la posición que predijo.
+1. **Cliente (`MainScene.update`):** lee WASD, lo convierte en una dirección del mapa según el modo de movimiento elegido (ver abajo), la normaliza y mueve a su propio gato **de inmediato** (velocidad 220 px/s; ×1,15 con garras; ×1,4 con buff de velocidad; ×0,75 dentro del río). Aplica choque contra obstáculos con una grilla espacial local. La rotación del gato sigue al mouse.
+2. **Envío:** manda `move { dx, dy, rotation, x, y }` al servidor al instante si cambian las teclas apretadas; si no, hasta cada ~16 ms mientras se mueve o gira, y cada 100 ms si está quieto. Incluye la posición que predijo.
 3. **Servidor (`onMessage("move")`):** calcula la velocidad que *debería* tener ese jugador (mismas reglas). Si la posición que mandó el cliente está a **≤ 140 px** de la que tiene el servidor, la acepta; si no, ignora la del cliente y avanza desde su propia posición. Después resuelve choques con obstáculos (consulta a la grilla espacial), limita al mapa (30 a 7970 px) y actualiza si el gato está oculto.
-4. **Otros jugadores:** el cliente los dibuja moviéndose suavemente (interpolación LERP) hacia la última posición recibida (`tx`, `ty`), que llega por el estado de Colyseus y por el canal SSE.
+4. **Otros jugadores:** el cliente los dibuja moviéndose suavemente (interpolación LERP) hacia la última posición recibida (`tx`, `ty`), que llega por el estado de Colyseus (30 patches/s).
 
-**Archivos.** `MainScene.ts` (`update`), `NetworkManager.ts` (`sendMove`), `JungleRoom.ts` (handler `move`), `SpatialHashGrid.ts`.
+**Modos de movimiento** (`client/src/game/controls.ts`). Cada jugador elige uno con el botón "Movimiento" del menú o "WASD" del HUD; se guarda en el navegador (`localStorage`).
+
+| Modo | W | S | A / D |
+|---|---|---|---|
+| **Clásico** | hacia arriba de la pantalla | hacia abajo | izquierda / derecha de la pantalla |
+| **Hacia la mira** | hacia donde apunta el mouse | se aleja del mouse | de costado respecto de la mira |
+
+`keysToDirection(adelante, costado, ánguloMira, modo)` hace la cuenta. En el modo "hacia la mira": `dirección = adelante·(cos θ, sin θ) + costado·(−sin θ, cos θ)`, con θ el ángulo hacia el mouse. Con el mouse a menos de 30 px del gato el ángulo salta, así que ahí se usa el último (`moveAim`).
+
+Es **solo del cliente**: al servidor le sigue llegando una dirección en el mapa (`dx, dy`), así que no cambia el protocolo ni la validación. El envío inmediato se dispara al cambiar las teclas y no la dirección: en el modo "hacia la mira" la dirección cambia con cada movimiento del mouse y se mandaría un mensaje por frame; los giros entran por el límite de ~16 ms.
+
+**Archivos.** `MainScene.ts` (`update`, `moveAim`), `controls.ts`, `NetworkManager.ts` (`sendMove`), `JungleRoom.ts` (handler `move`), `SpatialHashGrid.ts`.
 
 **Por qué.** Si el jugador esperara la respuesta del servidor para moverse, sentiría el ping en cada paso. Con predicción el control es instantáneo y el servidor sigue teniendo la última palabra.
 
 ### 5.4 Dash / Roll (barra espaciadora)
 
-**Cómo funciona.** El cliente ejecuta la animación al instante (`performLocalDash`) y manda `dash { dirX, dirY }`. La dirección es la de WASD, o hacia el mouse si está quieto. El servidor valida el cooldown y aplica el desplazamiento:
+**Cómo funciona.** El cliente ejecuta la animación al instante (`performLocalDash`) y manda `dash { dirX, dirY }`. La dirección es la del movimiento (según el modo elegido), o hacia el mouse si está quieto. El servidor valida el cooldown y aplica el desplazamiento:
 
 | | Con garras (MELEE) | Con arma de fuego |
 |---|---|---|

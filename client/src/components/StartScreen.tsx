@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { soundManager } from "../game/SoundManager";
+import { getMoveMode, setMoveMode, MOVE_MODE_LABEL, type MoveMode } from "../game/controls";
 import { GameplayBackground } from "./GameplayBackground";
 import { PixelPortrait } from "./PixelPortrait";
 import { SERVER_HTTP } from "../game/serverUrl";
@@ -199,6 +200,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
 
   // Modals state (diep.io style shop & rules)
   const [showShopModal, setShowShopModal] = useState(false);
+  const [moveMode, setMoveModeState] = useState<MoveMode>(getMoveMode);
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [partyLinkCopied, setPartyLinkCopied] = useState(false);
 
@@ -383,6 +385,18 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
           className="hud-chip h-[30px] px-3 text-[14px] cursor-pointer"
         >
           Controles
+        </button>
+        <button
+          onClick={() => {
+            const next: MoveMode = moveMode === "AIM" ? "CLASSIC" : "AIM";
+            setMoveMode(next);
+            setMoveModeState(next);
+            soundManager.playClick();
+          }}
+          className="hud-chip h-[30px] px-3 text-[14px] cursor-pointer"
+          title="Clásico: W va hacia arriba de la pantalla. Hacia la mira: W avanza hacia el mouse y A/D se mueven de costado."
+        >
+          Movimiento: <span style={{ color: "var(--hud-gold)" }}>{MOVE_MODE_LABEL[moveMode]}</span>
         </button>
         <button
           onClick={handleToggleMusic}
@@ -808,6 +822,13 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
                 <span className="font-black text-emerald-400 bg-emerald-950/60 px-2 py-1 ">WASD</span>
                 <div>
                   <b className="text-white">Movimiento Ágil:</b> Desplázate por el mapa de 8000x8000. Cruzar el río reduce la velocidad un 25% salvo en los puentes.
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3 bg-slate-950/60 p-2.5 border border-slate-800">
+                <span className="font-black text-amber-400 bg-amber-950/60 px-2 py-1 whitespace-nowrap">2 MODOS</span>
+                <div>
+                  <b className="text-white">Cómo se mueve:</b> en <b>clásico</b>, W va siempre hacia arriba de la pantalla. En <b>hacia la mira</b>, W avanza hacia donde apunta el mouse, S retrocede y A/D se mueven de costado. Se cambia con el botón "Movimiento" del menú o de la partida.
                 </div>
               </div>
 

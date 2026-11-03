@@ -222,6 +222,7 @@ html, body, #root {
   height: 22px;
   padding: 0 8px;
   font-size: 13px;
+  white-space: nowrap;
   background: var(--hud-panel);
   box-shadow: 0 0 0 2px var(--hud-ink), inset 0 2px 0 var(--hud-bevel);
 }
