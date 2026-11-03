@@ -731,7 +731,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
               <div className="flex items-center justify-between px-3 py-2" style={{ background: "#120e18", boxShadow: "0 0 0 2px var(--hud-ink)" }}>
                 <div className="flex flex-col">
                   <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Código</span>
-                  <span className="text-[32px] leading-none tracking-[0.15em] tabular-nums" style={{ color: "var(--hud-gold)" }}>
+                  <span className="room-code text-[30px] leading-none" style={{ color: "var(--hud-gold)" }}>
                     {roomInfo.roomCode || "----"}
                   </span>
                 </div>

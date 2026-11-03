@@ -308,3 +308,14 @@ button.hud-chip:focus-visible { outline: 2px solid var(--hud-gold); outline-offs
 .hud-btn-blue { background: #0ea5e9; box-shadow: 0 0 0 2px var(--hud-ink), inset 0 3px 0 #7dd3fc, inset 0 -3px 0 #0369a1, 0 4px 0 2px var(--hud-ink); }
 .hud-btn-blue:hover { background: #38bdf8; }
 .hud-btn-blue:active { box-shadow: 0 0 0 2px var(--hud-ink), inset 0 3px 0 #7dd3fc, inset 0 -3px 0 #0369a1, 0 1px 0 2px var(--hud-ink); }
+
+/* Códigos de sala: letra del sistema monoespaciada y suavizada. En la letra pixel
+ * 3, 8 y S se confunden, y un código mal leído es una sala a la que no se entra. */
+.room-code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: auto;
+  font-smooth: auto;
+}

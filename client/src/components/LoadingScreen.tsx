@@ -73,7 +73,11 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({ playerConfig, onEx
           <p className="text-[15px]" style={{ color: "var(--hud-dim)" }}>{subtitulo}</p>
         </div>
 
-        <span className="hud-chip" style={{ color: "var(--hud-gold)" }}>{salaLabel}</span>
+        <span className="hud-chip" style={{ color: "var(--hud-gold)" }}>
+          {playerConfig.isCustom
+            ? <>Sala privada <span className="room-code">{playerConfig.roomCode ?? "????"}</span></>
+            : salaLabel}
+        </span>
 
         <button onClick={handleExit} className={`${failed ? "hud-btn" : "hud-chip"} w-full justify-center h-[38px] text-[15px] cursor-pointer`}>
           {failed ? "Volver al menú" : "Cancelar y volver al menú"}

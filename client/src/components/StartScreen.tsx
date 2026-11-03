@@ -666,7 +666,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
               <div className="flex items-center justify-between bg-slate-950/80 px-3 py-2 border border-slate-800">
                 <div className="flex flex-col">
                   <span className="text-[12px] font-bold text-slate-400">Código de 4 dígitos:</span>
-                  <span className="font-mono text-2xl font-black text-amber-400 ">{generatedCode}</span>
+                  <span className="room-code text-2xl text-amber-400">{generatedCode}</span>
                 </div>
                 <button
                   type="button"
@@ -693,7 +693,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
                     setRoomError(null);
                   }}
                   placeholder="Ej: 4582"
-                  className="w-full text-center py-2 px-4 border-2 border-emerald-500/50 bg-slate-950 text-amber-400 font-mono text-2xl font-black outline-none focus:ring-2 focus:ring-emerald-400 "
+                  className="w-full text-center py-2 px-4 border-2 border-emerald-500/50 bg-slate-950 text-amber-400 room-code text-2xl outline-none focus:ring-2 focus:ring-emerald-400 "
                 />
               </div>
             )}
@@ -760,7 +760,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
               </>
             ) : customTab === "CREATE" ? (
               <>
-                <span>Crear Sala #{generatedCode}</span>
+                <span>Crear sala <span className="room-code">{generatedCode}</span></span>
                 <span>👑</span>
               </>
             ) : (
