@@ -843,44 +843,44 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
           )}
         </div>
 
-        {/* ── Derecha: Vivos, Kills, Emotes & KillFeed ── */}
-        <div className="pointer-events-none flex flex-col items-end gap-2 min-w-[200px]">
+        {/* ── Derecha: vivos, kills, emotes y eliminaciones ── */}
+        <div className="hud pointer-events-none flex flex-col items-end gap-3 min-w-[200px]">
 
-          {/* Vivos, Kills & Botón de Emotes */}
-          <div className="flex items-center gap-2 pointer-events-none">
+          <div className="flex items-start gap-3">
             <button
               onClick={() => setShowEmotes(!showEmotes)}
-              className="pointer-events-auto glass-panel p-2 rounded-xl text-amber-400 hover:text-yellow-300 hover:border-amber-400/60 transition shadow-lg flex items-center justify-center cursor-pointer"
-              title="Expresiones y Emotes (E)"
+              className="hud-chip pointer-events-auto cursor-pointer h-[44px] px-3"
+              title="Emotes (E)"
+              aria-label="Emotes"
             >
-              <Smile className="w-5 h-5" />
+              <Smile className="w-5 h-5" style={{ color: "var(--hud-gold)" }} />
             </button>
 
-            <div className="glass-panel px-3.5 py-2 rounded-xl flex items-center gap-2 border border-slate-700/60 shadow-lg">
-              <span className="text-sm">😼</span>
-              <div>
-                <div className="text-[9px] text-slate-400 font-extrabold uppercase">Gatos Vivos</div>
-                <div className="text-sm font-black font-mono text-emerald-400">{alive.alive} / {alive.total}</div>
+            <div className="hud-panel flex">
+              <div className="px-3 py-1.5 flex flex-col items-end">
+                <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Vivos</span>
+                <span className="text-[20px] leading-none tabular-nums" style={{ color: "#6ee7b7" }}>
+                  {alive.alive}<span style={{ color: "var(--hud-dim)" }}>/{alive.total}</span>
+                </span>
               </div>
-            </div>
-
-            <div className="glass-panel px-3.5 py-2 rounded-xl flex items-center gap-2 border border-slate-700/60 shadow-lg">
-              <Skull className="w-4 h-4 text-red-400" />
-              <div>
-                <div className="text-[9px] text-slate-400 font-extrabold uppercase">Kills</div>
-                <div className="text-sm font-black font-mono text-slate-100">{player.kills}</div>
+              <div className="w-[2px] my-1.5" style={{ background: "var(--hud-ink)" }} />
+              <div className="px-3 py-1.5 flex items-center gap-2">
+                <SpriteIcon name="efecto-tumba" w={14} h={15} />
+                <div className="flex flex-col items-end">
+                  <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Kills</span>
+                  <span className="text-[20px] leading-none tabular-nums">{player.kills}</span>
+                </div>
               </div>
             </div>
           </div>
 
-          {/* Menú de Emotes Flotante */}
           {showEmotes && (
-            <div className="glass-panel p-2 rounded-2xl flex items-center gap-2 border border-amber-500/40 shadow-2xl animate-fadeIn">
+            <div className="hud-panel pointer-events-auto p-2 flex items-center gap-2">
               {emotes.map((em) => (
                 <button
                   key={em}
                   onClick={() => triggerEmote(em)}
-                  className="w-9 h-9 rounded-xl glass-panel hover:bg-amber-500/30 flex items-center justify-center text-lg hover:scale-110 transition cursor-pointer"
+                  className="hud-chip w-9 h-9 justify-center text-lg cursor-pointer"
                 >
                   {em}
                 </button>
@@ -888,22 +888,21 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
             </div>
           )}
 
-          {/* Badge Oculto en Arbusto */}
           {player.isHidden && !player.isGhost && (
-            <div className="glass-panel px-3 py-1.5 rounded-lg flex items-center gap-1.5 border border-emerald-500/50 animate-pulse shadow-lg">
-              <EyeOff className="w-4 h-4 text-emerald-400" />
-              <span className="text-xs font-black text-emerald-400">Sigilo: Oculto en Arbusto</span>
-            </div>
+            <span className="hud-chip" style={{ color: "#6ee7b7" }}>
+              <EyeOff className="w-4 h-4" />
+              Oculto en el arbusto
+            </span>
           )}
 
-          {/* Kill Feed Toasts estilo Suroi */}
-          <div className="flex flex-col gap-1.5 items-end mt-1">
+          {/* Eliminaciones */}
+          <div className="flex flex-col gap-2 items-end">
             {killsFeed.map(k => (
-              <div key={k.id} className="glass-panel px-3 py-1 rounded-lg border border-red-500/30 text-[11px] font-bold text-slate-200 flex items-center gap-1.5 animate-fadeIn">
-                <span className="text-amber-400">{k.killer}</span>
-                <span className="text-xs text-slate-400">[{k.weapon}]</span>
-                <span className="text-red-400">{k.victim}</span>
-              </div>
+              <span key={k.id} className="hud-chip">
+                <span style={{ color: "var(--hud-gold)" }}>{k.killer}</span>
+                <span style={{ color: "var(--hud-dim)" }}>{k.weapon}</span>
+                <span style={{ color: "#fca5a5" }}>{k.victim}</span>
+              </span>
             ))}
           </div>
         </div>
