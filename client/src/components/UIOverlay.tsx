@@ -260,6 +260,19 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
     setChatMessages(prev => [...prev, { id: Date.now(), senderName: "Sistema", text: "🚀 ¡Comenzó tu turno para jugar! Has sido añadido a la partida.", isSpectator: false, isSystem: true }]);
   }, []);
 
+  // Clic fuera de un campo de texto: soltarlo. Phaser cancela el pointerdown sobre el
+  // canvas, así que el navegador no saca el foco solo y el juego seguía sin teclado.
+  useEffect(() => {
+    const onPointerDown = (e: PointerEvent) => {
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA") && !el.contains(e.target as Node)) {
+        el.blur();
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => window.removeEventListener("pointerdown", onPointerDown, true);
+  }, []);
+
   // Countdown auto redirect
   useEffect(() => {
     if (redirectCountdown === null) return;
@@ -568,13 +581,18 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
                   onChange={e => setChatInput(e.target.value.slice(0, 120))}
                   onKeyDown={e => {
                     e.stopPropagation();
+                    // Al mandar (o con Escape) se suelta el campo: el juego ignora el
+                    // teclado mientras haya un input con foco y quedabas sin poder moverte
                     if (e.key === "Enter") {
                       e.preventDefault();
                       sendChatMessage();
+                      e.currentTarget.blur();
+                    } else if (e.key === "Escape") {
+                      e.currentTarget.blur();
                     }
                   }}
                   onKeyUp={e => e.stopPropagation()}
-                  placeholder="Escribí un mensaje"
+                  placeholder="Escribí un mensaje (Esc para volver al juego)"
                   className="flex-1 min-w-0 px-2 h-[26px] text-[14px] outline-none"
                   style={{ background: "#120e18", color: "var(--hud-text)", boxShadow: "0 0 0 2px var(--hud-ink), inset 0 2px 0 var(--hud-shade)" }}
                 />
