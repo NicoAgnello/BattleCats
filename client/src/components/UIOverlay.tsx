@@ -888,11 +888,12 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
         </div>
       )}
 
-      {/* ── Fila inferior: dash, arma equipada, slots y controles ── */}
-      <div className="hud flex items-end justify-between gap-4 pointer-events-none">
+      {/* ── Fila inferior: grilla de 3 columnas fijas. Con flex + justify-between, al
+           ocultarse la guía de teclas las armas saltaban a la derecha, sobre el minimapa ── */}
+      <div className="hud grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-end gap-4 pointer-events-none">
 
         {/* Columna izquierda: chat (fantasma o espectador) arriba del dash */}
-        <div className="flex flex-col items-start gap-3">
+        <div className="col-start-1 justify-self-start flex flex-col items-start gap-3">
           {/* ── Chat (fantasmas y espectadores) ── */}
           {(spectatorQueue || player.isGhost) && (
             <div className="hud-panel pointer-events-auto flex flex-col w-80">
@@ -987,7 +988,19 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
 
         {/* Arma equipada + slots */}
         {!player.isGhost && (
-          <div className="flex flex-col items-center gap-3 pointer-events-none">
+          <div className="col-start-2 flex flex-col items-center gap-3 pointer-events-none">
+            {/* Guía de teclas: en la sala de espera y los primeros segundos de la partida.
+                Va acá y no a la derecha, que es del minimapa. */}
+            {(showKeys || roomWaiting) && (
+              <div className="hud-panel hidden md:flex items-center gap-4 px-4 py-2.5 text-[13px] whitespace-nowrap" style={{ color: "var(--hud-dim)" }}>
+                <span className="flex items-center gap-1.5"><span className="hud-key">WASD</span> Moverse</span>
+                <span className="flex items-center gap-1.5"><span className="hud-key">F</span> Agarrar</span>
+                <span className="flex items-center gap-1.5"><span className="hud-key">R</span> Recargar</span>
+                <span className="flex items-center gap-1.5"><span className="hud-key">1-3</span> Armas</span>
+                <span className="flex items-center gap-1.5"><span className="hud-key">E</span> Emotes</span>
+              </div>
+            )}
+
             {(() => {
               const w = player.equippedWeapon || "MELEE";
               const detail: Record<string, string> = {
@@ -1076,7 +1089,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
           const ready = cooldown <= 0;
           const progress = ready ? 1 : Math.max(0, Math.min(1, 1 - cooldown / TRAP_COOLDOWN));
           return (
-            <div className="hud-panel pointer-events-auto px-4 py-2.5 flex items-center gap-3 w-[min(92vw,400px)]">
+            <div className="col-start-2 hud-panel pointer-events-auto px-4 py-2.5 flex items-center gap-3 w-[min(92vw,400px)]">
               <SpriteIcon name="efecto-trampa" w={22} h={22} />
               <div className="flex-1 min-w-0 flex flex-col gap-1.5">
                 <div className="flex justify-between text-[14px]">
@@ -1103,14 +1116,6 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
           );
         })()}
 
-        {/* Controles: en la sala de espera y los primeros segundos de la partida */}
-        {(showKeys || roomWaiting) && <div className="hud-panel hidden lg:flex items-center gap-4 px-4 py-2.5 text-[13px] whitespace-nowrap" style={{ color: "var(--hud-dim)" }}>
-          <span className="flex items-center gap-1.5"><span className="hud-key">WASD</span> Moverse</span>
-          <span className="flex items-center gap-1.5"><span className="hud-key">F</span> Agarrar</span>
-          <span className="flex items-center gap-1.5"><span className="hud-key">R</span> Recargar</span>
-          <span className="flex items-center gap-1.5"><span className="hud-key">1-3</span> Armas</span>
-          <span className="flex items-center gap-1.5"><span className="hud-key">E</span> Emotes</span>
-        </div>}
       </div>
     </div>
   );

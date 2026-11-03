@@ -35,7 +35,7 @@ const RELOAD_RING: [number, number, number][] = (() => {
 })();
 
 /** Margen inferior del minimapa: queda por encima de la barra de controles del HUD. */
-const MINIMAP_BOTTOM = 84;
+const MINIMAP_BOTTOM = 40;   // la esquina es del minimapa (la guía de teclas va al centro); 40 deja lugar al botón Debug
 
 /** Indicadores de rango/mira en pixel art (false = versión vectorial original). */
 const PIXEL_AIM = true;
