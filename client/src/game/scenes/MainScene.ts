@@ -16,6 +16,9 @@ import {
   CAT_SPRITE_SCALE,
 } from "../catSprites";
 
+/** Letra pixel del juego (la misma del HUD; se precarga en main.tsx). */
+const GAME_FONT = "'Pixelify Sans Variable', Outfit, sans-serif";
+
 /** Celdas (pixels de 2px) del anillo de recarga, con su posición angular 0..1
  *  desde arriba en sentido horario. */
 const RELOAD_RING: [number, number, number][] = (() => {
@@ -527,21 +530,21 @@ export class MainScene extends Phaser.Scene {
     keyBg.fillStyle(0x10b981, 1);
     keyBg.fillRoundedRect(-103, -14, 28, 28, 6);
     const keyText = this.add.text(-89, 0, "F", {
-      fontFamily: "Outfit, Inter, sans-serif",
+      fontFamily: GAME_FONT,
       fontSize: "16px",
       fontStyle: "bold",
       color: "#022c22"
     }).setOrigin(0.5);
 
     this.interactTitleText = this.add.text(-64, -6, "RECOGER ARMA", {
-      fontFamily: "Outfit, Inter, sans-serif",
+      fontFamily: GAME_FONT,
       fontSize: "12px",
       fontStyle: "bold",
       color: "#ffffff"
     }).setOrigin(0, 0.5);
 
     this.interactStatsText = this.add.text(-64, 10, "Daño: 25 | Rango: Medio", {
-      fontFamily: "Outfit, Inter, sans-serif",
+      fontFamily: GAME_FONT,
       fontSize: "10px",
       color: "#94a3b8"
     }).setOrigin(0, 0.5);
@@ -1793,7 +1796,7 @@ export class MainScene extends Phaser.Scene {
 
       // Rótulo interior táctico en el suelo
       const floorLabel = this.add.text(0, 0, def.name.toUpperCase(), {
-        fontFamily: "Outfit, Inter, sans-serif",
+        fontFamily: GAME_FONT,
         fontSize: "15px",
         fontStyle: "bold",
         color: "rgba(255, 255, 255, 0.22)",
@@ -1852,7 +1855,7 @@ export class MainScene extends Phaser.Scene {
       roofContainer.add(roofSignBg);
 
       const roofLabel = this.add.text(0, 0, `🏠 ${def.name.toUpperCase()}`, {
-        fontFamily: "Outfit, Inter, sans-serif",
+        fontFamily: GAME_FONT,
         fontSize: "13px",
         fontStyle: "bold",
         color: "#f8fafc",
@@ -3164,7 +3167,7 @@ export class MainScene extends Phaser.Scene {
     const label = this.add.text(0, -54,
       isMe ? "" : (p.name || id.slice(0, 6)),   // sin "TÚ" sobre el propio gato
       {
-        fontFamily: "Outfit, Inter, sans-serif",
+        fontFamily: GAME_FONT,
         fontSize: "12px",
         fontStyle: "bold",
         color: isMe ? "#10b981" : "#f1f5f9",
@@ -3224,7 +3227,7 @@ export class MainScene extends Phaser.Scene {
     container.add(invulnerableShieldGfx);
 
     const invulnerableBadge = this.add.text(0, -68, "🛡️ 15s", {
-      fontFamily: "Outfit, Inter, sans-serif",
+      fontFamily: GAME_FONT,
       fontSize: "11px",
       fontStyle: "bold",
       color: "#38bdf8",
@@ -3659,7 +3662,7 @@ export class MainScene extends Phaser.Scene {
     if (stone) box.add(stone);
     else box.add(this.add.text(0, 0, "🪦", { fontSize: "28px" }).setOrigin(0.5));
     const name = this.add.text(0, -34, v.name, {
-      fontFamily: "Outfit, Inter, sans-serif", fontSize: "10px", fontStyle: "bold",
+      fontFamily: GAME_FONT, fontSize: "10px", fontStyle: "bold",
       color: "#cbd5e1", stroke: "#000000", strokeThickness: 3,
     }).setOrigin(0.5).setAlpha(0.85);
     box.add(name);
@@ -3770,7 +3773,7 @@ export class MainScene extends Phaser.Scene {
     if (!this.isInCameraView(x, y, 60)) return;
     if (!this.canSeeWorldPoint(x, y)) return;
     const txt = this.add.text(x, y - 20, text, {
-      fontFamily: "Outfit, Inter, sans-serif",
+      fontFamily: GAME_FONT,
       fontSize: "16px",
       fontStyle: "bold",
       color,
