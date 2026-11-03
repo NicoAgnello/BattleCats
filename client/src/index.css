@@ -242,3 +242,21 @@ html, body, #root {
 }
 button.hud-chip:hover { background: var(--hud-bevel); }
 button.hud-chip:focus-visible { outline: 2px solid var(--hud-gold); outline-offset: 2px; }
+
+/* Botón principal del HUD: relleno sólido, bisel y se "hunde" 2 px al apretar */
+.hud-btn {
+  font-family: inherit;
+  font-size: 16px;
+  color: var(--hud-ink);
+  background: #10b981;
+  box-shadow: 0 0 0 2px var(--hud-ink), inset 0 3px 0 #6ee7b7, inset 0 -3px 0 #047857, 0 4px 0 2px var(--hud-ink);
+  transform: translateY(0);
+}
+.hud-btn:hover { background: #34d399; }
+.hud-btn:active { transform: translateY(3px); box-shadow: 0 0 0 2px var(--hud-ink), inset 0 3px 0 #6ee7b7, inset 0 -3px 0 #047857, 0 1px 0 2px var(--hud-ink); }
+.hud-btn:focus-visible { outline: 2px solid var(--hud-gold); outline-offset: 4px; }
+
+/* Parpadeo en dos pasos (sin fundido), para "esperando" y la zona cerrándose */
+@keyframes hud-blink { 50% { opacity: 0.35; } }
+.hud-blink { animation: hud-blink 1s steps(1) infinite; }
+@media (prefers-reduced-motion: reduce) { .hud-blink { animation: none; } }

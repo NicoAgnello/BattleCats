@@ -731,28 +731,22 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
           )}
         </div>
 
-        {/* ── Centro: Zona Segura, Fase y Lobby de Sala ── */}
-        <div className="pointer-events-none flex flex-col items-center gap-2">
-          {/* Sala Personalizada: Banner de Espera y Control de Host */}
+        {/* ── Centro: sala privada, aturdido, inmunidad y zona ── */}
+        <div className="hud pointer-events-none flex flex-col items-center gap-3">
+          {/* Sala privada esperando: código, jugadores y arranque del anfitrión */}
           {roomInfo?.isCustomRoom && roomInfo.status === "WAITING" && (
-            <div className="pointer-events-auto glass-panel p-4 rounded-2xl border-2 border-emerald-400 bg-slate-950/95 shadow-[0_0_40px_rgba(16,185,129,0.35)] backdrop-blur-xl flex flex-col items-center gap-2.5 animate-fadeIn max-w-sm w-full mb-1">
-              <div className="flex items-center justify-between w-full border-b border-slate-700/60 pb-1.5">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-base">👑</span>
-                  <span className="text-[11px] font-black uppercase tracking-wider text-emerald-400">
-                    Sala Privada (Sin Bots)
-                  </span>
-                </div>
-                <div className="px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-[10px] font-bold text-slate-300">
-                  Máx 20
-                </div>
+            <div className="hud-panel pointer-events-auto w-[320px] p-4 flex flex-col gap-3">
+              <div className="flex items-baseline justify-between">
+                <span className="text-[16px]">Sala privada</span>
+                <span className="text-[14px] tabular-nums" style={{ color: "var(--hud-dim)" }}>
+                  {roomInfo.playerCount}/20 jugadores
+                </span>
               </div>
 
-              {/* Código de Sala */}
-              <div className="flex items-center justify-between w-full bg-slate-900/80 p-2.5 rounded-xl border border-slate-800">
+              <div className="flex items-center justify-between px-3 py-2" style={{ background: "#120e18", boxShadow: "0 0 0 2px var(--hud-ink)" }}>
                 <div className="flex flex-col">
-                  <span className="text-[9px] uppercase font-bold text-slate-400">Código de Sala:</span>
-                  <span className="font-mono text-xl font-black text-amber-400 tracking-widest">
+                  <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Código</span>
+                  <span className="text-[32px] leading-none tracking-[0.15em] tabular-nums" style={{ color: "var(--hud-gold)" }}>
                     {roomInfo.roomCode || "----"}
                   </span>
                 </div>
@@ -765,112 +759,87 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
                     setCodeCopied(true);
                     setTimeout(() => setCodeCopied(false), 2000);
                   }}
-                  className="px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-bold transition flex items-center gap-1 shadow cursor-pointer"
+                  className="hud-chip cursor-pointer"
                 >
-                  <span>📋</span>
-                  <span>{codeCopied ? "¡Copiado!" : "Copiar Enlace"}</span>
+                  {codeCopied ? "Copiado" : "Copiar enlace"}
                 </button>
               </div>
 
-              {/* Lista de Jugadores */}
-              <div className="w-full space-y-1">
-                <div className="flex justify-between items-center text-[10px] font-extrabold text-slate-400 uppercase">
-                  <span>Jugadores Conectados:</span>
-                  <span className="font-mono text-emerald-400 font-bold">{roomInfo.playerCount} / 20</span>
-                </div>
-                <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto p-1 bg-slate-900/50 rounded-lg border border-slate-800/50">
-                  {roomInfo.players?.map((p) => (
-                    <div
-                      key={p.id}
-                      className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-800/80 border border-slate-700/60 text-[11px] font-bold text-slate-200"
-                    >
-                      <span>{p.isHost ? "👑" : "🐾"}</span>
-                      <span>{p.name}</span>
-                      {p.isHost && <span className="text-[8px] text-amber-400 font-extrabold">(Host)</span>}
-                    </div>
-                  ))}
-                </div>
+              <div className="flex flex-wrap gap-2 max-h-[72px] overflow-y-auto p-0.5">
+                {roomInfo.players?.map((p) => (
+                  <span key={p.id} className="hud-chip">
+                    <span>{p.name}</span>
+                    {p.isHost && <span style={{ color: "var(--hud-gold)" }}>anfitrión</span>}
+                  </span>
+                ))}
               </div>
 
-              {/* Acciones de Host vs Invitado */}
               {roomInfo.isHost ? (
-                <div className="flex flex-col items-center w-full pt-0.5">
+                <div className="flex flex-col gap-2">
                   <button
                     type="button"
                     onClick={() => {
                       soundManager.playClick();
                       window.dispatchEvent(new CustomEvent("start-match"));
                     }}
-                    className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-xs uppercase tracking-wider shadow-2xl flex items-center justify-center gap-1.5 transform hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer"
+                    className="hud-btn w-full py-2 cursor-pointer"
                   >
-                    <span>🚀</span>
-                    <span>Comenzar Partida (Host)</span>
+                    Comenzar partida
                   </button>
-                  <span className="text-[9px] text-slate-400 mt-1 font-medium text-center">
-                    Inicia cuando todos los jugadores estén listos.
+                  <span className="text-[13px] text-center" style={{ color: "var(--hud-dim)" }}>
+                    Arrancala cuando estén todos adentro.
                   </span>
                 </div>
               ) : (
-                <div className="flex flex-col items-center w-full pt-0.5 text-center">
-                  <div className="w-full py-2 px-2.5 rounded-xl bg-slate-900/80 border border-cyan-500/40 text-cyan-300 text-[11px] font-bold flex items-center justify-center gap-1.5 animate-pulse">
-                    <span>⏳</span>
-                    <span>Esperando a que el anfitrión inicie...</span>
-                  </div>
-                  <span className="text-[9px] text-slate-400 mt-1">
-                    ¡Prepárate! Todos tendrán 15s de inmunidad al comenzar.
+                <div className="flex flex-col gap-1 text-center">
+                  <span className="text-[15px] hud-blink" style={{ color: "var(--hud-shield)" }}>
+                    Esperando al anfitrión…
+                  </span>
+                  <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>
+                    Al empezar, todos tienen 15 s de inmunidad.
                   </span>
                 </div>
               )}
             </div>
           )}
 
-          {/* Banner de Stun / Aturdimiento */}
+          {/* Aturdido por una trampa fantasma */}
           {(player.stunTimer ?? 0) > 0 && (
-            <div className="glass-panel px-6 py-2 rounded-2xl flex items-center gap-3 border-2 border-amber-400 bg-amber-950/85 shadow-[0_0_30px_rgba(251,191,36,0.6)] backdrop-blur-md animate-pulse">
-              <span className="text-xl animate-bounce">⚡</span>
-              <div className="flex flex-col items-center">
-                <span className="text-[10px] font-black tracking-widest text-amber-300 uppercase">
-                  ¡TRAMPA ESPECTRAL!
-                </span>
-                <span className="text-base font-black font-mono tracking-wider text-yellow-200">
-                  💫 ATURDIDO ({(player.stunTimer!).toFixed(1)}s)
+            <div className="hud-panel px-4 py-2 flex items-center gap-3" style={{ background: "#3b2410" }}>
+              <SpriteIcon name="efecto-trampa" w={22} h={22} scale={2} />
+              <div className="flex flex-col">
+                <span className="text-[13px]" style={{ color: "#fde68a" }}>Trampa fantasma</span>
+                <span className="text-[20px] leading-none tabular-nums" style={{ color: "var(--hud-gold)" }}>
+                  Aturdido {(player.stunTimer!).toFixed(1)} s
                 </span>
               </div>
             </div>
           )}
 
-          {/* Banner de Invulnerabilidad Inicial */}
+          {/* Inmunidad inicial */}
           {(player.invulnerableTimer ?? 0) > 0 && (
-            <div className="glass-panel px-6 py-2 rounded-2xl flex items-center gap-3 border-2 border-cyan-400 bg-cyan-950/80 shadow-[0_0_30px_rgba(56,189,248,0.5)] backdrop-blur-md animate-pulse">
-              <Shield className="w-5 h-5 text-cyan-300 animate-bounce" />
-              <div className="flex flex-col items-center">
-                <span className="text-[10px] font-black tracking-widest text-cyan-300 uppercase">
-                  ESCUDO PROTECTOR INICIAL
-                </span>
-                <span className="text-base font-black font-mono tracking-wider text-white">
-                  🛡️ {Math.ceil(player.invulnerableTimer!)}s INMUNIDAD
-                </span>
-              </div>
+            <div className="hud-chip h-[30px] px-3 text-[15px]">
+              <SpriteIcon name="item-escudo" w={16} h={16} />
+              <span style={{ color: "var(--hud-shield)" }}>Inmune</span>
+              <span className="tabular-nums">{Math.ceil(player.invulnerableTimer!)} s</span>
             </div>
           )}
 
-          <div className="glass-panel px-7 py-3 rounded-2xl flex items-center gap-3.5 border border-amber-500/35 shadow-2xl backdrop-blur-md">
-            <Radio className={`w-5 h-5 ${zone.isShrinking ? "text-red-400 animate-spin" : "text-emerald-400 animate-pulse"}`} />
-            <div className="flex flex-col items-center">
-              <span className="text-[10px] font-extrabold tracking-widest text-slate-300 uppercase">
-                {zone.isShrinking ? "¡LA ZONA SE ESTÁ CERRANDO!" : `Fase ${zone.phase} · Zona Segura`}
-              </span>
-              <span className={`text-2xl font-black font-mono tracking-wider ${zone.isShrinking ? "text-red-400 animate-pulse" : "text-amber-400"}`}>
-                {zone.timer}s
-              </span>
-            </div>
+          {/* Zona: fase y cuenta regresiva */}
+          <div className="hud-panel px-5 py-2 flex flex-col items-center min-w-[150px]" style={zone.isShrinking ? { background: "#3a1218" } : undefined}>
+            <span className="text-[13px]" style={{ color: zone.isShrinking ? "#fca5a5" : "var(--hud-dim)" }}>
+              {zone.isShrinking ? "La zona se cierra" : `Fase ${zone.phase} · zona segura`}
+            </span>
+            <span
+              className={`text-[30px] leading-none tabular-nums ${zone.isShrinking ? "hud-blink" : ""}`}
+              style={{ color: zone.isShrinking ? "#ef4444" : "var(--hud-gold)" }}
+            >
+              {zone.timer} s
+            </span>
           </div>
 
           {stylePopup && (
-            <div className="glass-panel px-4 py-1 rounded-full border border-yellow-400/50 text-xs font-black text-amber-300 animate-bounce shadow-xl flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-yellow-300" />
-              <span>{stylePopup}</span>
-            </div>
+            <span className="hud-chip" style={{ color: "var(--hud-gold)" }}>{stylePopup}</span>
           )}
         </div>
 
