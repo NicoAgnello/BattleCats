@@ -278,8 +278,10 @@ export class JungleRoom extends Room<GameState> {
       this.spawnBots();
     }
 
-    // 60 FPS ultra-low latency patch rate (16.6ms)
-    this.setPatchRate(1000 / 60);
+    // Envío del estado a 30/s (cada 33 ms). La simulación sigue a 60/s y el cliente
+    // interpola entre envíos. A 60/s, con muchos jugadores por WiFi, la cantidad de
+    // paquetes chicos saturaba la red y agregaba más demora de la que ahorraba.
+    this.setPatchRate(1000 / 30);
 
     // Initialize static Bushes on map
     this.createStaticBushes();

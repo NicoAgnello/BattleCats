@@ -155,7 +155,7 @@ Para cada funcionalidad se indica **cómo funciona**, **qué archivos interviene
 
 ### 5.2 Estado compartido (schemas de Colyseus)
 
-**Cómo funciona.** El servidor tiene un único objeto `GameState` con colecciones (`players`, `projectiles`, `traps`, `bushes`, `obstacles`, `items`) y la `zone`. Colyseus detecta los cambios y manda a cada cliente solo las diferencias (*delta*), a 60 patches por segundo (`setPatchRate(1000/60)`). El cliente tiene una copia del esquema para poder deserializar y se suscribe con `onAdd`, `onChange` y `onRemove` (`bindRoom` en `MainScene.ts`) para crear, actualizar o borrar los objetos que dibuja.
+**Cómo funciona.** El servidor tiene un único objeto `GameState` con colecciones (`players`, `projectiles`, `traps`, `bushes`, `obstacles`, `items`) y la `zone`. Colyseus detecta los cambios y manda a cada cliente solo las diferencias (*delta*), a 30 patches por segundo (`setPatchRate(1000/30)`). La simulación corre a 60 Hz, pero mandar el estado 60 veces por segundo saturaba el WiFi con muchos jugadores; el cliente interpola entre patches, así que a 30 se sigue viendo fluido. El cliente tiene una copia del esquema para poder deserializar y se suscribe con `onAdd`, `onChange` y `onRemove` (`bindRoom` en `MainScene.ts`) para crear, actualizar o borrar los objetos que dibuja.
 
 | Entidad | Datos principales |
 |---|---|
