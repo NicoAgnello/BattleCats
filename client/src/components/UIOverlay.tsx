@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Heart, Flame, Skull, Zap, EyeOff, Radio, Wifi, WifiOff, Loader2, Volume2, VolumeX, Trophy, RotateCcw, Sparkles, Shield, Smile, MessageCircle, Send, Clock, Users } from "lucide-react";
+import { Zap, EyeOff, Volume2, VolumeX, Trophy, Smile, MessageCircle, Send, Clock } from "lucide-react";
 import { soundManager } from "../game/SoundManager";
 import { PixelPortrait } from "./PixelPortrait";
 import { SKINS, type PlayerConfig } from "./StartScreen";
@@ -555,51 +555,44 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex flex-col justify-between p-5 select-none font-game opacity-85 transition-opacity">
 
-      {/* ── BANNER MODO ESPECTADOR (En cola para próxima partida) ── */}
+      {/* ── Espectador en la fila para la próxima partida ── */}
       {spectatorQueue && (
-        <div className="absolute top-5 left-1/2 -translate-x-1/2 z-40 pointer-events-auto flex items-center gap-3 px-5 py-2.5 rounded-2xl glass-panel border border-cyan-400/50 bg-slate-950/85 shadow-[0_0_30px_rgba(6,182,212,0.35)] animate-pulse">
-          <span className="text-2xl">👻</span>
+        <div className="hud hud-panel absolute top-5 left-1/2 -translate-x-1/2 z-40 pointer-events-auto flex items-center gap-4 px-4 py-2.5">
+          <SpriteIcon name="efecto-gatito-fantasma" w={11} h={11} scale={3} />
           <div className="flex flex-col">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-black uppercase tracking-wider text-cyan-300">Modo Espectador</span>
-              <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-200 text-[11px] font-black border border-cyan-400/40">
-                Cola #{spectatorQueue.position}
-              </span>
-            </div>
-            <span className="text-[10px] text-slate-300">
-              Viendo la partida en curso. ¡Entrarás a jugar automáticamente al comenzar la próxima!
+            <span className="text-[16px]">
+              Mirando la partida <span style={{ color: "var(--hud-shield)" }}>· lugar {spectatorQueue.position} en la fila</span>
             </span>
+            <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Entrás a jugar cuando empiece la próxima.</span>
           </div>
         </div>
       )}
 
-      {/* ── CHAT FLOTANTE DURANTE PARTIDA (Para espectadores y jugadores) ── */}
+      {/* ── Chat (fantasmas y espectadores) ── */}
       {(spectatorQueue || player.isGhost) && (
-        <div className="absolute bottom-6 left-6 z-40 pointer-events-auto flex flex-col w-80 glass-panel rounded-2xl border border-slate-700/60 shadow-2xl overflow-hidden bg-slate-950/85">
-          <div className="flex items-center justify-between px-3.5 py-1.5 border-b border-slate-700/50 bg-slate-900/60 cursor-pointer" onClick={() => setSpectatorChatOpen(!spectatorChatOpen)}>
-            <div className="flex items-center gap-1.5">
-              <MessageCircle className="w-3.5 h-3.5 text-cyan-400" />
-              <span className="text-xs font-black uppercase tracking-wider text-cyan-400">Chat General</span>
-            </div>
-            <span className="text-[10px] text-slate-400 hover:text-white transition font-mono">
-              {spectatorChatOpen ? "▼" : "▲"}
-            </span>
-          </div>
+        <div className="hud hud-panel absolute bottom-6 left-6 z-40 pointer-events-auto flex flex-col w-80">
+          <button
+            type="button"
+            className="flex items-center justify-between px-3 py-2 text-[15px] cursor-pointer"
+            style={{ borderBottom: spectatorChatOpen ? "2px solid var(--hud-ink)" : undefined }}
+            onClick={() => setSpectatorChatOpen(!spectatorChatOpen)}
+            aria-expanded={spectatorChatOpen}
+          >
+            <span className="flex items-center gap-2"><MessageCircle className="w-4 h-4" style={{ color: "var(--hud-shield)" }} />Chat</span>
+            <span style={{ color: "var(--hud-dim)" }}>{spectatorChatOpen ? "Ocultar" : "Mostrar"}</span>
+          </button>
 
           {spectatorChatOpen && (
             <>
-              <div
-                className="overflow-y-auto px-3 py-2 space-y-1"
-                style={{ maxHeight: "140px", scrollbarWidth: "thin" }}
-              >
+              <div className="overflow-y-auto px-3 py-2 space-y-1 text-[14px]" style={{ maxHeight: "140px", scrollbarWidth: "thin" }}>
                 {chatMessages.length === 0 && (
-                  <p className="text-[11px] text-slate-500 text-center py-2 italic">Sin mensajes aún</p>
+                  <p className="text-[13px] text-center py-2" style={{ color: "var(--hud-dim)" }}>Todavía no hay mensajes.</p>
                 )}
                 {chatMessages.map(msg => (
-                  <div key={msg.id} className={`text-xs flex gap-1.5 items-baseline ${msg.isSystem ? "text-amber-400 italic text-[11px]" : "text-slate-200"}` }>
+                  <div key={msg.id} className="flex gap-1.5 items-baseline" style={{ color: msg.isSystem ? "var(--hud-gold)" : "var(--hud-text)" }}>
                     {!msg.isSystem && (
-                      <span className={`font-black whitespace-nowrap ${msg.isSpectator ? "text-cyan-400" : "text-emerald-400"}`}>
-                        {msg.isSpectator ? "👻" : "🐾"} {msg.senderName}:
+                      <span className="whitespace-nowrap" style={{ color: msg.isSpectator ? "var(--hud-shield)" : "#6ee7b7" }}>
+                        {msg.senderName}:
                       </span>
                     )}
                     <span className="break-all">{msg.text}</span>
@@ -607,7 +600,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
                 ))}
                 <div ref={chatEndRef} />
               </div>
-              <div className="flex gap-1.5 px-2.5 py-2 border-t border-slate-700/50 bg-slate-900/40">
+              <div className="flex gap-2 p-2.5" style={{ borderTop: "2px solid var(--hud-ink)" }}>
                 <input
                   type="text"
                   value={chatInput}
@@ -620,14 +613,12 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
                     }
                   }}
                   onKeyUp={e => e.stopPropagation()}
-                  placeholder="Escribe un mensaje..."
-                  className="flex-1 bg-slate-800/80 border border-slate-600/60 rounded-lg px-2.5 py-1 text-xs text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-500/60 transition"
+                  placeholder="Escribí un mensaje"
+                  className="flex-1 min-w-0 px-2 h-[26px] text-[14px] outline-none"
+                  style={{ background: "#120e18", color: "var(--hud-text)", boxShadow: "0 0 0 2px var(--hud-ink), inset 0 2px 0 var(--hud-shade)" }}
                 />
-                <button
-                  onClick={sendChatMessage}
-                  className="px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition flex items-center cursor-pointer"
-                >
-                  <Send className="w-3 h-3" />
+                <button onClick={sendChatMessage} className="hud-chip h-[26px] cursor-pointer" aria-label="Enviar mensaje">
+                  <Send className="w-3.5 h-3.5" />
                 </button>
               </div>
             </>
@@ -923,79 +914,73 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
         </div>
       </div>
 
-      {/* ── MODAL: VICTORIA ROYALE (#1) ────────────────────── */}
+      {/* ── Fin de la partida ── */}
       {victory && (
-        <div className="self-center pointer-events-auto glass-panel border-2 border-yellow-500/60 bg-slate-950/90 p-8 rounded-3xl text-center max-w-md shadow-2xl backdrop-blur-xl animate-fadeIn space-y-4">
-          <div className="w-16 h-16 rounded-full bg-yellow-500/20 border-2 border-yellow-400 mx-auto flex items-center justify-center animate-bounce">
-            <Trophy className="w-9 h-9 text-yellow-400" />
-          </div>
+        <div className="hud hud-panel self-center pointer-events-auto p-6 w-[360px] flex flex-col items-center gap-4 text-center">
+          {victory.isMe ? (
+            <div style={{ boxShadow: "0 0 0 2px var(--hud-ink), inset 0 0 0 2px var(--hud-gold)", background: "#120e18" }}>
+              <PixelPortrait name={(SKINS[playerConfig?.skin ?? 0] ?? SKINS[0]).portrait} scale={2} />
+            </div>
+          ) : (
+            <Trophy className="w-10 h-10" style={{ color: "var(--hud-gold)" }} />
+          )}
 
-          <div>
-            <h2 className="text-3xl font-black tracking-wider text-yellow-400 uppercase drop-shadow-md">
-              {victory.isMe ? "¡VICTORIA ROYALE!" : "PARTIDA TERMINADA"}
+          <div className="flex flex-col gap-1">
+            <h2 className="text-[34px] leading-none" style={{ color: "var(--hud-gold)" }}>
+              {victory.isMe ? "Ganaste" : "Partida terminada"}
             </h2>
-            <p className="text-sm text-slate-300 mt-1">
-              {victory.isMe
-                ? "👑 ¡Eres el Michi Supremo y el último sobreviviente de la jungla!"
-                : `🏆 Ganador: ${victory.winnerName}`}
+            <p className="text-[15px]" style={{ color: "var(--hud-dim)" }}>
+              {victory.isMe ? "Sos el último gato en pie." : `Ganó ${victory.winnerName}.`}
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-3 p-3 rounded-2xl bg-slate-900/60 border border-slate-800 text-xs">
-            <div>
-              <span className="text-slate-400 block font-bold">Tus Eliminaciones</span>
-              <span className="text-xl font-black text-white font-mono">{player.kills}</span>
+          <div className="flex w-full" style={{ background: "#120e18", boxShadow: "0 0 0 2px var(--hud-ink)" }}>
+            <div className="flex-1 py-2 flex flex-col">
+              <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Kills</span>
+              <span className="text-[24px] leading-none tabular-nums">{player.kills}</span>
             </div>
-            <div>
-              <span className="text-slate-400 block font-bold">Rango de Estilo</span>
-              <span className="text-xl font-black text-amber-400 font-mono">{styleInfo.rank}</span>
+            <div className="w-[2px]" style={{ background: "var(--hud-ink)" }} />
+            <div className="flex-1 py-2 flex flex-col">
+              <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Rango de estilo</span>
+              <span className="text-[24px] leading-none" style={{ color: "var(--hud-gold)" }}>{styleInfo.rank.replace("RANGO ", "")}</span>
             </div>
           </div>
 
-          <button
-            onClick={handleRestart}
-            className="w-full py-3.5 px-6 rounded-2xl font-black tracking-wider text-sm bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-400 text-slate-950 hover:brightness-110 active:scale-95 transition shadow-lg flex items-center justify-center gap-2 cursor-pointer"
-          >
-            <RotateCcw className="w-4 h-4" />
-            <span>
-              {redirectCountdown !== null
-                ? `VOLVER A PANTALLA DE INICIO (${redirectCountdown}s)`
-                : "VOLVER A PANTALLA DE INICIO"}
-            </span>
+          <button onClick={handleRestart} className="hud-btn w-full py-2.5 cursor-pointer">
+            {redirectCountdown !== null ? `Volver al menú (${redirectCountdown} s)` : "Volver al menú"}
           </button>
         </div>
       )}
 
-      {/* ── BARRA MODO FANTASMA (arriba, no tapa el centro de la pantalla) ── */}
+      {/* ── Fantasma: recarga de la trampa ── */}
       {player.isGhost && !victory && !spectatorQueue && (() => {
         const TRAP_COOLDOWN = 6.0; // igual que el servidor (JungleRoom: trapCooldown = 6.0)
         const cooldown = player.trapCooldown ?? 0;
         const ready = cooldown <= 0;
         const progress = ready ? 1 : Math.max(0, Math.min(1, 1 - cooldown / TRAP_COOLDOWN));
         return (
-          <div className="absolute left-1/2 -translate-x-1/2 top-32 pointer-events-auto glass-panel border border-cyan-500/40 bg-slate-950/80 px-4 py-2 rounded-xl shadow-xl flex items-center gap-3 w-[min(92vw,360px)]">
-            <span className="text-cyan-400 font-black text-xs whitespace-nowrap">👻 FANTASMA</span>
-            <div className="flex-1 min-w-0">
-              <div className="flex justify-between text-[10px] font-bold mb-1">
-                <span className="text-cyan-200 truncate">Clic der.: trampa</span>
-                <span className={`font-mono ml-2 whitespace-nowrap ${ready ? "text-emerald-400" : "text-amber-400"}`}>
-                  {ready ? "¡Trampa lista!" : `${cooldown.toFixed(1)}s`}
+          <div className="hud hud-panel absolute left-1/2 -translate-x-1/2 top-32 pointer-events-auto px-4 py-2.5 flex items-center gap-3 w-[min(92vw,400px)]">
+            <SpriteIcon name="efecto-trampa" w={22} h={22} />
+            <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+              <div className="flex justify-between text-[14px]">
+                <span className="flex items-center gap-1.5 truncate" style={{ color: "var(--hud-shield)" }}>
+                  <span className="hud-key">Clic der.</span> Trampa
+                </span>
+                <span className="tabular-nums whitespace-nowrap" style={{ color: ready ? "#6ee7b7" : "var(--hud-gold)" }}>
+                  {ready ? "Lista" : `${cooldown.toFixed(1)} s`}
                 </span>
               </div>
-              <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-[width] duration-100 ${ready ? "bg-emerald-400" : "bg-amber-400"}`}
-                  style={{ width: `${progress * 100}%` }}
+              <div className="flex">
+                <HudBar
+                  pct={progress * 100}
+                  light={ready ? "#a7f3d0" : "#fde68a"}
+                  base={ready ? "#10b981" : "#f59e0b"}
+                  height={8}
                 />
               </div>
             </div>
-            <button
-              onClick={handleRestart}
-              title="Reiniciar partida"
-              className="py-1 px-2 rounded-lg text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1 transition whitespace-nowrap"
-            >
-              <RotateCcw className="w-3 h-3" />
-              Reiniciar
+            <button onClick={handleRestart} className="hud-chip cursor-pointer whitespace-nowrap" title="Salir de la partida y volver al menú">
+              Volver al menú
             </button>
           </div>
         );
