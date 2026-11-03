@@ -3,7 +3,6 @@ import { Room } from "colyseus.js";
 import { NetworkClient } from "../NetworkManager";
 import { GameState, Player, Projectile, Trap, Bush, ItemPickup, Obstacle } from "../schema/GameState";
 import { soundManager } from "../SoundManager";
-import { sseManager } from "../SSEClient";
 import { STRUCTURES, StructureDef } from "../structures";
 import { buildStructureArt } from "../structureArt";
 import { inRiver, onBridge, RIVER_PATH } from "../river";
@@ -713,123 +712,6 @@ export class MainScene extends Phaser.Scene {
       if (e.detail?.text) this.net.sendChat(e.detail.text);
     });
 
-    // 8. Integración con Pipeline Ultra-Rápido SSE (Server-Sent Events)
-    this.onWindow("sse-tick", (e: any) => {
-      const data = e.detail;
-      if (!data?.players) return;
-      if (data.roomId && this.room && data.roomId !== this.room.roomId) return;
-      data.players.forEach((pState: any) => {
-        const v = this.players.get(pState.id);
-        if (v && !v.isMe) {
-          // Push autoritativo en tiempo real a 60/30Hz sin retardo de websocket
-          v.tx = pState.x;
-          v.ty = pState.y;
-          v.tr = pState.rot;
-          v.hp = pState.hp;
-          v.shield = pState.shield;
-          if (typeof pState.isGhost === "boolean" && pState.isGhost !== v.isGhost) {
-            v.isGhost = pState.isGhost;
-            this.applyGhostTransition(v);
-          }
-          if (pState.w && pState.w !== v.equippedWeapon) {
-            v.equippedWeapon = pState.w;
-            this.drawCat(v);
-          }
-        }
-      });
-      if (data.zone) {
-        this.zone.x = data.zone.x;
-        this.zone.y = data.zone.y;
-        this.zone.r = data.zone.r;
-        this.zoneDirty = true;
-      }
-    });
-
-    this.onWindow("sse-shoot", (e: any) => {
-      const d = e.detail;
-      if (!d || d.id === this.myId) return;
-      if (d.roomId && this.room && d.roomId !== this.room.roomId) return;
-      const p = this.players.get(d.id);
-      if (p) {
-        if (d.weapon === "SHOTGUN") soundManager.playShotgun();
-        else if (d.weapon === "SNIPER") soundManager.playSniper();
-        else if (d.weapon === "GRENADE") soundManager.playGrenadeThrow();
-        else soundManager.playShoot();
-
-        // Retroceso en arma y manos estilo Suroi.io
-        const kick = d.weapon === "SNIPER" ? 10 : d.weapon === "SHOTGUN" ? 8 : 4;
-        p.aimGfx.setPosition(-kick, 0);
-
-        const lx = p.leftHandGfx.getData("baseX") ?? 16;
-        const ly = p.leftHandGfx.getData("baseY") ?? -4;
-        const rx = p.rightHandGfx.getData("baseX") ?? 12;
-        const ry = p.rightHandGfx.getData("baseY") ?? 6.5;
-
-        p.leftHandGfx.setPosition(lx - kick, ly);
-        p.rightHandGfx.setPosition(rx - kick, ry);
-
-        this.tweens.killTweensOf([p.aimGfx, p.leftHandGfx, p.rightHandGfx]);
-        this.tweens.add({ targets: p.aimGfx, x: 0, duration: 65, ease: "Quad.easeOut" });
-        this.tweens.add({ targets: p.leftHandGfx, x: lx, duration: 65, ease: "Quad.easeOut" });
-        this.tweens.add({ targets: p.rightHandGfx, x: rx, duration: 65, ease: "Quad.easeOut" });
-      }
-    });
-
-    this.onWindow("sse-melee", (e: any) => {
-      const d = e.detail;
-      if (!d || d.id === this.myId) return;
-      if (d.roomId && this.room && d.roomId !== this.room.roomId) return;
-      this.showGraphicClawSlash(d.x, d.y, d.angle);
-
-      const p = this.players.get(d.id);
-      if (p) {
-        p.punchAlternator = (p.punchAlternator || 0) + 1;
-        const isRight = p.punchAlternator % 2 === 1;
-        const hand = isRight ? p.rightHandGfx : p.leftHandGfx;
-        const bx = hand.getData("baseX") ?? 18;
-        const by = hand.getData("baseY") ?? (isRight ? 13 : -13);
-
-        this.tweens.killTweensOf(hand);
-        hand.setPosition(bx + 15, by);
-        this.tweens.add({ targets: hand, x: bx, duration: 110, ease: "Cubic.easeOut" });
-      }
-    });
-
-    this.onWindow("sse-dash", (e: any) => {
-      const d = e.detail;
-      if (!d || d.id === this.myId) return;
-      if (d.roomId && this.room && d.roomId !== this.room.roomId) return;
-      const p = this.players.get(d.id);
-      if (p) {
-        if (d.isRoll) {
-          this.playRollAnimation(p, d.dirX || 0, d.dirY || 0, 120, d.x, d.y);
-        } else {
-          this.playFastDashAnimation(p, d.dirX || 0, d.dirY || 0, 160, d.x, d.y);
-        }
-      }
-    });
-
-    this.onWindow("sse-hit", (e: any) => {
-      const d = e.detail;
-      if (!d) return;
-      if (d.roomId && this.room && d.roomId !== this.room.roomId) return;
-      // sin número de daño flotante: el daño se marca en la barra de vida (destello rojo)
-      this.createSparksFX(d.x, d.y, 0xff4444);
-      if (d.victimId === this.myId) {
-        soundManager.playHit();
-        this.cameras.main.shake(120, 0.012);
-      }
-    });
-
-    this.onWindow("sse-explosion", (e: any) => {
-      const d = e.detail;
-      if (!d) return;
-      if (d.roomId && this.room && d.roomId !== this.room.roomId) return;
-      soundManager.playExplosion();
-      this.createExplosionFX(d.x, d.y, d.type === "GRENADE", d.radius || 140, d.innerRadius || 70);
-      this.cameras.main.shake(d.type === "GRENADE" ? 320 : 220, d.type === "GRENADE" ? 0.022 : 0.016);
-    });
-
     // 9. Conectar sala Colyseus
     this.connect();
   }
@@ -1411,11 +1293,6 @@ export class MainScene extends Phaser.Scene {
     try {
       this.room = await this.net.connect(this.playerOptions);
       this.myId = this.net.sessionId;
-      // eventos SSE solo de esta sala
-      sseManager.setRoom(this.room.roomId);
-      const leaveSse = () => sseManager.setRoom("");
-      this.events.once(Phaser.Scenes.Events.SHUTDOWN, leaveSse);
-      this.events.once(Phaser.Scenes.Events.DESTROY, leaveSse);
       emit("conn", "CONNECTED");
       console.log("✅ Conectado como:", this.myId);
       this.bindRoom();
@@ -1601,6 +1478,48 @@ export class MainScene extends Phaser.Scene {
 
     this.room.onMessage("playerMelee", (d: any) => {
       this.showGraphicClawSlash(d.x, d.y, d.angle);
+      if (d.id === this.myId) return;   // la mano propia ya se animó al atacar
+      const p = this.players.get(d.id);
+      if (p) {
+        p.punchAlternator = (p.punchAlternator || 0) + 1;
+        const isRight = p.punchAlternator % 2 === 1;
+        const hand = isRight ? p.rightHandGfx : p.leftHandGfx;
+        const bx = hand.getData("baseX") ?? 18;
+        const by = hand.getData("baseY") ?? (isRight ? 13 : -13);
+
+        this.tweens.killTweensOf(hand);
+        hand.setPosition(bx + 15, by);
+        this.tweens.add({ targets: hand, x: bx, duration: 110, ease: "Cubic.easeOut" });
+      }
+    });
+
+    // Disparo de otro jugador: sonido y retroceso (las balas llegan por el estado)
+    this.room.onMessage("playerShoot", (d: any) => {
+      if (d.id === this.myId) return;   // el disparo propio ya se predijo localmente
+      const p = this.players.get(d.id);
+      if (p) {
+        if (d.weapon === "SHOTGUN") soundManager.playShotgun();
+        else if (d.weapon === "SNIPER") soundManager.playSniper();
+        else if (d.weapon === "GRENADE") soundManager.playGrenadeThrow();
+        else soundManager.playShoot();
+
+        // Retroceso en arma y manos estilo Suroi.io
+        const kick = d.weapon === "SNIPER" ? 10 : d.weapon === "SHOTGUN" ? 8 : 4;
+        p.aimGfx.setPosition(-kick, 0);
+
+        const lx = p.leftHandGfx.getData("baseX") ?? 16;
+        const ly = p.leftHandGfx.getData("baseY") ?? -4;
+        const rx = p.rightHandGfx.getData("baseX") ?? 12;
+        const ry = p.rightHandGfx.getData("baseY") ?? 6.5;
+
+        p.leftHandGfx.setPosition(lx - kick, ly);
+        p.rightHandGfx.setPosition(rx - kick, ry);
+
+        this.tweens.killTweensOf([p.aimGfx, p.leftHandGfx, p.rightHandGfx]);
+        this.tweens.add({ targets: p.aimGfx, x: 0, duration: 65, ease: "Quad.easeOut" });
+        this.tweens.add({ targets: p.leftHandGfx, x: lx, duration: 65, ease: "Quad.easeOut" });
+        this.tweens.add({ targets: p.rightHandGfx, x: rx, duration: 65, ease: "Quad.easeOut" });
+      }
     });
 
     this.room.onMessage("playerReloading", (d: any) => {
@@ -3707,9 +3626,8 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
-  /** Pasaje vivo <-> fantasma (HUD del personaje, tumba y sprite). Se llama tanto
-   *  desde la sincronización de Colyseus como desde el tick SSE: si solo dependía de
-   *  uno, un bot muerto podía seguir figurando vivo (punto rojo quieto en el minimapa). */
+  /** Pasaje vivo <-> fantasma (HUD del personaje, tumba y sprite). Se llama desde la
+   *  sincronización de Colyseus (updatePlayer) cuando cambia isGhost. */
   private applyGhostTransition(v: VPlayer) {
     if (v.isGhost) {
       v.hpBg.setVisible(false);
@@ -5352,17 +5270,10 @@ export class MainScene extends Phaser.Scene {
   }
 
   /** Escucha un evento de la ventana y lo quita al cerrar la escena (si no, al jugar
-   *  otra partida quedaban vivos los de la anterior). Los eventos SSE de otra sala se
-   *  ignoran: los bots se llaman igual en todas las salas (bot_1..bot_6). */
+   *  otra partida quedaban vivos los de la anterior). */
   private windowHandlers: [string, EventListener][] = [];
   private onWindow(type: string, fn: (e: any) => void) {
-    const h: EventListener = (e: any) => {
-      if (type.startsWith("sse-")) {
-        const rid = e?.detail?.roomId;
-        if (!this.room || (rid && rid !== this.room.roomId)) return;
-      }
-      fn(e);
-    };
+    const h: EventListener = (e: any) => fn(e);
     if (!this.windowHandlers.length) {
       const off = () => { this.windowHandlers.forEach(([t, f]) => window.removeEventListener(t, f)); this.windowHandlers = []; };
       this.events.once(Phaser.Scenes.Events.SHUTDOWN, off);

@@ -121,15 +121,15 @@ BattleCats/
 │ NetworkManager ──────────┼─── acciones ────────►│  └─ Colyseus Server      │
 │  (move, shoot, dash...)  │◄── estado (schema) ──┼──     └─ JungleRoom      │
 │                          │                      │         loop a 60 Hz     │
-│ SSEClient ◄──────────────┼── eventos (tick,     │         SpatialHashGrid  │
-│  (EventSource)           │   disparos, daño...) │         GameState en RAM │
+│ SSEClient ◄──────────────┼── telemetría (1 s)   │         SpatialHashGrid  │
+│  (EventSource)           │                      │         GameState en RAM │
 └──────────────────────────┘                      └──────────────────────────┘
 ```
 
 **Reglas de la arquitectura:**
 
 1. **Servidor autoritativo.** El cliente no decide daños, muertes ni recogida de ítems. Solo manda *intenciones* (mover hacia X, disparar hacia Y).
-2. **Dos canales de red** (ver 5.12): WebSocket para el estado y las acciones, SSE para eventos de baja latencia.
+2. **Dos canales de red** (ver 5.12): WebSocket para todo el juego (acciones, estado y eventos), SSE para la telemetría del HUD.
 3. **Todo en memoria.** No hay base de datos: el estado vive en la RAM del servidor mientras la sala está abierta.
 4. **Predicción en el cliente.** Cada cliente se mueve y dispara al instante en su pantalla sin esperar al servidor; los demás jugadores se ven interpolados.
 
@@ -298,18 +298,17 @@ Los bots usan las mismas reglas de daño, armas, loot y zona que un jugador.
 | | WebSocket (Colyseus) | SSE (`/api/events`) |
 |---|---|---|
 | Dirección | ida y vuelta | solo servidor → cliente |
-| Para qué | entrar a la sala, **enviar acciones** (`move`, `shoot`, `dash`, `reload`, `interact`, `switchWeapon`, `emote`, `placeTrap`, `restart`), **estado sincronizado** | **eventos en tiempo real**: `tick` (posiciones, vida y zona a 30 Hz), `playerShoot`, `playerMelee`, `playerDash`, `hit`, `explosion`, `kill`, `telemetry` (cada 1 s) |
+| Para qué | entrar a la sala, **enviar acciones** (`move`, `shoot`, `dash`, `reload`, `interact`, `switchWeapon`, `emote`, `placeTrap`, `restart`), **estado sincronizado** (30 patches/s) y **eventos** (`playerShoot`, `playerMelee`, `playerDash`, `hit`, `explosion`, `kill`, …), `ping`/`pong` | **telemetría del HUD** (`telemetry` cada 1 s: clientes conectados, memoria, tick rate) |
 | Puerto | 2567 (`ws://`) | 2567 (HTTP `text/event-stream`) |
 
-- `sse.ts` mantiene las respuestas HTTP abiertas. Cada cliente se suscribe a su sala (`/api/events?roomId=…`, lo hace `sseManager.setRoom()` al conectar) y `broadcastRoomSSE` manda los eventos de una sala solo a sus suscriptores; `broadcastSSE` (telemetría) va a todos. Se activa `setNoDelay(true)` (sin algoritmo de Nagle) para que los paquetes salgan inmediatamente.
-- `JungleRoom.sse()` agrega igual el `roomId` a cada evento y el cliente descarta los de otras salas (`onWindow` en `MainScene.ts`).
-- El `tick` solo se arma si la sala tiene suscriptores y lleva los gatos que cambiaron desde el anterior; una vez por segundo va la lista completa.
-- `SSEClient.ts` escucha cada tipo de evento y lo reenvía como `CustomEvent` de `window` (`sse-tick`, `sse-shoot`, …); la escena de Phaser reacciona a esos eventos para animar disparos, golpes, explosiones y actualizar a los demás jugadores. Si se corta, reintenta cada 2,5 s.
-- El HUD muestra el estado de la conexión y el ping estimado con `telemetry`.
+- `sse.ts` mantiene las respuestas HTTP abiertas y `broadcastSSE` manda la telemetría a todos cada 1 s. Se activa `setNoDelay(true)` (sin algoritmo de Nagle) para que los paquetes salgan inmediatamente.
+- `SSEClient.ts` escucha `init` y `telemetry` y los reenvía al HUD como `CustomEvent` (`sse-telemetry`). Si se corta, reintenta cada 2,5 s.
+- **Ping real.** `NetworkManager` manda `ping` por el WebSocket cada 1 s con `performance.now()`; el servidor devuelve el mismo número en `pong` y el cliente resta con su propio reloj (ida y vuelta). Antes se calculaba `hora del cliente - hora del servidor`, que entre máquinas distintas es la diferencia de relojes y no la latencia.
+- **Antes** las posiciones (`tick` a 30 Hz) y los eventos de juego también iban por SSE, además de por el WebSocket: cada dato llegaba dos veces y algunos efectos (explosiones, dash, zarpazo) se dibujaban dos veces. Con 20 jugadores, sacar el duplicado y bajar los patches a 30/s llevó el tráfico por jugador de ~117 KB/s a ~30 KB/s (`loadtest`).
 
-**Por qué.** SSE es simple (HTTP común, reconexión automática del navegador) y alcanza para empujar eventos del servidor. Colyseus (WebSocket) cubre lo bidireccional y la sincronización de estado.
+**Por qué.** SSE es simple (HTTP común, reconexión automática del navegador) y alcanza para empujar datos del servidor que no necesitan respuesta, como la telemetría. El juego va todo por Colyseus (WebSocket): es bidireccional, manda el estado en binario y solo lo que cambió, y tener una sola fuente evita que dos canales se pisen.
 
-**Archivos.** `server/src/sse.ts`, `JungleRoom.ts` (`sse`, bloque "SSE State Tick" en `update`), `SSEClient.ts`, `NetworkManager.ts`, `MainScene.ts` (`onWindow("sse-…")`).
+**Archivos.** `server/src/sse.ts`, `JungleRoom.ts` (`ping`, `setPatchRate`), `SSEClient.ts`, `NetworkManager.ts` (`startPing`), `UIOverlay.tsx` (HUD).
 
 ### 5.13 Render y arte
 

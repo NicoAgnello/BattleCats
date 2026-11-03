@@ -78,13 +78,13 @@ flowchart LR
   S["Servidor Node.js<br>Express + Colyseus<br>JungleRoom a 60 Hz"]
   C -- "WebSocket: acciones<br>move, shoot, dash..." --> S
   S -- "WebSocket: estado (schema)" --> C
-  S -- "SSE: eventos<br>tick, disparos, daño..." --> C
+  S -- "SSE: telemetría del HUD" --> C
 ```
 
 | Canal | Para qué |
 |---|---|
-| **WebSocket (Colyseus)** | Entrar a la sala, enviar acciones y recibir el estado sincronizado |
-| **SSE** (`/api/events`) | Eventos en tiempo real: posiciones, disparos, golpes, explosiones, kills |
+| **WebSocket (Colyseus)** | Entrar a la sala, enviar acciones, recibir el estado sincronizado (30/s) y los eventos (disparos, golpes, explosiones, kills) y medir el ping |
+| **SSE** (`/api/events`) | Telemetría del HUD cada 1 s (clientes conectados, memoria del servidor) |
 
 No hay base de datos: todo el estado vive en la memoria del servidor mientras la sala está abierta.
 

@@ -6,7 +6,7 @@
  *   node loadtest/rooms-test.mjs --host 192.168.1.15   # por la red local
  *
  * Recorre: crear sala, consultar el código, unirse, permisos del anfitrión, código
- * repetido, inicio de partida, unirse con la partida empezada, SSE por sala, cambio
+ * repetido, inicio de partida, unirse con la partida empezada, SSE de telemetría, cambio
  * de anfitrión, sala llena y código inexistente.
  */
 import { createRequire } from "module";
@@ -46,13 +46,13 @@ async function player(how, opts) {
   return { client, room, messages };
 }
 
-/** Abre el stream SSE de una sala y cuenta los eventos de juego que llegan. */
-function sseCounter(roomId) {
+/** Abre el stream SSE y cuenta lo que llega: telemetría y, si hubiera, eventos de juego. */
+function sseCounter() {
   const abort = new AbortController();
-  const counts = { tick: 0, foreign: 0 };
+  const counts = { telemetry: 0, game: 0 };
   (async () => {
     try {
-      const res = await fetch(`${HTTP}/api/events${roomId ? `?roomId=${roomId}` : ""}`, { signal: abort.signal });
+      const res = await fetch(`${HTTP}/api/events`, { signal: abort.signal });
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
@@ -65,12 +65,8 @@ function sseCounter(roomId) {
           const block = buf.slice(0, i);
           buf = buf.slice(i + 2);
           const type = /event: (\w+)/.exec(block)?.[1];
-          const data = /data: (.*)/.exec(block)?.[1];
-          if (type === "tick") {
-            counts.tick++;
-            const rid = JSON.parse(data).roomId;
-            if (roomId && rid !== roomId) counts.foreign++;
-          }
+          if (type === "telemetry") counts.telemetry++;
+          else if (type && type !== "init") counts.game++;
         }
       }
     } catch {}
@@ -123,10 +119,8 @@ async function main() {
   ok(dupCode === 4409, "el error trae el código 4409 (el cliente reintenta con otro código)", `code=${dupCode}`);
   if (dup) await dup.room.leave();
 
-  // 6. SSE por sala: el stream de la sala solo trae sus eventos
-  const other = track(await player("create", { name: "Ajeno", isCustom: true, isHost: true, roomCode: code() }));
-  other.room.send("startMatch");
-  const sseMine = sseCounter(host.room.roomId);
+  // 6. SSE: solo telemetría del HUD (el juego va por el WebSocket)
+  const sse = sseCounter();
   await sleep(300);
 
   // 7. Iniciar partida
@@ -154,9 +148,9 @@ async function main() {
   }
 
   await sleep(1200);
-  ok(sseMine.counts.tick > 10, "el SSE de la sala recibe ticks", `${sseMine.counts.tick}`);
-  ok(sseMine.counts.foreign === 0, "el SSE de la sala no recibe ticks de otra sala", `${sseMine.counts.foreign} ajenos`);
-  sseMine.close();
+  ok(sse.counts.telemetry >= 1, "el SSE recibe la telemetría", `${sse.counts.telemetry}`);
+  ok(sse.counts.game === 0, "el SSE no duplica eventos del juego", `${sse.counts.game} eventos`);
+  sse.close();
 
   // 9. Cambio de anfitrión
   await host.room.leave();

@@ -1,6 +1,5 @@
 import { Room, Client, ServerError } from "colyseus";
 import { GameState, Player, Projectile, Trap, Bush, ItemPickup, Obstacle, syncPlayerTimers } from "./schema/GameState";
-import { broadcastRoomSSE, hasRoomSubscribers } from "../sse";
 import { SpatialHashGrid } from "../spatial/SpatialHashGrid";
 import { STRUCTURES, StructureDef } from "./structures";
 import { inRiver } from "./river";
@@ -219,10 +218,6 @@ export class JungleRoom extends Room<GameState> {
   private spectatorQueueIds: string[] = [];
   /** Timer para auto-iniciar nueva partida tras victoria */
   private victoryTimeout: NodeJS.Timeout | null = null;
-  private sseTickCounter = 0;
-  private sseFullCounter = 0;
-  /** Último estado de cada gato enviado por el tick SSE (para mandar solo cambios). */
-  private sseLastSent = new Map<string, string>();
 
   private playerWeaponAmmo = new Map<string, Record<string, { ammo: number; reserveAmmo: number }>>();
   private itemPickupDelays = new Map<string, number>();
@@ -242,12 +237,6 @@ export class JungleRoom extends Room<GameState> {
     "Garra Silenciosa",
     "Zarpazo Veloz",
   ];
-
-  /** Evento SSE de esta sala: va solo a los clientes suscriptos a ella. Lleva igual
-   *  el roomId (los bots se llaman igual en todas: bot_1..bot_6). */
-  private sse(type: string, data: Record<string, unknown>) {
-    broadcastRoomSSE(this.roomId, type, { ...data, roomId: this.roomId });
-  }
 
   private perf!: RoomPerf;
 
@@ -491,15 +480,6 @@ export class JungleRoom extends Room<GameState> {
         isRoll: !isMelee,
         cooldown,
       });
-      this.sse("playerDash", {
-        id: client.sessionId,
-        x: player.x,
-        y: player.y,
-        dirX: nx,
-        dirY: ny,
-        isRoll: !isMelee,
-        cooldown,
-      });
     });
 
     this.onMessage("reload", (client) => {
@@ -710,7 +690,6 @@ export class JungleRoom extends Room<GameState> {
           weapon: weaponName,
         };
         this.broadcast("kill", killPayload);
-        this.sse("kill", killPayload);
       }
 
 
@@ -929,7 +908,6 @@ export class JungleRoom extends Room<GameState> {
       }
 
       this.broadcast("playerMelee", { id: player.id, x: slashX, y: slashY, angle, damage: 50 });
-      this.sse("playerMelee", { id: player.id, x: slashX, y: slashY, angle, damage: 50 });
       return;
     }
 
@@ -968,7 +946,6 @@ export class JungleRoom extends Room<GameState> {
         this.addProjectile(proj);
       }
       this.broadcast("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SHOTGUN", angles: anglesToUse });
-      this.sse("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SHOTGUN", angles: anglesToUse });
       return;
     }
 
@@ -992,7 +969,6 @@ export class JungleRoom extends Room<GameState> {
       this.addProjectile(proj);
 
       this.broadcast("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SNIPER" });
-      this.sse("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "SNIPER" });
       return;
     }
 
@@ -1036,15 +1012,6 @@ export class JungleRoom extends Room<GameState> {
         targetX: destX,
         targetY: destY
       });
-      this.sse("playerShoot", {
-        id: player.id,
-        x: player.x,
-        y: player.y,
-        angle,
-        weapon: "GRENADE",
-        targetX: destX,
-        targetY: destY
-      });
       return;
     }
 
@@ -1076,7 +1043,6 @@ export class JungleRoom extends Room<GameState> {
     }
 
     this.broadcast("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "LASER", isTriple, angles: anglesToUse });
-    this.sse("playerShoot", { id: player.id, x: player.x, y: player.y, angle, weapon: "LASER", isTriple, angles: anglesToUse });
   }
 
   private damageObstacle(obs: Obstacle, dmg: number, shooterId?: string) {
@@ -1099,7 +1065,6 @@ export class JungleRoom extends Room<GameState> {
 
   private triggerBarrelExplosion(x: number, y: number, shooterId?: string) {
     this.broadcast("explosion", { x, y, radius: 140, type: "BARREL" });
-    this.sse("explosion", { x, y, radius: 140, type: "BARREL" });
 
     // Damage nearby players & obstacles via SpatialHashGrid (O(1))
     const nearby = this.spatialGrid.queryRadius(x, y, 140, ["player", "obstacle"]);
@@ -1132,7 +1097,6 @@ export class JungleRoom extends Room<GameState> {
     const outerRadius = 280;
 
     this.broadcast("explosion", { x, y, radius: outerRadius, innerRadius, type: "GRENADE" });
-    this.sse("explosion", { x, y, radius: outerRadius, innerRadius, type: "GRENADE" });
 
     // Daño a jugadores y obstáculos en las 2 zonas via SpatialHashGrid (O(1))
     const nearby = this.spatialGrid.queryRadius(x, y, outerRadius, ["player", "obstacle"]);
@@ -1523,7 +1487,6 @@ export class JungleRoom extends Room<GameState> {
     const freedVertex = this.lastPlayerSpawnIndex.get(client.sessionId);
 
     this.state.players.delete(client.sessionId);
-    this.sseLastSent.delete(client.sessionId);
     this.playerWeaponAmmo.delete(client.sessionId);
     this.spatialGrid.remove(client.sessionId);
     this.lastPlayerSpawnIndex.delete(client.sessionId);
@@ -1813,40 +1776,6 @@ export class JungleRoom extends Room<GameState> {
 
     // 6. Safe Zone Circle Progression
     this.updateZone(dt);
-
-    // 7. Authoritative SSE State Tick (30Hz, solo si hay clientes SSE en esta sala).
-    // Cada tick lleva los gatos que cambiaron desde el anterior; una vez por segundo
-    // va la lista completa (para quien se suscribió recién).
-    this.sseTickCounter = ((this.sseTickCounter || 0) + 1) % 2;
-    if (this.sseTickCounter === 0 && hasRoomSubscribers(this.roomId)) {
-      const full = ++this.sseFullCounter % 30 === 0;
-      const pList: any[] = [];
-      this.state.players.forEach((p) => {
-        const entry = {
-          id: p.id,
-          x: Math.round(p.x * 10) / 10,
-          y: Math.round(p.y * 10) / 10,
-          rot: Math.round(p.rotation * 100) / 100,
-          hp: Math.round(p.hp),
-          shield: Math.round(p.shield),
-          w: p.equippedWeapon,
-          isGhost: p.isGhost,
-        };
-        const key = `${entry.x},${entry.y},${entry.rot},${entry.hp},${entry.shield},${entry.w},${entry.isGhost}`;
-        if (!full && this.sseLastSent.get(p.id) === key) return;
-        this.sseLastSent.set(p.id, key);
-        pList.push(entry);
-      });
-      this.sse("tick", {
-        t: Date.now(),
-        players: pList,
-        zone: {
-          x: Math.round(this.state.zone.x),
-          y: Math.round(this.state.zone.y),
-          r: Math.round(this.state.zone.currentRadius),
-        },
-      });
-    }
   }
 
   private updateBotsAI(dt: number) {
@@ -1968,15 +1897,6 @@ export class JungleRoom extends Room<GameState> {
           bot.x = Math.max(30, Math.min(this.state.worldWidth - 30, targetX));
           bot.y = Math.max(30, Math.min(this.state.worldHeight - 30, targetY));
           this.broadcast("playerDash", {
-            id: bot.id,
-            x: bot.x,
-            y: bot.y,
-            dirX: nx,
-            dirY: ny,
-            isRoll: !isMelee,
-            cooldown,
-          });
-          this.sse("playerDash", {
             id: bot.id,
             x: bot.x,
             y: bot.y,
