@@ -4,6 +4,9 @@ import { soundManager } from "../game/SoundManager";
 import { PixelPortrait } from "./PixelPortrait";
 import { SKINS, type PlayerConfig } from "./StartScreen";
 
+/** Cuánto se ve la guía de teclas al empezar una partida. */
+const KEYS_HINT_MS = 20_000;
+
 /* ── Piezas del HUD pixel art ────────────────────────────────────────────── */
 
 /** Primer frame de un sprite del juego (public/sprites), a escala entera. */
@@ -170,6 +173,8 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
   const [showEmotes, setShowEmotes] = useState(false);
   const [roomInfo, setRoomInfo] = useState<RoomInfo | null>(null);
   const [codeCopied, setCodeCopied] = useState(false);
+  const [showKeys, setShowKeys] = useState(true);
+  const [keysEpoch, setKeysEpoch] = useState(0);
   const [sseInfo, setSseInfo] = useState<{ connected: boolean; tickRate: number; ping: number }>({
     connected: false,
     tickRate: 60,
@@ -215,6 +220,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
     setSpectatorQueue(null);
   }, []);
   const onPlaying = useCallback(() => {
+    setKeysEpoch(n => n + 1);
     setVictory(null);
     setRedirectCountdown(null);
     setLobbyState(null); // La partida empieza: cerrar el lobby overlay
@@ -272,6 +278,13 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
     window.addEventListener("pointerdown", onPointerDown, true);
     return () => window.removeEventListener("pointerdown", onPointerDown, true);
   }, []);
+
+  // La guía de teclas se ve al entrar y al arrancar cada partida, y se oculta sola
+  useEffect(() => {
+    setShowKeys(true);
+    const id = setTimeout(() => setShowKeys(false), KEYS_HINT_MS);
+    return () => clearTimeout(id);
+  }, [keysEpoch]);
 
   // Countdown auto redirect
   useEffect(() => {
@@ -436,6 +449,8 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
     return { rank: "RANGO D", label: "DORMILÓN", badge: "bg-slate-700/50 text-slate-300" };
   };
 
+  /** Sala privada esperando que el anfitrión arranque: su panel va en el lugar de la zona. */
+  const roomWaiting = !!roomInfo?.isCustomRoom && roomInfo.status === "WAITING";
   const styleInfo = getStyleRank(styleScore);
   const hpPct = Math.max(0, Math.min(100, (player.hp / player.maxHp) * 100));
   const shdPct = (player.maxShield || 0) > 0 ? Math.max(0, Math.min(100, ((player.shield || 0) / (player.maxShield || 1)) * 100)) : 0;
@@ -528,82 +543,6 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
 
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex flex-col justify-between p-5 select-none font-game opacity-85 transition-opacity">
-
-      {/* ── Espectador en la fila para la próxima partida ── */}
-      {spectatorQueue && (
-        <div className="hud hud-panel absolute top-5 left-1/2 -translate-x-1/2 z-40 pointer-events-auto flex items-center gap-4 px-4 py-2.5">
-          <SpriteIcon name="efecto-gatito-fantasma" w={11} h={11} scale={3} />
-          <div className="flex flex-col">
-            <span className="text-[16px]">
-              Mirando la partida <span style={{ color: "var(--hud-shield)" }}>· lugar {spectatorQueue.position} en la fila</span>
-            </span>
-            <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Entrás a jugar cuando empiece la próxima.</span>
-          </div>
-        </div>
-      )}
-
-      {/* ── Chat (fantasmas y espectadores) ── */}
-      {(spectatorQueue || player.isGhost) && (
-        <div className="hud hud-panel absolute bottom-6 left-6 z-40 pointer-events-auto flex flex-col w-80">
-          <button
-            type="button"
-            className="flex items-center justify-between px-3 py-2 text-[15px] cursor-pointer"
-            style={{ borderBottom: spectatorChatOpen ? "2px solid var(--hud-ink)" : undefined }}
-            onClick={() => setSpectatorChatOpen(!spectatorChatOpen)}
-            aria-expanded={spectatorChatOpen}
-          >
-            <span className="flex items-center gap-2"><MessageCircle className="w-4 h-4" style={{ color: "var(--hud-shield)" }} />Chat</span>
-            <span style={{ color: "var(--hud-dim)" }}>{spectatorChatOpen ? "Ocultar" : "Mostrar"}</span>
-          </button>
-
-          {spectatorChatOpen && (
-            <>
-              <div className="overflow-y-auto px-3 py-2 space-y-1 text-[14px]" style={{ maxHeight: "140px", scrollbarWidth: "thin" }}>
-                {chatMessages.length === 0 && (
-                  <p className="text-[13px] text-center py-2" style={{ color: "var(--hud-dim)" }}>Todavía no hay mensajes.</p>
-                )}
-                {chatMessages.map(msg => (
-                  <div key={msg.id} className="flex gap-1.5 items-baseline" style={{ color: msg.isSystem ? "var(--hud-gold)" : "var(--hud-text)" }}>
-                    {!msg.isSystem && (
-                      <span className="whitespace-nowrap" style={{ color: msg.isSpectator ? "var(--hud-shield)" : "#6ee7b7" }}>
-                        {msg.senderName}:
-                      </span>
-                    )}
-                    <span className="break-all">{msg.text}</span>
-                  </div>
-                ))}
-                <div ref={chatEndRef} />
-              </div>
-              <div className="flex gap-2 p-2.5" style={{ borderTop: "2px solid var(--hud-ink)" }}>
-                <input
-                  type="text"
-                  value={chatInput}
-                  onChange={e => setChatInput(e.target.value.slice(0, 120))}
-                  onKeyDown={e => {
-                    e.stopPropagation();
-                    // Al mandar (o con Escape) se suelta el campo: el juego ignora el
-                    // teclado mientras haya un input con foco y quedabas sin poder moverte
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      sendChatMessage();
-                      e.currentTarget.blur();
-                    } else if (e.key === "Escape") {
-                      e.currentTarget.blur();
-                    }
-                  }}
-                  onKeyUp={e => e.stopPropagation()}
-                  placeholder="Escribí un mensaje (Esc para volver al juego)"
-                  className="flex-1 min-w-0 px-2 h-[26px] text-[14px] outline-none"
-                  style={{ background: "#120e18", color: "var(--hud-text)", boxShadow: "0 0 0 2px var(--hud-ink), inset 0 2px 0 var(--hud-shade)" }}
-                />
-                <button onClick={sendChatMessage} className="hud-chip h-[26px] cursor-pointer" aria-label="Enviar mensaje">
-                  <Send className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
 
       {/* ── FILA SUPERIOR (HUD) ───────────────────────────── */}
       <div className="flex items-start justify-between gap-4 pointer-events-none">
@@ -719,7 +658,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
         {/* ── Centro: sala privada, aturdido, inmunidad y zona ── */}
         <div className="hud pointer-events-none flex flex-col items-center gap-3">
           {/* Sala privada esperando: código, jugadores y arranque del anfitrión */}
-          {roomInfo?.isCustomRoom && roomInfo.status === "WAITING" && (
+          {roomWaiting && (
             <div className="hud-panel pointer-events-auto w-[320px] p-4 flex flex-col gap-3">
               <div className="flex items-baseline justify-between">
                 <span className="text-[16px]">Sala privada</span>
@@ -788,6 +727,35 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
             </div>
           )}
 
+          {/* Zona: fase y cuenta regresiva (mientras la sala espera, su lugar es del panel de la sala) */}
+          {!roomWaiting && (
+            <div className="hud-panel px-5 py-2 flex flex-col items-center min-w-[150px]" style={zone.isShrinking ? { background: "#3a1218" } : undefined}>
+              <span className="text-[13px]" style={{ color: zone.isShrinking ? "#fca5a5" : "var(--hud-dim)" }}>
+                {zone.isShrinking ? "La zona se cierra" : `Fase ${zone.phase} · zona segura`}
+              </span>
+              <span
+                className={`text-[30px] leading-none tabular-nums ${zone.isShrinking ? "hud-blink" : ""}`}
+                style={{ color: zone.isShrinking ? "#ef4444" : "var(--hud-gold)" }}
+              >
+                {zone.timer} s
+              </span>
+            </div>
+          )}
+
+          {/* Avisos: uno debajo del otro, sin tapar la zona */}
+                {/* Espectador en la fila para la próxima partida ── */}
+              {spectatorQueue && (
+            <div className="hud-panel pointer-events-auto flex items-center gap-4 px-4 py-2.5">
+              <SpriteIcon name="efecto-gatito-fantasma" w={11} h={11} scale={3} />
+              <div className="flex flex-col">
+                <span className="text-[16px]">
+                  Mirando la partida <span style={{ color: "var(--hud-shield)" }}>· lugar {spectatorQueue.position} en la fila</span>
+                </span>
+                <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Entrás a jugar cuando empiece la próxima.</span>
+              </div>
+            </div>
+          )}
+
           {/* Aturdido por una trampa fantasma */}
           {(player.stunTimer ?? 0) > 0 && (
             <div className="hud-panel px-4 py-2 flex items-center gap-3" style={{ background: "#3b2410" }}>
@@ -809,19 +777,6 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
               <span className="tabular-nums">{Math.ceil(player.invulnerableTimer!)} s</span>
             </div>
           )}
-
-          {/* Zona: fase y cuenta regresiva */}
-          <div className="hud-panel px-5 py-2 flex flex-col items-center min-w-[150px]" style={zone.isShrinking ? { background: "#3a1218" } : undefined}>
-            <span className="text-[13px]" style={{ color: zone.isShrinking ? "#fca5a5" : "var(--hud-dim)" }}>
-              {zone.isShrinking ? "La zona se cierra" : `Fase ${zone.phase} · zona segura`}
-            </span>
-            <span
-              className={`text-[30px] leading-none tabular-nums ${zone.isShrinking ? "hud-blink" : ""}`}
-              style={{ color: zone.isShrinking ? "#ef4444" : "var(--hud-gold)" }}
-            >
-              {zone.timer} s
-            </span>
-          </div>
 
           {stylePopup && (
             <span className="hud-chip" style={{ color: "var(--hud-gold)" }}>{stylePopup}</span>
@@ -931,71 +886,102 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
         </div>
       )}
 
-      {/* ── Fantasma: recarga de la trampa ── */}
-      {player.isGhost && !victory && !spectatorQueue && (() => {
-        const TRAP_COOLDOWN = 6.0; // igual que el servidor (JungleRoom: trapCooldown = 6.0)
-        const cooldown = player.trapCooldown ?? 0;
-        const ready = cooldown <= 0;
-        const progress = ready ? 1 : Math.max(0, Math.min(1, 1 - cooldown / TRAP_COOLDOWN));
-        return (
-          <div className="hud hud-panel absolute left-1/2 -translate-x-1/2 top-32 pointer-events-auto px-4 py-2.5 flex items-center gap-3 w-[min(92vw,400px)]">
-            <SpriteIcon name="efecto-trampa" w={22} h={22} />
-            <div className="flex-1 min-w-0 flex flex-col gap-1.5">
-              <div className="flex justify-between text-[14px]">
-                <span className="flex items-center gap-1.5 truncate" style={{ color: "var(--hud-shield)" }}>
-                  <span className="hud-key">Clic der.</span> Trampa
-                </span>
-                <span className="tabular-nums whitespace-nowrap" style={{ color: ready ? "#6ee7b7" : "var(--hud-gold)" }}>
-                  {ready ? "Lista" : `${cooldown.toFixed(1)} s`}
-                </span>
-              </div>
-              <div className="flex">
-                <HudBar
-                  pct={progress * 100}
-                  light={ready ? "#a7f3d0" : "#fde68a"}
-                  base={ready ? "#10b981" : "#f59e0b"}
-                  height={8}
-                />
-              </div>
-            </div>
-            <button onClick={handleRestart} className="hud-chip cursor-pointer whitespace-nowrap" title="Salir de la partida y volver al menú">
-              Volver al menú
-            </button>
-          </div>
-        );
-      })()}
-
       {/* ── Fila inferior: dash, arma equipada, slots y controles ── */}
       <div className="hud flex items-end justify-between gap-4 pointer-events-none">
 
-        {/* Dash / rodar con su recarga */}
-        {(() => {
-          const isMelee = player.equippedWeapon === "MELEE";
-          const maxCd = isMelee ? 1.8 : 2.5;
-          const cdPct = Math.min(100, (player.dashCooldown / maxCd) * 100);
-          return (
-            <div className="hud-panel flex items-center gap-3 px-3 py-2.5">
-              <div className="relative w-11 h-11 flex items-center justify-center overflow-hidden" style={{ background: "#120e18", boxShadow: "0 0 0 2px var(--hud-ink)" }}>
-                <Zap className="w-6 h-6" style={{ color: isMelee ? "var(--hud-gold)" : "var(--hud-shield)" }} />
-                {player.dashCooldown > 0 && (
-                  <>
-                    <div className="absolute inset-x-0 bottom-0" style={{ height: `${cdPct}%`, background: "rgba(11,8,16,0.82)" }} />
-                    <span className="absolute inset-0 flex items-center justify-center text-[15px] tabular-nums" style={{ color: "var(--hud-gold)" }}>
-                      {player.dashCooldown.toFixed(1)}
-                    </span>
-                  </>
-                )}
-              </div>
-              <div className="flex flex-col gap-1">
-                <span className="text-[16px] leading-none">{isMelee ? "Dash" : "Rodar"}</span>
-                <span className="flex items-center gap-2 text-[13px] whitespace-nowrap" style={{ color: "var(--hud-dim)" }}>
-                  <span className="hud-key">Espacio</span>
-                  {maxCd.toString().replace(".", ",")} s
-                </span>
-              </div>
+        {/* Columna izquierda: chat (fantasma o espectador) arriba del dash */}
+        <div className="flex flex-col items-start gap-3">
+          {/* ── Chat (fantasmas y espectadores) ── */}
+          {(spectatorQueue || player.isGhost) && (
+            <div className="hud-panel pointer-events-auto flex flex-col w-80">
+              <button
+                type="button"
+                className="flex items-center justify-between px-3 py-2 text-[15px] cursor-pointer"
+                style={{ borderBottom: spectatorChatOpen ? "2px solid var(--hud-ink)" : undefined }}
+                onClick={() => setSpectatorChatOpen(!spectatorChatOpen)}
+                aria-expanded={spectatorChatOpen}
+              >
+                <span className="flex items-center gap-2"><MessageCircle className="w-4 h-4" style={{ color: "var(--hud-shield)" }} />Chat</span>
+                <span style={{ color: "var(--hud-dim)" }}>{spectatorChatOpen ? "Ocultar" : "Mostrar"}</span>
+              </button>
+
+              {spectatorChatOpen && (
+                <>
+                  <div className="overflow-y-auto px-3 py-2 space-y-1 text-[14px]" style={{ maxHeight: "140px", scrollbarWidth: "thin" }}>
+                    {chatMessages.length === 0 && (
+                      <p className="text-[13px] text-center py-2" style={{ color: "var(--hud-dim)" }}>Todavía no hay mensajes.</p>
+                    )}
+                    {chatMessages.map(msg => (
+                      <div key={msg.id} className="flex gap-1.5 items-baseline" style={{ color: msg.isSystem ? "var(--hud-gold)" : "var(--hud-text)" }}>
+                        {!msg.isSystem && (
+                          <span className="whitespace-nowrap" style={{ color: msg.isSpectator ? "var(--hud-shield)" : "#6ee7b7" }}>
+                            {msg.senderName}:
+                          </span>
+                        )}
+                        <span className="break-all">{msg.text}</span>
+                      </div>
+                    ))}
+                    <div ref={chatEndRef} />
+                  </div>
+                  <div className="flex gap-2 p-2.5" style={{ borderTop: "2px solid var(--hud-ink)" }}>
+                    <input
+                      type="text"
+                      value={chatInput}
+                      onChange={e => setChatInput(e.target.value.slice(0, 120))}
+                      onKeyDown={e => {
+                        e.stopPropagation();
+                        // Al mandar (o con Escape) se suelta el campo: el juego ignora el
+                        // teclado mientras haya un input con foco y quedabas sin poder moverte
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          sendChatMessage();
+                          e.currentTarget.blur();
+                        } else if (e.key === "Escape") {
+                          e.currentTarget.blur();
+                        }
+                      }}
+                      onKeyUp={e => e.stopPropagation()}
+                      placeholder="Mensaje (Esc para salir)"
+                      className="flex-1 min-w-0 px-2 h-[26px] text-[14px] outline-none"
+                      style={{ background: "#120e18", color: "var(--hud-text)", boxShadow: "0 0 0 2px var(--hud-ink), inset 0 2px 0 var(--hud-shade)" }}
+                    />
+                    <button onClick={sendChatMessage} className="hud-chip h-[26px] cursor-pointer" aria-label="Enviar mensaje">
+                      <Send className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
-          );
-        })()}
+          )}
+          {/* Dash / rodar con su recarga */}
+          {(() => {
+            const isMelee = player.equippedWeapon === "MELEE";
+            const maxCd = isMelee ? 1.8 : 2.5;
+            const cdPct = Math.min(100, (player.dashCooldown / maxCd) * 100);
+            return (
+              <div className="hud-panel flex items-center gap-3 px-3 py-2.5">
+                <div className="relative w-11 h-11 flex items-center justify-center overflow-hidden" style={{ background: "#120e18", boxShadow: "0 0 0 2px var(--hud-ink)" }}>
+                  <Zap className="w-6 h-6" style={{ color: isMelee ? "var(--hud-gold)" : "var(--hud-shield)" }} />
+                  {player.dashCooldown > 0 && (
+                    <>
+                      <div className="absolute inset-x-0 bottom-0" style={{ height: `${cdPct}%`, background: "rgba(11,8,16,0.82)" }} />
+                      <span className="absolute inset-0 flex items-center justify-center text-[15px] tabular-nums" style={{ color: "var(--hud-gold)" }}>
+                        {player.dashCooldown.toFixed(1)}
+                      </span>
+                    </>
+                  )}
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[16px] leading-none">{isMelee ? "Dash" : "Rodar"}</span>
+                  <span className="flex items-center gap-2 text-[13px] whitespace-nowrap" style={{ color: "var(--hud-dim)" }}>
+                    <span className="hud-key">Espacio</span>
+                    {maxCd.toString().replace(".", ",")} s
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
 
         {/* Arma equipada + slots */}
         {!player.isGhost && (
@@ -1081,14 +1067,48 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
           </div>
         )}
 
-        {/* Controles */}
-        <div className="hud-panel hidden lg:flex items-center gap-4 px-4 py-2.5 text-[13px] whitespace-nowrap" style={{ color: "var(--hud-dim)" }}>
+          {/* Fantasma: la trampa ocupa el lugar de las armas */}
+        {player.isGhost && !victory && !spectatorQueue && (() => {
+          const TRAP_COOLDOWN = 6.0; // igual que el servidor (JungleRoom: trapCooldown = 6.0)
+          const cooldown = player.trapCooldown ?? 0;
+          const ready = cooldown <= 0;
+          const progress = ready ? 1 : Math.max(0, Math.min(1, 1 - cooldown / TRAP_COOLDOWN));
+          return (
+            <div className="hud-panel pointer-events-auto px-4 py-2.5 flex items-center gap-3 w-[min(92vw,400px)]">
+              <SpriteIcon name="efecto-trampa" w={22} h={22} />
+              <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+                <div className="flex justify-between text-[14px]">
+                  <span className="flex items-center gap-1.5 truncate" style={{ color: "var(--hud-shield)" }}>
+                    <span className="hud-key">Clic der.</span> Trampa
+                  </span>
+                  <span className="tabular-nums whitespace-nowrap" style={{ color: ready ? "#6ee7b7" : "var(--hud-gold)" }}>
+                    {ready ? "Lista" : `${cooldown.toFixed(1)} s`}
+                  </span>
+                </div>
+                <div className="flex">
+                  <HudBar
+                    pct={progress * 100}
+                    light={ready ? "#a7f3d0" : "#fde68a"}
+                    base={ready ? "#10b981" : "#f59e0b"}
+                    height={8}
+                  />
+                </div>
+              </div>
+              <button onClick={handleRestart} className="hud-chip cursor-pointer whitespace-nowrap" title="Salir de la partida y volver al menú">
+                Volver al menú
+              </button>
+            </div>
+          );
+        })()}
+
+        {/* Controles: en la sala de espera y los primeros segundos de la partida */}
+        {(showKeys || roomWaiting) && <div className="hud-panel hidden lg:flex items-center gap-4 px-4 py-2.5 text-[13px] whitespace-nowrap" style={{ color: "var(--hud-dim)" }}>
           <span className="flex items-center gap-1.5"><span className="hud-key">WASD</span> Moverse</span>
           <span className="flex items-center gap-1.5"><span className="hud-key">F</span> Agarrar</span>
           <span className="flex items-center gap-1.5"><span className="hud-key">R</span> Recargar</span>
           <span className="flex items-center gap-1.5"><span className="hud-key">1-3</span> Armas</span>
           <span className="flex items-center gap-1.5"><span className="hud-key">E</span> Emotes</span>
-        </div>
+        </div>}
       </div>
     </div>
   );
