@@ -260,3 +260,38 @@ button.hud-chip:focus-visible { outline: 2px solid var(--hud-gold); outline-offs
 @keyframes hud-blink { 50% { opacity: 0.35; } }
 .hud-blink { animation: hud-blink 1s steps(1) infinite; }
 @media (prefers-reduced-motion: reduce) { .hud-blink { animation: none; } }
+
+/* Tecla (WASD, R, Espacio…) */
+.hud-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  font-size: 13px;
+  white-space: nowrap;
+  color: var(--hud-text);
+  background: #120e18;
+  box-shadow: 0 0 0 2px var(--hud-ink), inset 0 -2px 0 var(--hud-bevel);
+}
+
+/* Slot de inventario */
+.hud-slot {
+  position: relative;
+  width: 76px;
+  height: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding-bottom: 5px;
+  background: #120e18;
+  box-shadow: 0 0 0 2px var(--hud-ink), inset 2px 2px 0 var(--hud-shade);
+}
+.hud-slot[data-active="true"] {
+  background: #2c2238;
+  box-shadow: 0 0 0 2px var(--hud-ink), inset 0 0 0 2px var(--hud-gold);
+}
+.hud-slot:not(:disabled):hover { background: #2c2238; }

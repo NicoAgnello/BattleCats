@@ -7,8 +7,8 @@ import { SKINS, type PlayerConfig } from "./StartScreen";
 /* ── Piezas del HUD pixel art ────────────────────────────────────────────── */
 
 /** Primer frame de un sprite del juego (public/sprites), a escala entera. */
-const SpriteIcon: React.FC<{ name: string; w: number; h: number; scale?: number; className?: string }> = ({
-  name, w, h, scale = 1, className = "",
+const SpriteIcon: React.FC<{ name: string; w: number; h: number; scale?: number; frame?: number; className?: string }> = ({
+  name, w, h, scale = 1, frame = 0, className = "",
 }) => (
   <span
     aria-hidden="true"
@@ -18,6 +18,7 @@ const SpriteIcon: React.FC<{ name: string; w: number; h: number; scale?: number;
       height: h * scale,
       backgroundImage: `url(sprites/${name}.png)`,
       backgroundSize: `auto ${h * scale}px`,
+      backgroundPosition: `${-frame * w * scale}px 0`,
     }}
   />
 );
@@ -28,6 +29,20 @@ const hpColors = (pct: number, ghost: boolean): [string, string] =>
   : pct < 30 ? ["#fca5a5", "#ef4444"]
   : pct < 60 ? ["#fde68a", "#f59e0b"]
   : ["#6ee7b7", "#10b981"];
+
+/** Sprite de cada arma (primer frame del ítem del suelo; garras = zarpazo). */
+const WEAPON_SPRITES: Record<string, { name: string; w: number; h: number; frame?: number }> = {
+  LASER: { name: "item-pistola", w: 12, h: 8 },
+  SHOTGUN: { name: "item-escopeta", w: 19, h: 9 },
+  SNIPER: { name: "item-sniper", w: 26, h: 9 },
+  GRENADE: { name: "item-granada", w: 9, h: 10 },
+  MELEE: { name: "efecto-zarpazo", w: 22, h: 18, frame: 2 },
+};
+
+const WeaponSprite: React.FC<{ id: string; scale?: number }> = ({ id, scale = 2 }) => {
+  const s = WEAPON_SPRITES[id];
+  return s ? <SpriteIcon name={s.name} w={s.w} h={s.h} frame={s.frame} scale={scale} /> : null;
+};
 
 /** Barra segmentada: un corte cada `segments` partes, como bloques de vida. */
 const HudBar: React.FC<{ pct: number; light: string; base: string; segments?: number; empty?: string; height?: number }> = ({
@@ -986,137 +1001,129 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
         );
       })()}
 
-      {/* ── FILA INFERIOR (SELECTOR DE ARMAS, DASH Y CONTROLES) ── */}
-      <div className="flex items-end justify-between gap-4 pointer-events-none">
+      {/* ── Fila inferior: dash, arma equipada, slots y controles ── */}
+      <div className="hud flex items-end justify-between gap-4 pointer-events-none">
 
-        {/* Cooldown del Dash / Roll */}
-        <div className="pointer-events-none glass-panel flex items-center gap-3 px-4 py-3 rounded-2xl border border-slate-700/60 shadow-xl backdrop-blur-md">
-          <div className="relative w-11 h-11 rounded-xl bg-slate-800 border border-slate-600 flex items-center justify-center shadow-inner">
-            <Zap className={`w-6 h-6 ${player.equippedWeapon === "MELEE" ? "text-amber-400" : "text-cyan-400"}`} />
-            {player.dashCooldown > 0 && (
-              <div className="absolute inset-0 bg-slate-950/85 rounded-xl flex items-center justify-center text-xs font-mono font-black text-amber-400">
-                {player.dashCooldown.toFixed(1)}s
-              </div>
-            )}
-          </div>
-          <div>
-            <div className="text-xs font-black tracking-wide text-slate-100">
-              {player.equippedWeapon === "MELEE" ? "DASH FELINO" : "ROLL FELINO"}
-            </div>
-            <div className="text-[10px] font-bold text-slate-400">
-              {player.equippedWeapon === "MELEE" ? "ESPACIO • 1.8s CD (RÁPIDO)" : "ESPACIO • 2.5s CD (ESQUIVAR)"}
-            </div>
-          </div>
-        </div>
-
-        {/* Selector de Armas Suroi (3 Slots) + Widget de Munición y Recarga */}
-        {!player.isGhost && (
-          <div className="flex flex-col items-center gap-2 pointer-events-none">
-            {/* Widget de Munición y Recarga del Arma Equipada */}
-            <div className="pointer-events-none glass-panel px-4 py-1.5 rounded-2xl flex items-center gap-3 border border-slate-700/60 shadow-2xl backdrop-blur-md">
-              {/* Icono y Nombre */}
-              <div className="flex items-center gap-2 pr-3 border-r border-slate-800">
-                <span className="text-xl">
-                  {WEAPON_DEFS[player.equippedWeapon || "MELEE"]?.icon || "🐾"}
-                </span>
-                <div className="flex flex-col">
-                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-200">
-                    {WEAPON_DEFS[player.equippedWeapon || "MELEE"]?.name || "Garras"}
-                  </span>
-                  <span className="text-[9px] font-bold text-emerald-400">
-                    {player.equippedWeapon === "MELEE" ? "ZARPAZOS (0.5s CD • 1/4 VIDA vs GARRAS)" : (player.equippedWeapon === "GRENADE" ? "LANZABLE (100/70 DMG)" : (player.equippedWeapon === "SHOTGUN" ? "15x5 DMG (75)" : (player.equippedWeapon === "SNIPER" ? "50 DMG • 0.4s CADENCIA" : "20 DMG")))}
-                  </span>
-                </div>
-              </div>
-
-              {/* Indicador de Munición */}
-              {player.equippedWeapon === "MELEE" ? (
-                <div className="flex items-center gap-1.5 font-mono text-amber-400 font-black text-sm">
-                  <span>∞</span>
-                  <span className="text-[10px] text-slate-400 font-bold uppercase">INFINITO</span>
-                </div>
-              ) : player.equippedWeapon === "GRENADE" ? (
-                <div className="flex items-center gap-1.5 font-mono">
-                  <span className="text-xl font-black text-lime-400">{player.ammo ?? 3}</span>
-                  <span className="text-[10px] font-bold text-slate-400 uppercase">/ 3 GRANADAS</span>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 font-mono">
-                  <span className={`text-2xl font-black ${(player.ammo || 0) === 0 ? "text-red-400 animate-pulse" : "text-slate-100"}`}>
-                    {player.ammo ?? 12}
-                  </span>
-                  <span className="text-xs font-bold text-slate-500">/</span>
-                  <span className="text-sm font-bold text-emerald-400">
-                    {player.reserveAmmo ?? 24}
-                  </span>
-                </div>
-              )}
-
-              {/* Botón / Estado de Recarga */}
-              {player.isReloading ? (
-                <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs font-black animate-pulse">
-                  <RotateCcw className="w-3.5 h-3.5 animate-spin" />
-                  <span>RECARGANDO {((player.reloadTimer || 0)).toFixed(1)}s</span>
-                </div>
-              ) : (
-                player.equippedWeapon !== "MELEE" && player.equippedWeapon !== "GRENADE" && (
-                  <button
-                    onClick={triggerReload}
-                    disabled={(player.ammo ?? 0) >= (player.maxAmmo ?? 12) || (player.reserveAmmo ?? 0) <= 0}
-                    className={`pointer-events-auto px-3 py-1 rounded-xl text-xs font-black transition flex items-center gap-1.5 cursor-pointer border ${
-                      (player.ammo ?? 0) < (player.maxAmmo ?? 12) && (player.reserveAmmo ?? 0) > 0
-                        ? "bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40 shadow-sm"
-                        : "bg-slate-900/40 text-slate-600 border-slate-800 cursor-not-allowed"
-                    }`}
-                    title="Recargar arma (R)"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    <span>[R] RECARGAR</span>
-                  </button>
-                )
-              )}
-            </div>
-
-            {/* Selector de Armas Suroi (3 Slots: Slot 1, Slot 2, Slot 3 Garras) */}
-            <div className="pointer-events-none glass-panel p-2 rounded-2xl flex items-center gap-2 border border-slate-700/60 shadow-2xl backdrop-blur-md">
-              {weaponSlots.map((w) => {
-                return (
-                  <button
-                    key={w.key}
-                    type="button"
-                    tabIndex={-1}
-                    disabled={!w.available}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => w.available && selectWeapon(w.id)}
-                    title={w.available ? `Equipar ${w.name} (${w.key})` : `Espacio ${w.key} vacío (recoge un arma en el mapa)`}
-                    className={`pointer-events-auto px-3.5 py-2 rounded-xl flex flex-col items-center min-w-[58px] transition border focus:outline-none ${
-                      !w.available
-                        ? "opacity-35 bg-slate-950/40 border-slate-800/50 text-slate-600 cursor-not-allowed"
-                        : w.active
-                        ? "bg-emerald-500/25 border-emerald-400 text-white scale-105 shadow-lg cursor-pointer"
-                        : "bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 cursor-pointer"
-                    }`}
-                  >
-                    <span className="text-xs font-mono font-black text-slate-400">{w.key}</span>
-                    <span className="text-lg my-0.5">{w.icon}</span>
-                    <span className="text-[9px] font-bold uppercase tracking-wider">
-                      {w.name}
+        {/* Dash / rodar con su recarga */}
+        {(() => {
+          const isMelee = player.equippedWeapon === "MELEE";
+          const maxCd = isMelee ? 1.8 : 2.5;
+          const cdPct = Math.min(100, (player.dashCooldown / maxCd) * 100);
+          return (
+            <div className="hud-panel flex items-center gap-3 px-3 py-2.5">
+              <div className="relative w-11 h-11 flex items-center justify-center overflow-hidden" style={{ background: "#120e18", boxShadow: "0 0 0 2px var(--hud-ink)" }}>
+                <Zap className="w-6 h-6" style={{ color: isMelee ? "var(--hud-gold)" : "var(--hud-shield)" }} />
+                {player.dashCooldown > 0 && (
+                  <>
+                    <div className="absolute inset-x-0 bottom-0" style={{ height: `${cdPct}%`, background: "rgba(11,8,16,0.82)" }} />
+                    <span className="absolute inset-0 flex items-center justify-center text-[15px] tabular-nums" style={{ color: "var(--hud-gold)" }}>
+                      {player.dashCooldown.toFixed(1)}
                     </span>
-                  </button>
-                );
-              })}
+                  </>
+                )}
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-[16px] leading-none">{isMelee ? "Dash" : "Rodar"}</span>
+                <span className="flex items-center gap-2 text-[13px] whitespace-nowrap" style={{ color: "var(--hud-dim)" }}>
+                  <span className="hud-key">Espacio</span>
+                  {maxCd.toString().replace(".", ",")} s
+                </span>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Arma equipada + slots */}
+        {!player.isGhost && (
+          <div className="flex flex-col items-center gap-3 pointer-events-none">
+            {(() => {
+              const w = player.equippedWeapon || "MELEE";
+              const detail: Record<string, string> = {
+                MELEE: "Zarpazo cada 0,5 s",
+                GRENADE: "100 de daño al centro, 70 en el borde",
+                SHOTGUN: "5 perdigones de 15",
+                SNIPER: "50 de daño por tiro",
+                LASER: "20 de daño por tiro",
+              };
+              const canReload = (player.ammo ?? 0) < (player.maxAmmo ?? 12) && (player.reserveAmmo ?? 0) > 0;
+              return (
+                <div className="hud-panel flex items-center gap-4 px-4 py-2">
+                  <div className="flex items-center gap-3">
+                    <WeaponSprite id={w} />
+                    <div className="flex flex-col">
+                      <span className="text-[16px] leading-tight">{WEAPON_DEFS[w]?.name || "Garras"}</span>
+                      <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>{detail[w] || ""}</span>
+                    </div>
+                  </div>
+
+                  {w === "MELEE" ? null : w === "GRENADE" ? (
+                    <span className="text-[22px] leading-none tabular-nums">
+                      {player.ammo ?? 3}<span className="text-[14px]" style={{ color: "var(--hud-dim)" }}>/3</span>
+                    </span>
+                  ) : (
+                    <span className="text-[24px] leading-none tabular-nums" style={{ color: (player.ammo || 0) === 0 ? "#ef4444" : undefined }}>
+                      {player.ammo ?? 12}
+                      <span className="text-[15px]" style={{ color: "var(--hud-dim)" }}> / {player.reserveAmmo ?? 24}</span>
+                    </span>
+                  )}
+
+                  {player.isReloading ? (
+                    <span className="hud-chip hud-blink" style={{ color: "var(--hud-gold)" }}>
+                      Recargando {(player.reloadTimer || 0).toFixed(1)} s
+                    </span>
+                  ) : (
+                    w !== "MELEE" && w !== "GRENADE" && (
+                      <button
+                        onClick={triggerReload}
+                        disabled={!canReload}
+                        className="hud-chip pointer-events-auto cursor-pointer disabled:cursor-not-allowed"
+                        style={{ opacity: canReload ? 1 : 0.45 }}
+                        title="Recargar (R)"
+                      >
+                        <span className="hud-key">R</span>
+                        Recargar
+                      </button>
+                    )
+                  )}
+                </div>
+              );
+            })()}
+
+            <div className="hud-panel flex items-center gap-3 p-3">
+              {weaponSlots.map((w) => (
+                <button
+                  key={w.key}
+                  type="button"
+                  tabIndex={-1}
+                  disabled={!w.available}
+                  data-active={w.active}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => w.available && selectWeapon(w.id)}
+                  title={w.available ? `Equipar ${w.name} (${w.key})` : `Slot ${w.key} vacío: agarrá un arma del mapa`}
+                  className="hud-slot pointer-events-auto cursor-pointer disabled:cursor-default focus:outline-none"
+                >
+                  <span className="absolute top-1 left-1.5 text-[12px] leading-none" style={{ color: w.active ? "var(--hud-gold)" : "var(--hud-dim)" }}>
+                    {w.key}
+                  </span>
+                  <span className="flex-1 flex items-center">
+                    {w.available ? <WeaponSprite id={w.id} /> : null}
+                  </span>
+                  <span className="text-[12px] leading-none" style={{ color: w.available ? "var(--hud-text)" : "var(--hud-dim)", opacity: w.available ? 1 : 0.6 }}>
+                    {w.name}
+                  </span>
+                </button>
+              ))}
             </div>
           </div>
         )}
 
-        {/* Guía de controles */}
-        <div className="pointer-events-none glass-panel px-5 py-2.5 rounded-2xl border border-slate-800/80 text-[11px] text-slate-400 flex items-center gap-3 shadow-xl backdrop-blur-md">
-          <span><b className="text-slate-100">WASD</b> Moverse</span>
-          <span><b className="text-emerald-400">F</b> Recoger/Cambiar</span>
-          <span><b className="text-amber-400">R</b> Recargar</span>
-          <span><b className="text-slate-100">1-3 / Rueda</b> Armas</span>
-          <span><b className="text-slate-100">E</b> Emotes</span>
-          <span><b className="text-slate-100">Espacio</b> {player.equippedWeapon === "MELEE" ? "Dash rápido" : "Roll esquiva"}</span>
+        {/* Controles */}
+        <div className="hud-panel hidden lg:flex items-center gap-4 px-4 py-2.5 text-[13px] whitespace-nowrap" style={{ color: "var(--hud-dim)" }}>
+          <span className="flex items-center gap-1.5"><span className="hud-key">WASD</span> Moverse</span>
+          <span className="flex items-center gap-1.5"><span className="hud-key">F</span> Agarrar</span>
+          <span className="flex items-center gap-1.5"><span className="hud-key">R</span> Recargar</span>
+          <span className="flex items-center gap-1.5"><span className="hud-key">1-3</span> Armas</span>
+          <span className="flex items-center gap-1.5"><span className="hud-key">E</span> Emotes</span>
         </div>
       </div>
     </div>
