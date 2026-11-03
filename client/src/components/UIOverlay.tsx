@@ -1,6 +1,54 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Heart, Flame, Skull, Zap, EyeOff, Radio, Wifi, WifiOff, Loader2, Volume2, VolumeX, Trophy, RotateCcw, Sparkles, Shield, Smile, MessageCircle, Send, Clock, Users } from "lucide-react";
 import { soundManager } from "../game/SoundManager";
+import { PixelPortrait } from "./PixelPortrait";
+import { SKINS, type PlayerConfig } from "./StartScreen";
+
+/* ── Piezas del HUD pixel art ────────────────────────────────────────────── */
+
+/** Primer frame de un sprite del juego (public/sprites), a escala entera. */
+const SpriteIcon: React.FC<{ name: string; w: number; h: number; scale?: number; className?: string }> = ({
+  name, w, h, scale = 1, className = "",
+}) => (
+  <span
+    aria-hidden="true"
+    className={`hud-sprite ${className}`}
+    style={{
+      width: w * scale,
+      height: h * scale,
+      backgroundImage: `url(sprites/${name}.png)`,
+      backgroundSize: `auto ${h * scale}px`,
+    }}
+  />
+);
+
+/** Colores de la barra de vida sobre los gatos (MainScene.redrawHp): [franja clara, base]. */
+const hpColors = (pct: number, ghost: boolean): [string, string] =>
+  ghost ? ["#bae6fd", "#38bdf8"]
+  : pct < 30 ? ["#fca5a5", "#ef4444"]
+  : pct < 60 ? ["#fde68a", "#f59e0b"]
+  : ["#6ee7b7", "#10b981"];
+
+/** Barra segmentada: un corte cada `segments` partes, como bloques de vida. */
+const HudBar: React.FC<{ pct: number; light: string; base: string; segments?: number; empty?: string; height?: number }> = ({
+  pct, light, base, segments = 0, empty, height,
+}) => (
+  <div className="hud-bar flex-1" style={{ background: empty, height }}>
+    <div
+      className="hud-fill"
+      style={{ width: `${pct}%`, background: `linear-gradient(${light} 0 3px, ${base} 3px)` }}
+    />
+    {segments > 1 && (
+      <div
+        className="hud-ticks"
+        style={{
+          backgroundImage: "linear-gradient(90deg, transparent calc(100% - 2px), var(--hud-ink) 0)",
+          backgroundSize: `${100 / segments}% 100%`,
+        }}
+      />
+    )}
+  </div>
+);
 
 interface PlayerState {
   hp: number;
@@ -89,9 +137,11 @@ interface RoomInfo {
 
 interface UIOverlayProps {
   onOpenMenu?: () => void;
+  /** Nombre y skin elegidos en el menú (retrato del HUD). */
+  playerConfig?: PlayerConfig | null;
 }
 
-export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
+export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }) => {
   const [conn, setConn] = useState("CONNECTING");
   const [player, setPlayer] = useState<PlayerState>(DEFAULT_PLAYER);
   const [zone, setZone] = useState<ZoneState>({ timer: 18, isShrinking: false, phase: 1 });
@@ -573,127 +623,111 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
       {/* ── FILA SUPERIOR (HUD) ───────────────────────────── */}
       <div className="flex items-start justify-between gap-4 pointer-events-none">
 
-        {/* ── Izquierda: Barra de Salud, Escudo, Estilo ── */}
-        <div className="pointer-events-none flex flex-col gap-2 min-w-[280px]">
+        {/* ── Izquierda: placa del jugador (retrato, vida, escudo, estilo) ── */}
+        <div className="hud pointer-events-none flex flex-col gap-3 w-[340px]">
 
-          {/* Badges de Conexión, Audio y Menú */}
-          <div className="flex items-center gap-2 pointer-events-none">
-            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full glass-panel text-xs font-bold shadow-lg">
-              {conn === "CONNECTED" && <><Wifi className="w-3.5 h-3.5 text-emerald-400" /><span className="text-emerald-400">Servidor Conectado</span></>}
-              {conn === "CONNECTING" && <><Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" /><span className="text-amber-400">Conectando…</span></>}
-              {conn === "ERROR" && <><WifiOff className="w-3.5 h-3.5 text-red-400" /><span className="text-red-400">Error de conexión</span></>}
-            </div>
-
-            {/* SSE Stream Telemetry */}
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full glass-panel text-xs font-bold shadow-lg border border-cyan-500/30" title="Server-Sent Events Telemetría en Vivo">
-              <span className={`w-2 h-2 rounded-full ${sseInfo.connected ? "bg-emerald-400 animate-pulse" : "bg-amber-400"}`} />
-              <span className="text-cyan-400 font-mono text-[11px]">
-                ⚡ SSE {sseInfo.tickRate}Hz
-              </span>
-              {sseInfo.connected && (
-                <span className="text-emerald-300 font-mono text-[10px]">
-                  {sseInfo.ping}ms
-                </span>
-              )}
-            </div>
-
+          {/* Estado de la conexión, SSE, sonido y menú */}
+          <div className="flex items-center gap-2.5 pointer-events-none">
+            <span className="hud-chip" title="Conexión con el servidor de juego (WebSocket)">
+              <span
+                className="w-2 h-2"
+                style={{ background: conn === "CONNECTED" ? "#10b981" : conn === "CONNECTING" ? "#f59e0b" : "#ef4444" }}
+              />
+              {conn === "CONNECTED" ? "Conectado" : conn === "CONNECTING" ? "Conectando…" : "Sin conexión"}
+            </span>
+            <span className="hud-chip" title="Server-Sent Events: telemetría del servidor. El ping se mide ida y vuelta por WebSocket.">
+              <span style={{ color: "var(--hud-shield)" }}>SSE {sseInfo.tickRate} Hz</span>
+              {sseInfo.connected && <span style={{ color: "var(--hud-dim)" }}>{sseInfo.ping} ms</span>}
+            </span>
             <button
               onClick={toggleMute}
-              className="pointer-events-auto glass-panel px-2.5 py-1 rounded-full text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1 hover:border-emerald-500/50 cursor-pointer"
-              title="Alternar Sonido SFX"
+              className="hud-chip pointer-events-auto cursor-pointer"
+              title={isMuted ? "Activar sonido" : "Silenciar"}
+              aria-label={isMuted ? "Activar sonido" : "Silenciar"}
             >
-              {isMuted ? <VolumeX className="w-3.5 h-3.5 text-red-400" /> : <Volume2 className="w-3.5 h-3.5 text-emerald-400" />}
-              <span>{isMuted ? "Mute" : "Audio"}</span>
+              {isMuted ? <VolumeX className="w-3.5 h-3.5 text-red-400" /> : <Volume2 className="w-3.5 h-3.5" />}
             </button>
-
             {onOpenMenu && (
-              <button
-                onClick={onOpenMenu}
-                className="pointer-events-auto glass-panel px-3 py-1 rounded-full text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1 hover:border-cyan-500/50 cursor-pointer"
-                title="Volver al Menú Principal"
-              >
-                <span>⚙️ Menú</span>
+              <button onClick={onOpenMenu} className="hud-chip pointer-events-auto cursor-pointer" title="Volver al menú principal">
+                Menú
               </button>
             )}
           </div>
 
-          {/* Barra de Salud & Escudo */}
-          <div className="glass-panel rounded-2xl p-3.5 border border-emerald-500/25 shadow-2xl backdrop-blur-md space-y-2">
-            {/* HP */}
-            <div>
-              <div className="flex justify-between items-center mb-1">
-                <div className="flex items-center gap-1.5">
-                  <Heart className={`w-4 h-4 ${player.isGhost ? "text-cyan-400 fill-cyan-400" : "text-emerald-400 fill-emerald-400 animate-pulse"}`} />
-                  <span className="text-[11px] font-black tracking-widest uppercase text-emerald-400">
-                    {player.isGhost ? "FANTASMA MICHI" : "SALUD FELINA"}
-                  </span>
-                </div>
-                <span className="font-mono text-xs font-bold text-slate-200">{Math.ceil(player.hp)} / {player.maxHp}</span>
-              </div>
-              <div className="w-full h-3 bg-slate-900/90 rounded-full overflow-hidden border border-slate-700/60 p-0.5">
-                <div
-                  className="h-full rounded-full transition-all duration-200 shadow-md"
-                  style={{
-                    width: `${hpPct}%`,
-                    background: player.isGhost
-                      ? "linear-gradient(90deg, #0284c7, #38bdf8)"
-                      : hpPct < 30 ? "linear-gradient(90deg, #dc2626, #f87171)"
-                      : hpPct < 60 ? "linear-gradient(90deg, #d97706, #fbbf24)"
-                      : "linear-gradient(90deg, #059669, #10b981)",
-                  }}
-                />
-              </div>
+          {/* Placa: retrato animado + barras */}
+          <div className="hud-panel flex gap-3 p-3">
+            <div
+              className="flex-none overflow-hidden"
+              style={{
+                width: 64, height: 80,
+                background: "#120e18",
+                boxShadow: "0 0 0 2px var(--hud-ink), inset 0 0 0 2px var(--hud-bevel)",
+                filter: player.isGhost ? "grayscale(1) brightness(1.2) sepia(1) hue-rotate(160deg)" : undefined,
+                opacity: player.isGhost ? 0.75 : 1,
+              }}
+            >
+              <PixelPortrait name={(SKINS[playerConfig?.skin ?? 0] ?? SKINS[0]).portrait} scale={1} />
             </div>
 
-            {/* Escudo / Chaleco Suroi */}
-            {!player.isGhost && (
-              <div>
-                <div className="flex justify-between items-center mb-1">
-                  <div className="flex items-center gap-1.5">
-                    <Shield className={`w-3.5 h-3.5 ${(player.maxShield || 0) <= 0 ? "text-slate-500 fill-slate-500" : "text-cyan-400 fill-cyan-400"}`} />
-                    <span className={`text-[10px] font-black tracking-widest uppercase ${(player.maxShield || 0) <= 0 ? "text-slate-500" : "text-cyan-400"}`}>
-                      {(player.maxShield || 0) <= 0 ? "Sin Escudo (Solo Garras)" : "Escudo Felino"}
-                    </span>
-                  </div>
-                  <span className={`font-mono text-[11px] font-bold ${(player.maxShield || 0) <= 0 ? "text-slate-500" : "text-cyan-300"}`}>
-                    {(player.maxShield || 0) <= 0 ? "BLOQUEADO" : `${Math.ceil(player.shield || 0)} / ${player.maxShield || 50}`}
-                  </span>
-                </div>
-                <div className="w-full h-2 bg-slate-900/90 rounded-full overflow-hidden border border-slate-700/60 p-0.5">
-                  <div
-                    className={`h-full rounded-full transition-all duration-200 ${(player.maxShield || 0) <= 0 ? "bg-slate-700/40" : "bg-gradient-to-r from-sky-500 to-cyan-400 shadow-md"}`}
-                    style={{ width: `${shdPct}%` }}
+            <div className="flex-1 min-w-0 flex flex-col justify-between">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-[18px] leading-none truncate">{playerConfig?.name || "Michi"}</span>
+                {player.isGhost
+                  ? <span className="text-[13px]" style={{ color: "#38bdf8" }}>Fantasma</span>
+                  : <span className="text-[13px]" style={{ color: "var(--hud-dim)" }} title="Rango de estilo">
+                      {styleInfo.label.charAt(0) + styleInfo.label.slice(1).toLowerCase()}
+                    </span>}
+              </div>
+
+              {/* Vida: un bloque cada 10 puntos */}
+              <div className="flex items-center gap-2">
+                <SpriteIcon name="item-botiquin" w={18} h={16} />
+                {(() => {
+                  const [light, base] = hpColors(hpPct, player.isGhost);
+                  return <HudBar pct={hpPct} light={light} base={base} segments={Math.round(player.maxHp / 10)} />;
+                })()}
+                <span className="text-[14px] tabular-nums w-[52px] text-right">{Math.ceil(player.hp)}/{player.maxHp}</span>
+              </div>
+
+              {/* Escudo */}
+              {!player.isGhost && (
+                <div className="flex items-center gap-2" style={{ opacity: (player.maxShield || 0) > 0 ? 1 : 0.55 }}>
+                  <SpriteIcon name="item-escudo" w={16} h={16} className="mx-px" />
+                  <HudBar
+                    pct={shdPct}
+                    light="#bae6fd"
+                    base="var(--hud-shield)"
+                    empty="var(--hud-shield-empty)"
+                    height={10}
+                    segments={(player.maxShield || 0) > 0 ? Math.round((player.maxShield || 50) / 10) : 0}
                   />
+                  <span className="text-[14px] tabular-nums w-[52px] text-right" style={{ color: "var(--hud-dim)" }}>
+                    {(player.maxShield || 0) > 0 ? `${Math.ceil(player.shield || 0)}/${player.maxShield}` : "—"}
+                  </span>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
 
-          {/* Barra de Estilo (Devil May Cry) */}
-          <div className="glass-panel rounded-xl p-2.5 border border-amber-500/25 shadow-lg backdrop-blur-md">
-            <div className="flex justify-between items-center mb-1">
-              <div className="flex items-center gap-1.5">
-                <Flame className="w-3.5 h-3.5 text-amber-400 animate-bounce" />
-                <span className="text-[10px] font-black tracking-widest uppercase text-amber-400">Estilo Felino</span>
+              {/* Estilo: letra de rango + barra fina */}
+              <div className="flex items-center gap-2">
+                <span
+                  className="w-[18px] h-[18px] flex items-center justify-center text-[14px] leading-none"
+                  style={{ background: "var(--hud-gold)", color: "var(--hud-ink)", boxShadow: "0 0 0 2px var(--hud-ink)" }}
+                  title="Rango de estilo"
+                >
+                  {styleInfo.rank.replace("RANGO ", "")}
+                </span>
+                <HudBar pct={stylePct} light="#fde68a" base="#f59e0b" height={6} />
+                <span className="w-[52px]" />
               </div>
-              <span className={`text-[9px] font-black px-2 py-0.5 rounded shadow ${styleInfo.badge}`}>
-                {styleInfo.rank} · {styleInfo.label}
-              </span>
-            </div>
-            <div className="w-full h-2 bg-slate-900/90 rounded-full overflow-hidden border border-slate-700/50">
-              <div
-                className="h-full bg-gradient-to-r from-amber-500 to-red-500 rounded-full transition-all duration-300 shadow-lg"
-                style={{ width: `${stylePct}%` }}
-              />
             </div>
           </div>
 
-          {/* Buffs Activos */}
+          {/* Buff activo */}
           {player.activeBuff && (
-            <div className="glass-panel self-start px-3 py-1.5 rounded-xl border border-yellow-500/40 text-xs font-bold flex items-center gap-2 animate-bounce">
-              {player.activeBuff === "SPEED" && <><span>⚡</span><span className="text-amber-300">Super Velocidad</span></>}
-              {player.activeBuff === "TRIPLE" && <><span>🌟</span><span className="text-purple-300">Triple Láser</span></>}
-            </div>
+            <span className="hud-chip self-start">
+              {player.activeBuff === "SPEED" && <><SpriteIcon name="item-velocidad" w={14} h={18} /><span style={{ color: "var(--hud-gold)" }}>Velocidad</span></>}
+              {player.activeBuff === "TRIPLE" && <><SpriteIcon name="item-triple" w={20} h={16} /><span style={{ color: "#c4b5fd" }}>Triple láser</span></>}
+            </span>
           )}
         </div>
 

@@ -172,3 +172,73 @@ html, body, #root {
   background-size: 16px 16px;
 }
 
+
+/* ── HUD pixel art ──────────────────────────────────────────────────────────
+ * Mismos colores que la barra de vida y escudo sobre los gatos (MainScene.redrawHp),
+ * para que el HUD se lea como parte del juego y no como una capa encima. */
+:root {
+  --hud-ink: #14101c;          /* borde de las barras del juego */
+  --hud-panel: #231b2b;
+  --hud-bevel: #3d3348;
+  --hud-shade: #0b0810;
+  --hud-empty: #3a3a44;        /* parte vacía de la barra */
+  --hud-text: #f1ead8;
+  --hud-dim: #9d93ad;
+  --hud-shield: #5dcbfa;
+  --hud-shield-empty: #1e3a5f;
+  --hud-gold: #f5c04a;
+}
+
+.hud {
+  font-family: 'Pixelify Sans Variable', 'Outfit', sans-serif;
+  color: var(--hud-text);
+  -webkit-font-smoothing: none;
+  font-smooth: never;
+}
+
+/* Panel: borde de 2 px, bisel claro arriba-izquierda y sombra dura (sin blur) */
+.hud-panel {
+  background: var(--hud-panel);
+  box-shadow:
+    0 0 0 2px var(--hud-ink),
+    inset 2px 2px 0 var(--hud-bevel),
+    inset -2px -2px 0 var(--hud-shade),
+    4px 4px 0 2px rgba(11, 8, 16, 0.55);
+}
+
+/* Barra: marco oscuro, relleno con franja clara arriba y cortes cada 10 puntos */
+.hud-bar {
+  position: relative;
+  height: 14px;
+  background: var(--hud-empty);
+  box-shadow: 0 0 0 2px var(--hud-ink);
+}
+.hud-bar > .hud-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  transition: width 120ms steps(4);
+}
+.hud-bar > .hud-ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.hud-sprite {
+  image-rendering: pixelated;
+  background-repeat: no-repeat;
+  flex: none;
+}
+
+.hud-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 13px;
+  background: var(--hud-panel);
+  box-shadow: 0 0 0 2px var(--hud-ink), inset 0 2px 0 var(--hud-bevel);
+}
+button.hud-chip:hover { background: var(--hud-bevel); }
+button.hud-chip:focus-visible { outline: 2px solid var(--hud-gold); outline-offset: 2px; }
