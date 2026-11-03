@@ -641,7 +641,9 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
                   {styleInfo.rank.replace("RANGO ", "")}
                 </span>
                 <HudBar pct={stylePct} light="#fde68a" base="#f59e0b" height={6} />
-                <span className="w-[52px]" />
+                <span className="text-[13px] w-[52px] text-right" style={{ color: "var(--hud-dim)" }} title="Sube con kills, armas y dash; baja si no hacés nada">
+                  Estilo
+                </span>
               </div>
             </div>
           </div>
