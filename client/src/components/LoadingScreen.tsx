@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Loader2, WifiOff, LogOut } from "lucide-react";
+import { WifiOff } from "lucide-react";
 import { soundManager } from "../game/SoundManager";
 import { PlayerConfig } from "./StartScreen";
 
@@ -51,48 +51,32 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({ playerConfig, onEx
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 bg-gradient-to-b from-slate-950 via-jungle-900 to-slate-950 font-game select-none">
-      {/* Sin backdrop-blur a propósito: el fondo es opaco, así que no aportaría nada
-          visualmente y obliga a recomponer cada frame mientras Phaser bloquea el hilo. */}
-      <div className="border-2 border-emerald-500/40 bg-slate-900 p-8 rounded-3xl text-center max-w-md w-full mx-5 shadow-2xl space-y-5">
-        <div
-          className={`w-16 h-16 rounded-full mx-auto flex items-center justify-center border-2 ${
-            failed ? "bg-red-500/20 border-red-400" : "bg-emerald-500/20 border-emerald-400"
-          }`}
-        >
-          {failed ? (
-            <WifiOff className="w-9 h-9 text-red-400" />
-          ) : (
-            // La rotación va en un div (no en el <svg>): un elemento HTML se promueve a
-            // capa propia de forma fiable, y así el compositor sigue animándola aunque
-            // Phaser tenga bloqueado el hilo principal construyendo el mapa.
-            <div className="animate-spin" style={{ willChange: "transform" }}>
-              <Loader2 className="w-9 h-9 text-emerald-400" />
-            </div>
-          )}
-        </div>
+    <div className="hud fixed inset-0 z-50 flex items-center justify-center select-none" style={{ background: "#0b0810" }}>
+      {/* Fondo opaco y sin blur a propósito: recomponer cada frame mientras Phaser
+          bloquea el hilo no aporta nada. */}
+      <div className="hud-panel w-full max-w-md mx-5 px-7 py-7 flex flex-col items-center gap-5 text-center">
+        {failed ? (
+          <WifiOff className="w-10 h-10" style={{ color: "#ef4444" }} />
+        ) : (
+          <div className="hud-hop flex items-end gap-3 h-[26px]" aria-hidden="true">
+            <span style={{ background: "#10b981" }} />
+            <span style={{ background: "#f5c04a" }} />
+            <span style={{ background: "#5dcbfa" }} />
+            <span style={{ background: "#ef4444" }} />
+          </div>
+        )}
 
-        <div>
-          <h2
-            className={`text-2xl font-black tracking-wider uppercase drop-shadow-md ${
-              failed ? "text-red-400" : "text-emerald-400"
-            }`}
-          >
+        <div className="flex flex-col gap-2">
+          <h2 className="text-[28px] leading-none" style={{ color: failed ? "#ef4444" : "var(--hud-text)" }}>
             {titulo}
           </h2>
-          <p className="text-sm text-slate-300 mt-2">{subtitulo}</p>
+          <p className="text-[15px]" style={{ color: "var(--hud-dim)" }}>{subtitulo}</p>
         </div>
 
-        <div className="px-3 py-1.5 rounded-full bg-slate-950 border border-slate-800 text-xs font-bold text-slate-300 inline-block">
-          {salaLabel}
-        </div>
+        <span className="hud-chip" style={{ color: "var(--hud-gold)" }}>{salaLabel}</span>
 
-        <button
-          onClick={handleExit}
-          className="w-full py-3.5 px-6 rounded-2xl font-black tracking-wider text-sm bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 hover:border-cyan-500/50 active:scale-95 transition shadow-lg flex items-center justify-center gap-2 cursor-pointer"
-        >
-          <LogOut className="w-4 h-4" />
-          <span>{failed ? "VOLVER AL MENÚ" : "SALIR AL MENÚ"}</span>
+        <button onClick={handleExit} className={`${failed ? "hud-btn" : "hud-chip"} w-full justify-center h-[38px] text-[15px] cursor-pointer`}>
+          {failed ? "Volver al menú" : "Cancelar y volver al menú"}
         </button>
       </div>
     </div>

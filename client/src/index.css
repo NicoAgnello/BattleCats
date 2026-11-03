@@ -295,3 +295,18 @@ button.hud-chip:focus-visible { outline: 2px solid var(--hud-gold); outline-offs
   box-shadow: 0 0 0 2px var(--hud-ink), inset 0 0 0 2px var(--hud-gold);
 }
 .hud-slot:not(:disabled):hover { background: #2c2238; }
+
+/* Cuatro bloques que saltan. Solo transform: el compositor lo sigue animando aunque
+ * Phaser tenga bloqueado el hilo principal armando el mapa. */
+@keyframes hud-hop { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-10px); } }
+.hud-hop > span {
+  width: 12px;
+  height: 12px;
+  box-shadow: 0 0 0 2px var(--hud-ink);
+  animation: hud-hop 0.9s steps(3) infinite;
+  will-change: transform;
+}
+.hud-hop > span:nth-child(2) { animation-delay: 0.15s; }
+.hud-hop > span:nth-child(3) { animation-delay: 0.3s; }
+.hud-hop > span:nth-child(4) { animation-delay: 0.45s; }
+@media (prefers-reduced-motion: reduce) { .hud-hop > span { animation-duration: 2.4s; } }
