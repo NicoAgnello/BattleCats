@@ -367,7 +367,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
   const activeSkinObj = SKINS.find((s) => s.id === selectedSkin) || SKINS[0];
 
   return (
-    <div className="relative w-screen h-screen overflow-x-hidden overflow-y-auto flex flex-col justify-between gap-4 p-4 sm:p-6 select-none font-game">
+    <div className="hud relative w-screen h-screen overflow-x-hidden overflow-y-auto flex flex-col justify-between gap-4 p-4 sm:p-6 select-none">
       {/* ── 1. Fondo de Gameplay en Vivo / Video Estilo Diep.io ──── */}
       <GameplayBackground />
 
@@ -381,7 +381,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
               setShowShopModal(true);
               soundManager.playClick();
             }}
-            className="diep-btn-pill flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-[#00b2e1] text-white font-bold text-xs tracking-wide shadow-md"
+            className="diep-btn-pill flex items-center gap-2 px-3.5 py-1.5 bg-[#00b2e1] text-white font-bold text-[13px]  "
           >
             <span className="text-sm">🛍️</span>
             <span>Shop & Skins</span>
@@ -393,7 +393,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
               setShowShopModal(true);
               soundManager.playClick();
             }}
-            className="diep-btn-pill hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#eab308] text-slate-950 font-black text-xs tracking-wide shadow-md"
+            className="diep-btn-pill hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-[#eab308] text-slate-950 font-black text-[13px]  "
           >
             <span>👑</span>
             <span>Pase Felino</span>
@@ -403,7 +403,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
           <button
             onClick={handleToggleMusic}
             title={musicEnabled ? "Silenciar Música" : "Activar Música"}
-            className={`diep-btn-pill flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold ${
+            className={`diep-btn-pill flex items-center gap-1.5 px-2.5 py-1.5 text-[13px] font-bold ${
               musicEnabled ? "bg-emerald-600 text-white" : "bg-slate-800 text-slate-400"
             }`}
           >
@@ -415,7 +415,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
           <button
             onClick={handleToggleSfx}
             title={sfxEnabled ? "Silenciar Efectos" : "Activar Efectos"}
-            className={`diep-btn-pill flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold ${
+            className={`diep-btn-pill flex items-center gap-1.5 px-2.5 py-1.5 text-[13px] font-bold ${
               sfxEnabled ? "bg-cyan-600 text-white" : "bg-slate-800 text-slate-400"
             }`}
           >
@@ -431,14 +431,14 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
               setShowRulesModal(true);
               soundManager.playClick();
             }}
-            className="diep-btn-pill flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#ec4899] text-white font-bold text-xs tracking-wide shadow-md"
+            className="diep-btn-pill flex items-center gap-1.5 px-3 py-1.5 bg-[#ec4899] text-white font-bold text-[13px]  "
           >
             <span>🎮</span>
             <span>Controles</span>
           </button>
 
-          <div className="px-3 py-1.5 rounded-lg bg-slate-900/80 border-2 border-slate-700/80 text-emerald-400 text-xs font-bold flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+          <div className="px-3 py-1.5 bg-slate-900/80 border-2 border-slate-700/80 text-emerald-400 text-[13px] font-bold flex items-center gap-1.5">
+            <span className="w-2 h-2 bg-emerald-400 animate-ping" />
             <span className="hidden sm:inline">Servidor 60Hz</span>
           </div>
         </div>
@@ -450,10 +450,10 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
         {/* Logo Gigante Estilo Diep.io */}
         <div className="text-center relative">
           <div className="inline-block relative">
-            <h1 className="diep-title text-4xl sm:text-6xl md:text-7xl font-black tracking-tight select-none flex items-center justify-center gap-1">
+            <h1 className="diep-title text-4xl sm:text-6xl md:text-7xl font-black select-none flex items-center justify-center gap-1">
               <span>BATTLE</span>
               <span className="text-[#00b2e1]">CATS</span>
-              <span className="text-emerald-400 text-3xl sm:text-5xl font-mono">.io</span>
+              <span className="text-emerald-400 text-3xl sm:text-5xl">.io</span>
             </h1>
             {/* Orejitas felinas decorativas arriba del logo */}
             <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 flex items-center gap-14 pointer-events-none opacity-90">
@@ -461,7 +461,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
               <span className="text-2xl transform rotate-12">🐾</span>
             </div>
           </div>
-          <p className="text-[11px] sm:text-xs font-bold tracking-widest text-slate-300 uppercase mt-1 drop-shadow-md">
+          <p className="text-[13px] sm:text-xs font-bold text-slate-300 mt-1 ">
             TOP-DOWN BATTLE ROYALE • MEGA-MAPA 8000x8000
           </p>
         </div>
@@ -470,40 +470,40 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
         <div className="grid grid-cols-2 gap-2.5 w-full">
           {/* Game Mode */}
           <div className="flex flex-col gap-1">
-            <span className="text-[11px] font-bold text-slate-300 drop-shadow">Game Mode</span>
-            <div className="diep-btn-pill flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-[#84cc16] text-slate-950 font-bold text-xs cursor-pointer shadow">
+            <span className="text-[13px] font-bold text-slate-300 ">Game Mode</span>
+            <div className="diep-btn-pill flex items-center justify-between px-3.5 py-2.5 bg-[#84cc16] text-slate-950 font-bold text-[13px] cursor-pointer ">
               <span>Battle Royale (Solo)</span>
-              <span className="text-xs">▾</span>
+              <span className="text-[13px]">▾</span>
             </div>
           </div>
 
           {/* Region */}
           <div className="flex flex-col gap-1">
-            <span className="text-[11px] font-bold text-slate-300 drop-shadow">Región / Servidor</span>
-            <div className="diep-btn-pill flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-slate-800 text-slate-100 border-slate-900 font-bold text-xs cursor-pointer shadow">
+            <span className="text-[13px] font-bold text-slate-300 ">Región / Servidor</span>
+            <div className="diep-btn-pill flex items-center justify-between px-3.5 py-2.5 bg-slate-800 text-slate-100 border-slate-900 font-bold text-[13px] cursor-pointer ">
               <span className="flex items-center gap-1.5 truncate">
                 <span>🌎</span>
                 <span>LATAM (Local)</span>
               </span>
-              <span className="text-emerald-400 text-[10px] whitespace-nowrap">🟢 14ms</span>
+              <span className="text-emerald-400 text-[12px] whitespace-nowrap">🟢 14ms</span>
             </div>
           </div>
         </div>
 
         {/* ── Spotlight de Skin con Navegación Rápida & Grid Diep.io ── */}
-        <div className="w-full diep-grid-blueprint rounded-2xl border-4 border-slate-950 p-3.5 shadow-2xl relative overflow-hidden flex flex-col items-center">
+        <div className="w-full diep-grid-blueprint border-4 border-slate-950 p-3.5 relative overflow-hidden flex flex-col items-center">
           
           {/* Badge de Rareza en esquina */}
           <div className="absolute top-2.5 right-2.5 flex items-center gap-2">
             <span
               style={{ backgroundColor: activeSkinObj.rarityColor }}
-              className="text-[10px] font-black uppercase text-slate-950 px-2 py-0.5 rounded-md shadow"
+              className="text-[12px] font-black text-slate-950 px-2 py-0.5  "
             >
               {activeSkinObj.rarity}
             </span>
             <button
               onClick={() => setShowShopModal(true)}
-              className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 underline"
+              className="text-[13px] font-bold text-cyan-400 hover:text-cyan-300 underline"
             >
               Armario ➔
             </button>
@@ -515,7 +515,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
             <button
               type="button"
               onClick={() => cycleSkin(-1)}
-              className="diep-btn-pill w-9 h-9 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-white flex items-center justify-center font-black text-lg"
+              className="diep-btn-pill w-9 h-9 bg-slate-800/90 hover:bg-slate-700 text-white flex items-center justify-center font-black text-lg"
               title="Skin Anterior"
             >
               ◀
@@ -542,10 +542,10 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
               </div>
 
               <div className="text-center mt-1">
-                <span className="font-black text-sm text-white tracking-wide block">
+                <span className="font-black text-sm text-white block">
                   {activeSkinObj.name}
                 </span>
-                <span className="text-[11px] font-medium text-slate-300 block">
+                <span className="text-[13px] font-medium text-slate-300 block">
                   {activeSkinObj.title}
                 </span>
               </div>
@@ -555,7 +555,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
             <button
               type="button"
               onClick={() => cycleSkin(1)}
-              className="diep-btn-pill w-9 h-9 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-white flex items-center justify-center font-black text-lg"
+              className="diep-btn-pill w-9 h-9 bg-slate-800/90 hover:bg-slate-700 text-white flex items-center justify-center font-black text-lg"
               title="Siguiente Skin"
             >
               ▶
@@ -573,9 +573,9 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
                   soundManager.playClick();
                 }}
                 style={{ backgroundColor: s.color }}
-                className={`w-5 h-5 rounded-full border-2 transition-all ${
+                className={`w-5 h-5 border-2 transition-all ${
                   selectedSkin === s.id
-                    ? "border-white scale-125 shadow-[0_0_10px_white]"
+                    ? "border-white scale-125 "
                     : "border-slate-900 opacity-60 hover:opacity-100"
                 }`}
                 title={`${s.name} (${s.rarity})`}
@@ -585,7 +585,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
         </div>
 
         {/* ── Selector de Modo: Sala Privada (principal) vs Partida Rápida ── */}
-        <div className="w-full bg-slate-900/90 p-1.5 rounded-2xl border-2 border-slate-800 shadow-xl flex items-center gap-1.5">
+        <div className="hud-panel w-full p-2 flex items-center gap-2">
           <button
             type="button"
             onClick={() => {
@@ -593,9 +593,9 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
               soundManager.playClick();
               setRoomError(null);
             }}
-            className={`flex-1 py-2 px-3 rounded-xl font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+            className={`flex-1 py-2 px-3 font-black text-[13px] transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
               gameMode === "CUSTOM"
-                ? "bg-[#10b981] text-slate-950 shadow-lg scale-[1.02]"
+                ? "bg-[#10b981] text-slate-950 scale-[1.02]"
                 : "text-slate-400 hover:text-white hover:bg-slate-800/60"
             }`}
           >
@@ -610,9 +610,9 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
               soundManager.playClick();
               setRoomError(null);
             }}
-            className={`flex-1 py-2 px-3 rounded-xl font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+            className={`flex-1 py-2 px-3 font-black text-[13px] transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
               gameMode === "CLASSIC"
-                ? "bg-[#00b2e1] text-white shadow-lg scale-[1.02]"
+                ? "bg-[#00b2e1] text-white scale-[1.02]"
                 : "text-slate-400 hover:text-white hover:bg-slate-800/60"
             }`}
           >
@@ -623,7 +623,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
 
         {/* Panel de Configuración de Sala Personalizada */}
         {gameMode === "CUSTOM" && (
-          <div className="w-full flex flex-col gap-2.5 bg-slate-900/90 p-3 rounded-2xl border border-emerald-500/35 shadow-xl">
+          <div className="hud-panel w-full flex flex-col gap-2.5 p-3">
             {/* Sub-Tabs: Crear Sala vs Unirse con Código */}
             <div className="flex items-center gap-2">
               <button
@@ -633,9 +633,9 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
                   soundManager.playClick();
                   setRoomError(null);
                 }}
-                className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                className={`flex-1 py-1.5 px-2 text-[13px] font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
                   customTab === "CREATE"
-                    ? "bg-emerald-500/25 border border-emerald-400 text-emerald-300 font-black shadow"
+                    ? "bg-emerald-500/25 border border-emerald-400 text-emerald-300 font-black "
                     : "bg-slate-800/60 border border-slate-700/60 text-slate-400 hover:text-white"
                 }`}
               >
@@ -650,9 +650,9 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
                   soundManager.playClick();
                   setRoomError(null);
                 }}
-                className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                className={`flex-1 py-1.5 px-2 text-[13px] font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
                   customTab === "JOIN"
-                    ? "bg-emerald-500/25 border border-emerald-400 text-emerald-300 font-black shadow"
+                    ? "bg-emerald-500/25 border border-emerald-400 text-emerald-300 font-black "
                     : "bg-slate-800/60 border border-slate-700/60 text-slate-400 hover:text-white"
                 }`}
               >
@@ -663,15 +663,15 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
 
             {/* Código generado si es Host */}
             {customTab === "CREATE" ? (
-              <div className="flex items-center justify-between bg-slate-950/80 px-3 py-2 rounded-xl border border-slate-800">
+              <div className="flex items-center justify-between bg-slate-950/80 px-3 py-2 border border-slate-800">
                 <div className="flex flex-col">
-                  <span className="text-[9px] uppercase font-bold text-slate-400">Código de 4 dígitos:</span>
-                  <span className="font-mono text-2xl font-black text-amber-400 tracking-widest">{generatedCode}</span>
+                  <span className="text-[12px] font-bold text-slate-400">Código de 4 dígitos:</span>
+                  <span className="font-mono text-2xl font-black text-amber-400 ">{generatedCode}</span>
                 </div>
                 <button
                   type="button"
                   onClick={regenerateCode}
-                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-bold transition flex items-center gap-1 cursor-pointer"
+                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[13px] font-bold transition flex items-center gap-1 cursor-pointer"
                   title="Generar otro código de 4 números"
                 >
                   <span>🔄</span>
@@ -681,7 +681,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
             ) : (
               /* Input de código si se une como invitado */
               <div className="flex flex-col gap-1">
-                <label className="text-[10px] uppercase font-black text-slate-400 tracking-wider">
+                <label className="text-[12px] font-black text-slate-400 ">
                   Código de 4 números de la sala:
                 </label>
                 <input
@@ -693,18 +693,18 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
                     setRoomError(null);
                   }}
                   placeholder="Ej: 4582"
-                  className="w-full text-center py-2 px-4 rounded-xl border-2 border-emerald-500/50 bg-slate-950 text-amber-400 font-mono text-2xl font-black tracking-widest outline-none focus:ring-2 focus:ring-emerald-400 shadow-inner"
+                  className="w-full text-center py-2 px-4 border-2 border-emerald-500/50 bg-slate-950 text-amber-400 font-mono text-2xl font-black outline-none focus:ring-2 focus:ring-emerald-400 "
                 />
               </div>
             )}
 
             {/* Límite y Reglas de la sala */}
-            <div className="text-[10px] text-slate-400 font-medium text-center">
+            <div className="text-[12px] text-slate-400 font-medium text-center">
               👥 <b>Límite: 20 jugadores</b> · Sin bots · {customTab === "CREATE" ? "Comienzas la partida cuando decidas" : "Esperarás a que el host inicie"}
             </div>
 
             {roomError && (
-              <div className="text-xs font-bold text-red-400 bg-red-950/40 border border-red-500/40 px-3 py-1.5 rounded-lg text-center animate-shake">
+              <div className="text-[13px] font-bold text-red-400 bg-red-950/40 border border-red-500/40 px-3 py-1.5 text-center animate-shake">
                 ⚠️ {roomError}
               </div>
             )}
@@ -732,9 +732,9 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="This is the tale of..."
-              className="w-full pl-11 pr-14 py-3.5 rounded-xl border-4 border-slate-950 bg-white text-slate-950 placeholder-slate-400 font-bold text-sm sm:text-base outline-none shadow-xl focus:ring-4 focus:ring-cyan-400/50"
+              className="w-full pl-11 pr-14 py-3.5 border-4 border-slate-950 bg-white text-slate-950 placeholder-slate-400 font-bold text-sm sm:text-base outline-none focus:ring-4 focus:ring-cyan-400/50"
             />
-            <span className="absolute right-4 text-[11px] font-mono font-bold text-slate-400 pointer-events-none">
+            <span className="absolute right-4 text-[13px] font-mono font-bold text-slate-400 pointer-events-none">
               {name.length}/16
             </span>
           </div>
@@ -743,12 +743,12 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
           <button
             type="submit"
             disabled={checkingRoom}
-            className={`w-full py-3.5 px-6 rounded-xl font-black text-lg sm:text-xl tracking-wider uppercase cursor-pointer shadow-2xl flex items-center justify-center gap-2 transition-transform transform active:scale-95 ${
+            className={`w-full py-3.5 px-6 font-black text-lg sm:text-xl cursor-pointer flex items-center justify-center gap-2 transition-transform transform active:scale-95 ${
               gameMode === "CLASSIC"
                 ? "diep-btn-play text-white"
                 : customTab === "CREATE"
-                ? "bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 border-4 border-slate-950 shadow-[0_0_25px_rgba(16,185,129,0.5)]"
-                : "bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white border-4 border-slate-950 shadow-[0_0_25px_rgba(6,182,212,0.5)]"
+                ? "hud-btn !text-[22px]"
+                : "hud-btn hud-btn-blue !text-[22px]"
             }`}
           >
             {checkingRoom ? (
@@ -776,7 +776,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
         <button
           type="button"
           onClick={handleCopyPartyLink}
-          className="diep-btn-pill w-full py-2.5 px-4 rounded-xl bg-[#0284c7] hover:bg-[#0369a1] text-white font-bold text-xs tracking-wide shadow flex items-center justify-center gap-2 cursor-pointer"
+          className="diep-btn-pill w-full py-2.5 px-4 bg-[#0284c7] hover:bg-[#0369a1] text-white font-bold text-[13px] flex items-center justify-center gap-2 cursor-pointer"
         >
           <span>🔗</span>
           <span>{partyLinkCopied ? "¡Enlace Copiado al Portapapeles!" : (gameMode === "CUSTOM" ? "Copiar Enlace de la Sala" : "Copy Party Link")}</span>
@@ -789,18 +789,18 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
         {/* Esquina Inferior Izquierda: Idioma & Reglas */}
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-2">
-            <button className="diep-btn-pill px-3 py-1 rounded-md bg-slate-900 border-slate-800 text-white text-xs font-bold">
+            <button className="diep-btn-pill px-3 py-1 bg-slate-900 border-slate-800 text-white text-[13px] font-bold">
               🇪🇸 ES ▾
             </button>
             <button
               onClick={() => setShowRulesModal(true)}
-              className="diep-btn-pill px-3 py-1 rounded-md bg-slate-900 border-slate-800 text-slate-200 text-xs font-bold"
+              className="diep-btn-pill px-3 py-1 bg-slate-900 border-slate-800 text-slate-200 text-[13px] font-bold"
             >
               📜 Reglas
             </button>
           </div>
 
-          <div className="hidden sm:flex items-center gap-2 text-[11px] text-slate-400 font-medium">
+          <div className="hidden sm:flex items-center gap-2 text-[13px] text-slate-400 font-medium">
             <span>WASD para mover</span>
             <span>•</span>
             <span>Mouse para apuntar y disparar</span>
@@ -812,41 +812,41 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
         {/* Esquina Inferior Derecha: Notificación de Actualización & Radar */}
         <div className="flex items-center gap-3">
           <div className="text-right hidden md:block">
-            <div className="inline-block bg-emerald-500 text-slate-950 font-black text-[10px] px-2 py-0.5 rounded-sm uppercase tracking-wider mb-0.5">
+            <div className="inline-block bg-emerald-500 text-slate-950 font-black text-[12px] px-2 py-0.5 mb-0.5">
               ¡NUEVO!
             </div>
-            <div className="text-xs font-bold text-slate-200">
+            <div className="text-[13px] font-bold text-slate-200">
               Mega-Mapa 8000x8000 & Edificios
             </div>
-            <div className="text-[10px] text-slate-400">
+            <div className="text-[12px] text-slate-400">
               Oclusión de tejados y sigilo táctico
             </div>
           </div>
 
           {/* Minimapa Decorativo Diep.io */}
-          <div className="w-14 h-14 rounded-lg border-2 border-cyan-400/80 bg-slate-950/80 p-1 flex items-center justify-center shadow-lg relative overflow-hidden">
-            <div className="w-10 h-10 rounded-full border border-red-500/80 border-dashed animate-spin" />
-            <div className="w-2 h-2 rounded-full bg-emerald-400 absolute" />
+          <div className="w-14 h-14 border-2 border-cyan-400/80 bg-slate-950/80 p-1 flex items-center justify-center relative overflow-hidden">
+            <div className="w-10 h-10 border border-red-500/80 border-dashed animate-spin" />
+            <div className="w-2 h-2 bg-emerald-400 absolute" />
           </div>
         </div>
       </footer>
 
       {/* ── 5. Modal de Tienda / Armario de Skins Estilo Diep.io ───── */}
       {showShopModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="relative w-full max-w-3xl bg-slate-900 border-4 border-slate-950 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="fixed inset-0 z-50 bg-slate-950/85 flex items-center justify-center p-4">
+          <div className="hud-panel relative w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
             
             {/* Header del Modal */}
             <div className="bg-slate-950 p-4 flex items-center justify-between border-b-2 border-slate-800">
               <div className="flex items-center gap-3">
                 <span className="text-xl">🛍️</span>
-                <span className="font-black text-lg tracking-wider text-white uppercase">
+                <span className="font-black text-lg text-white ">
                   Armario de Skins Felinas
                 </span>
               </div>
               <button
                 onClick={() => setShowShopModal(false)}
-                className="diep-btn-pill w-8 h-8 rounded-lg bg-red-600 hover:bg-red-500 text-white font-black flex items-center justify-center text-sm"
+                className="diep-btn-pill w-8 h-8 bg-red-600 hover:bg-red-500 text-white font-black flex items-center justify-center text-sm"
               >
                 ✕
               </button>
@@ -854,7 +854,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
 
             {/* Grid de Skins */}
             <div className="p-5 overflow-y-auto space-y-4">
-              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+              <div className="text-[13px] font-bold text-slate-400  ">
                 Selecciona tu Michi de Combate
               </div>
 
@@ -868,7 +868,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
                         setSelectedSkin(skin.id);
                         soundManager.playClick();
                       }}
-                      className={`diep-grid-blueprint relative rounded-xl border-3 transition-all cursor-pointer p-3 flex flex-col items-center justify-between ${
+                      className={`diep-grid-blueprint relative border-3 transition-all cursor-pointer p-3 flex flex-col items-center justify-between ${
                         isSelected
                           ? "border-emerald-400 ring-2 ring-emerald-400/50 scale-[1.02]"
                           : "border-slate-800 hover:border-slate-600"
@@ -878,12 +878,12 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
                       <div className="w-full flex items-center justify-between">
                         <span
                           style={{ backgroundColor: skin.rarityColor }}
-                          className="text-[9px] font-black uppercase text-slate-950 px-2 py-0.5 rounded shadow"
+                          className="text-[12px] font-black text-slate-950 px-2 py-0.5  "
                         >
                           {skin.rarity}
                         </span>
                         {skin.discount && (
-                          <span className="text-[10px] font-black text-red-400 bg-red-950/80 px-1.5 py-0.5 rounded border border-red-500/40">
+                          <span className="text-[12px] font-black text-red-400 bg-red-950/80 px-1.5 py-0.5 border border-red-500/40">
                             {skin.discount}
                           </span>
                         )}
@@ -909,7 +909,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
                       <div className="w-full space-y-2 text-center">
                         <div>
                           <div className="font-black text-sm text-white">{skin.name}</div>
-                          <div className="text-[10px] text-slate-300 truncate">{skin.title}</div>
+                          <div className="text-[12px] text-slate-300 truncate">{skin.title}</div>
                         </div>
 
                         <button
@@ -919,9 +919,9 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
                             setSelectedSkin(skin.id);
                             soundManager.playClick();
                           }}
-                          className={`w-full py-1.5 rounded-lg font-black text-xs uppercase tracking-wider transition-all ${
+                          className={`w-full py-1.5 font-black text-[13px] transition-all ${
                             isSelected
-                              ? "bg-emerald-500 text-slate-950 shadow"
+                              ? "bg-emerald-500 text-slate-950 "
                               : "diep-btn-pill bg-[#00b2e1] text-white"
                           }`}
                         >
@@ -936,12 +936,12 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
 
             {/* Footer Modal */}
             <div className="bg-slate-950 p-3.5 border-t border-slate-800 flex items-center justify-between">
-              <span className="text-xs text-slate-400">
+              <span className="text-[13px] text-slate-400">
                 Skin activa: <b className="text-white">{activeSkinObj.name}</b> ({activeSkinObj.title})
               </span>
               <button
                 onClick={() => setShowShopModal(false)}
-                className="diep-btn-pill px-5 py-1.5 rounded-lg bg-emerald-500 text-slate-950 font-black text-xs uppercase"
+                className="diep-btn-pill px-5 py-1.5 bg-emerald-500 text-slate-950 font-black text-[13px] "
               >
                 Listo
               </button>
@@ -953,54 +953,54 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
 
       {/* ── 6. Modal de Reglas y Controles ───────────────────────── */}
       {showRulesModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="relative w-full max-w-lg bg-slate-900 border-4 border-slate-950 rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4">
+        <div className="fixed inset-0 z-50 bg-slate-950/85 flex items-center justify-center p-4">
+          <div className="hud-panel relative w-full max-w-lg overflow-hidden p-6 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="text-xl">📜</span>
-                <span className="font-black text-base text-white uppercase tracking-wider">
+                <span className="font-black text-base text-white  ">
                   Guía de Combate Felino
                 </span>
               </div>
               <button
                 onClick={() => setShowRulesModal(false)}
-                className="diep-btn-pill w-8 h-8 rounded-lg bg-red-600 text-white font-black text-sm flex items-center justify-center"
+                className="diep-btn-pill w-8 h-8 bg-red-600 text-white font-black text-sm flex items-center justify-center"
               >
                 ✕
               </button>
             </div>
 
-            <div className="space-y-3 text-xs text-slate-300">
-              <div className="flex items-start gap-3 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800">
-                <span className="font-black text-emerald-400 bg-emerald-950/60 px-2 py-1 rounded">WASD</span>
+            <div className="space-y-3 text-[13px] text-slate-300">
+              <div className="flex items-start gap-3 bg-slate-950/60 p-2.5 border border-slate-800">
+                <span className="font-black text-emerald-400 bg-emerald-950/60 px-2 py-1 ">WASD</span>
                 <div>
                   <b className="text-white">Movimiento Ágil:</b> Desplázate por el mapa de 8000x8000. Cruzar el río reduce la velocidad un 25% salvo en los puentes.
                 </div>
               </div>
 
-              <div className="flex items-start gap-3 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800">
-                <span className="font-black text-cyan-400 bg-cyan-950/60 px-2 py-1 rounded">MOUSE</span>
+              <div className="flex items-start gap-3 bg-slate-950/60 p-2.5 border border-slate-800">
+                <span className="font-black text-cyan-400 bg-cyan-950/60 px-2 py-1 ">MOUSE</span>
                 <div>
                   <b className="text-white">Apuntar y Disparar:</b> Click izquierdo para disparar armas. Las balas tienen retroceso táctico de retroceso.
                 </div>
               </div>
 
-              <div className="flex items-start gap-3 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800">
-                <span className="font-black text-amber-400 bg-amber-950/60 px-2 py-1 rounded">ESPACIO</span>
+              <div className="flex items-start gap-3 bg-slate-950/60 p-2.5 border border-slate-800">
+                <span className="font-black text-amber-400 bg-amber-950/60 px-2 py-1 ">ESPACIO</span>
                 <div>
                   <b className="text-white">Roll Acrobático / Dash:</b> Rueda 120px con armas de fuego o haz un Dash veloz de 160px con garras.
                 </div>
               </div>
 
-              <div className="flex items-start gap-3 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800">
-                <span className="font-black text-purple-400 bg-purple-950/60 px-2 py-1 rounded">F / R</span>
+              <div className="flex items-start gap-3 bg-slate-950/60 p-2.5 border border-slate-800">
+                <span className="font-black text-purple-400 bg-purple-950/60 px-2 py-1 ">F / R</span>
                 <div>
                   <b className="text-white">Recoger & Recargar:</b> Pulsa F sobre botín para equipar armas. Pulsa R para recargar munición.
                 </div>
               </div>
 
-              <div className="flex items-start gap-3 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800">
-                <span className="font-black text-rose-400 bg-rose-950/60 px-2 py-1 rounded">🏠 SIGILO</span>
+              <div className="flex items-start gap-3 bg-slate-950/60 p-2.5 border border-slate-800">
+                <span className="font-black text-rose-400 bg-rose-950/60 px-2 py-1 ">🏠 SIGILO</span>
                 <div>
                   <b className="text-white">Edificios Tácticos:</b> Entra a casas, búnkeres o almacenes. El techo se desvanece para ti y te oculta de los enemigos exteriores.
                 </div>
@@ -1009,7 +1009,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onStartGame }) => {
 
             <button
               onClick={() => setShowRulesModal(false)}
-              className="diep-btn-play w-full py-2.5 rounded-xl text-white font-black text-sm uppercase"
+              className="diep-btn-play w-full py-2.5 text-white font-black text-sm "
             >
               ¡Entendido, a Luchar!
             </button>
