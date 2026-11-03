@@ -295,6 +295,12 @@ export class JungleRoom extends Room<GameState> {
 
     // Register Message Handlers
 
+    // Ping: se devuelve tal cual la marca de tiempo del cliente, que mide el ida y vuelta
+    // con su propio reloj (restar relojes de dos máquinas distintas no sirve)
+    this.onMessage("ping", (client, t: number) => {
+      client.send("pong", t);
+    });
+
     // ── Chat General (disponible en lobby y durante partida) ──────────────
     this.onMessage("chat", (client, data: { text: string }) => {
       const player = this.state.players.get(client.sessionId);

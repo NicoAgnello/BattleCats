@@ -1,6 +1,9 @@
 import { Client, Room } from "colyseus.js";
 import { GameState } from "./schema/GameState";
 import { SERVER_WS } from "./serverUrl";
+import { sseManager } from "./SSEClient";
+
+const PING_INTERVAL_MS = 1000;
 
 /** El servidor rechaza crear una sala con un código en uso (JungleRoom.ROOM_CODE_TAKEN). */
 const ROOM_CODE_TAKEN = 4409;
@@ -20,6 +23,7 @@ export class NetworkClient {
   public room: Room<GameState> | null = null;
   public sessionId: string = "";
   private cancelled = false;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     console.log(`📡 NetworkClient apuntando a: ${SERVER_WS}`);
@@ -57,11 +61,31 @@ export class NetworkClient {
       this.room = null;
       throw new Error("Conexión cancelada al volver al menú");
     }
+    this.startPing(this.room);
     return this.room;
+  }
+
+  /** Mide la latencia real: ida y vuelta de un mensaje por el WebSocket del juego. */
+  private startPing(room: Room<GameState>) {
+    room.onMessage("pong", (t: number) => {
+      sseManager.setPing(Math.round(performance.now() - t));
+    });
+    room.onLeave(() => this.stopPing());
+    const ping = () => room.send("ping", performance.now());
+    ping();
+    this.pingTimer = setInterval(ping, PING_INTERVAL_MS);
+  }
+
+  private stopPing() {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
   }
 
   public disconnect() {
     this.cancelled = true;
+    this.stopPing();
     if (this.room) {
       this.room.leave();
       this.room = null;

@@ -58,11 +58,12 @@ export class SSEManager {
         try {
           const data = JSON.parse(e.data);
           const now = Date.now();
-          const latency = Math.max(1, now - (data.timestamp || now));
+          // El ping no se calcula acá: restar la hora del servidor a la de esta PC solo
+          // da la diferencia entre sus relojes. Lo mide NetworkManager (setPing).
           this.telemetry = {
             connected: true,
             tickRate: data.tickRate || 60,
-            ping: latency,
+            ping: this.telemetry.ping,
             clientsConnected: data.clientsConnected || 1,
             memoryMb: data.memoryMb || 0,
             lastUpdate: now,
@@ -142,6 +143,12 @@ export class SSEManager {
     this.roomId = roomId;
     clearTimeout(this.reconnectTimer);
     this.connect();
+  }
+
+  /** Latencia medida con ping/pong por el WebSocket del juego (ida y vuelta, en ms). */
+  public setPing(ms: number) {
+    this.telemetry.ping = ms;
+    this.notifyTelemetry();
   }
 
   private notifyTelemetry() {
