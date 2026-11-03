@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Zap, EyeOff, Volume2, VolumeX, Trophy, Smile, MessageCircle, Send, Clock } from "lucide-react";
+import { Zap, EyeOff, Volume2, VolumeX, Trophy, Smile, MessageCircle, Send } from "lucide-react";
 import { soundManager } from "../game/SoundManager";
 import { PixelPortrait } from "./PixelPortrait";
 import { SKINS, type PlayerConfig } from "./StartScreen";
@@ -446,72 +446,39 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
     if (e.key === "Enter") { e.preventDefault(); sendChatMessage(); }
   };
 
-  // ── PANTALLA EXCLUSIVA DE LOBBY: Solo Cuenta Regresiva de 40s + Chat General ──
+  // ── Sala de espera de la partida rápida: cuenta regresiva + chat ──
   if (lobbyState?.active) {
+    const left = lobbyState.countdown;
+    const [cdLight, cdBase] = left <= 10 ? ["#fca5a5", "#ef4444"] : left <= 20 ? ["#fde68a", "#f59e0b"] : ["#6ee7b7", "#10b981"];
     return (
-      <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center font-game select-none" style={{ background: "rgba(2, 6, 23, 0.92)", backdropFilter: "blur(18px)" }}>
-        <div className="flex flex-col items-center gap-6 w-full max-w-lg px-4 pointer-events-auto">
+      <div className="hud pointer-events-none absolute inset-0 z-50 flex items-center justify-center select-none" style={{ background: "rgba(11, 8, 16, 0.9)" }}>
+        <div className="flex flex-col items-center gap-5 w-full max-w-md px-4 pointer-events-auto">
 
-          {/* Header */}
-          <div className="flex items-center gap-3">
-            <span className="text-4xl animate-bounce">🐾</span>
-            <div className="text-center">
-              <h1 className="text-2xl font-black uppercase tracking-widest text-white drop-shadow">BattleCats.io</h1>
-              <p className="text-xs font-bold text-emerald-400 uppercase tracking-widest">
-                ⏳ Sala de Espera — Cuenta Regresiva
-              </p>
+          <div className="hud-panel w-full px-6 py-5 flex flex-col items-center gap-3">
+            <span className="text-[16px]" style={{ color: "var(--hud-dim)" }}>La partida rápida arranca en</span>
+            <span className="text-[72px] leading-none tabular-nums" style={{ color: cdBase }}>{left}</span>
+            <div className="flex w-full">
+              <HudBar pct={(left / 40) * 100} light={cdLight} base={cdBase} segments={8} />
             </div>
-            <span className="text-4xl animate-bounce" style={{ animationDelay: "0.2s" }}>🐾</span>
+            <span className="text-[14px] text-center" style={{ color: "var(--hud-dim)" }}>
+              Nadie se puede mover hasta que termine la cuenta.
+            </span>
           </div>
 
-          {/* Countdown grande circular */}
-          <div className="relative flex flex-col items-center">
-            <div
-              className="w-44 h-44 rounded-full flex flex-col items-center justify-center shadow-2xl border-4 transition-all duration-300"
-              style={{
-                background: "radial-gradient(circle, rgba(16,185,129,0.2) 0%, rgba(2,6,23,0.95) 80%)",
-                borderColor: lobbyState.countdown <= 10 ? "#f87171" : lobbyState.countdown <= 20 ? "#fbbf24" : "#10b981",
-                boxShadow: lobbyState.countdown <= 10 ? "0 0 50px rgba(248,113,113,0.5)" : "0 0 45px rgba(16,185,129,0.35)",
-              }}
-            >
-              <span className="text-[10px] font-extrabold tracking-widest text-slate-400 uppercase">Inicio en</span>
-              <span
-                className="font-black font-mono leading-none"
-                style={{
-                  fontSize: "clamp(2.8rem, 8vw, 4.4rem)",
-                  color: lobbyState.countdown <= 10 ? "#f87171" : lobbyState.countdown <= 20 ? "#fbbf24" : "#10b981",
-                }}
-              >
-                {lobbyState.countdown}s
-              </span>
-              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">¡Prepárate!</span>
+          <div className="hud-panel w-full flex flex-col" style={{ height: "270px" }}>
+            <div className="flex items-center gap-2 px-3 py-2 text-[15px]" style={{ borderBottom: "2px solid var(--hud-ink)" }}>
+              <MessageCircle className="w-4 h-4" style={{ color: "#6ee7b7" }} />
+              Chat
             </div>
-            <div className="mt-3 flex items-center gap-2 text-xs font-bold text-slate-300 bg-slate-900/80 px-4 py-1.5 rounded-full border border-slate-700/60 shadow-lg">
-              <Clock className="w-3.5 h-3.5 text-amber-400 animate-spin" />
-              <span>Nadie se puede mover hasta que termine la cuenta regresiva</span>
-            </div>
-          </div>
-
-          {/* Chat General */}
-          <div className="w-full glass-panel rounded-2xl border border-slate-700/60 shadow-2xl overflow-hidden flex flex-col" style={{ height: "270px" }}>
-            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-700/50 bg-slate-900/70">
-              <MessageCircle className="w-4 h-4 text-emerald-400" />
-              <span className="text-xs font-black uppercase tracking-wider text-emerald-400">Chat General</span>
-              <span className="ml-auto text-[10px] text-slate-400">Habla con los demás antes del combate</span>
-            </div>
-            <div
-              ref={chatScrollRef}
-              className="flex-1 overflow-y-auto px-3.5 py-2.5 space-y-1.5"
-              style={{ scrollbarWidth: "thin" }}
-            >
+            <div ref={chatScrollRef} className="flex-1 overflow-y-auto px-3 py-2 space-y-1 text-[14px]" style={{ scrollbarWidth: "thin" }}>
               {chatMessages.length === 0 && (
-                <p className="text-xs text-slate-500 text-center py-6 italic">Sé el primero en saludar a tus rivales 🐾</p>
+                <p className="text-[14px] text-center py-6" style={{ color: "var(--hud-dim)" }}>Saludá a tus rivales antes de que arranque.</p>
               )}
               {chatMessages.map(msg => (
-                <div key={msg.id} className={`text-xs flex gap-1.5 items-baseline ${msg.isSystem ? "text-amber-400 italic bg-amber-500/10 px-2 py-1 rounded-lg" : "text-slate-200"}` }>
+                <div key={msg.id} className="flex gap-1.5 items-baseline" style={{ color: msg.isSystem ? "var(--hud-gold)" : "var(--hud-text)" }}>
                   {!msg.isSystem && (
-                    <span className={`font-black whitespace-nowrap ${msg.isSpectator ? "text-cyan-400" : "text-emerald-400"}`}>
-                      {msg.isSpectator ? "👻" : "🐾"} {msg.senderName}:
+                    <span className="whitespace-nowrap" style={{ color: msg.isSpectator ? "var(--hud-shield)" : "#6ee7b7" }}>
+                      {msg.senderName}:
                     </span>
                   )}
                   <span className="break-all">{msg.text}</span>
@@ -519,7 +486,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
               ))}
               <div ref={chatEndRef} />
             </div>
-            <div className="flex gap-2 px-3 py-2 border-t border-slate-700/50 bg-slate-900/60">
+            <div className="flex gap-2 p-2.5" style={{ borderTop: "2px solid var(--hud-ink)" }}>
               <input
                 type="text"
                 value={chatInput}
@@ -532,21 +499,15 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
                   }
                 }}
                 onKeyUp={e => e.stopPropagation()}
-                placeholder="Escribe un mensaje en el chat... (Enter para enviar)"
-                className="flex-1 bg-slate-800/90 border border-slate-600/70 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500/70 transition"
+                placeholder="Escribí un mensaje y apretá Enter"
+                className="flex-1 min-w-0 px-2 h-[28px] text-[14px] outline-none"
+                style={{ background: "#120e18", color: "var(--hud-text)", boxShadow: "0 0 0 2px var(--hud-ink), inset 0 2px 0 var(--hud-shade)" }}
               />
-              <button
-                onClick={sendChatMessage}
-                className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center gap-1 cursor-pointer shadow-lg shadow-emerald-900/30"
-              >
+              <button onClick={sendChatMessage} className="hud-chip h-[28px] cursor-pointer" aria-label="Enviar mensaje">
                 <Send className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
-
-          <p className="text-[11px] text-slate-400 text-center">
-            💬 Usa este tiempo para coordinar. La partida arrancará automáticamente.
-          </p>
         </div>
       </div>
     );
