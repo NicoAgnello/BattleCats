@@ -104,6 +104,12 @@ export const GameplayBackground: React.FC = () => {
 
     /** Arma las capas fijas del mundo para el tamaño de pantalla actual. */
     const buildWorld = () => {
+      // Pestaña oculta o ventana sin tamaño todavía: no hay nada que dibujar (crear una
+      // imagen de 0 px tira error). Se arma en el próximo resize.
+      if (window.innerWidth < 1 || window.innerHeight < 1) {
+        ground = canopy = null;
+        return;
+      }
       viewW = Math.ceil(window.innerWidth / SCALE);
       viewH = Math.ceil(window.innerHeight / SCALE);
       worldW = viewW + PAN_EXTRA;
@@ -250,6 +256,12 @@ export const GameplayBackground: React.FC = () => {
       last = now;
       acc += dt;
       if (acc < 1 / FPS) return;
+      // Si se abrió sin tamaño (pestaña oculta), se arma apenas la ventana tenga tamaño:
+      // al mostrarse la pestaña no siempre llega un "resize"
+      if (!ground) {
+        buildWorld();
+        if (!ground) return;
+      }
       update(acc);
       acc = 0;
       draw(now);
@@ -282,7 +294,7 @@ export const GameplayBackground: React.FC = () => {
     // Con la pestaña oculta no se anima (ahorra CPU mientras jugás en otra ventana)
     const onVisibility = () => {
       cancelAnimationFrame(raf);
-      if (!document.hidden && !reduceMotion && ground) {
+      if (!document.hidden && !reduceMotion) {
         last = performance.now();
         raf = requestAnimationFrame(loop);
       }

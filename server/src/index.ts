@@ -1,4 +1,7 @@
 import http from "http";
+import os from "os";
+import fs from "fs";
+import path from "path";
 import express from "express";
 import cors from "cors";
 import { Server, matchMaker } from "colyseus";
@@ -26,6 +29,16 @@ gameServer.define("jungle_room", JungleRoom);
 
 // Register CustomRoom (Custom match without bots, 20 players max, filtered by 4-digit roomCode)
 gameServer.define("custom_room", JungleRoom).filterBy(["roomCode"]);
+
+// Versión compilada (npm run jugar): el mismo servidor sirve la página, así se juega
+// con un solo proceso y un solo puerto. Solo corriendo desde dist/: en desarrollo la
+// página la sirve Vite en el 3000, y una compilación vieja en client/dist no debe
+// aparecer en el 2567 sin que nadie se dé cuenta.
+const CLIENT_DIST = path.resolve(__dirname, "../../client/dist");
+const servesClient = path.basename(__dirname) === "dist" && fs.existsSync(path.join(CLIENT_DIST, "index.html"));
+if (servesClient) {
+  app.use(express.static(CLIENT_DIST));
+}
 
 app.get("/health", (req, res) => {
   res.json({ status: "OK", room: "jungle_room", sseClients: sseClients.size });
@@ -58,8 +71,21 @@ app.get("/api/room/:code", async (req, res) => {
   }
 });
 
+/** IPv4 de la red local (para decirle a los demás a dónde entrar). */
+function lanAddresses(): string[] {
+  return Object.values(os.networkInterfaces())
+    .flat()
+    .filter((i): i is os.NetworkInterfaceInfo => !!i && i.family === "IPv4" && !i.internal)
+    .map((i) => i.address);
+}
+
 server.listen(PORT, () => {
   console.log(`🎮 Colyseus + SSE Server listening on http://localhost:${PORT}`);
+  if (servesClient) {
+    console.log("\n🐾 Juego listo. Para jugar en esta red, entrar desde el navegador a:");
+    lanAddresses().forEach((ip) => console.log(`   http://${ip}:${PORT}`));
+    console.log(`   (en esta compu: http://localhost:${PORT})\n`);
+  }
 });
 
 

@@ -33,7 +33,7 @@ Hasta **16 jugadores por sala** (humanos y 6 bots) aparecen en una isla de 8000�
 
 | Acción | Tecla |
 |---|---|
-| Moverse | `W` `A` `S` `D` |
+| Moverse | `W` `A` `S` `D` (modo clásico o "hacia la mira", se elige en el menú) |
 | Apuntar | Mouse |
 | Disparar / atacar | Clic izquierdo (mantener para autodisparo) |
 | Dash o roll | `Espacio` |
@@ -67,6 +67,20 @@ cd client && npm run dev    # cliente en   http://localhost:3000
 Abrí `http://localhost:3000`. Para probar el multijugador, abrí varias pestañas, o conectá otras compus de la misma red usando la IP de la que corre el servidor.
 
 Chequeo rápido del servidor: `http://localhost:2567/health`.
+
+### Para jugar en la red o presentar: versión compilada
+
+El modo de arriba es para **programar** (recarga sola al guardar, pero la página son ~1500 archivos sueltos y carga lento desde otras compus). Para **jugar** conviene la versión compilada:
+
+```bash
+npm run jugar
+```
+
+Compila cliente y servidor, y arranca **un solo servidor en un solo puerto (2567)** que sirve la página y el juego. Al arrancar muestra la dirección para los demás, por ejemplo `http://192.168.1.101:2567`. La página pasa a ser un solo archivo JS y carga mucho más rápido.
+
+Si ya está compilado y no cambiaste nada, `npm start` lo arranca sin volver a compilar.
+
+> ⚠️ El servidor de desarrollo (`./start.sh` / `npm run dev`) se **reinicia al guardar cualquier archivo del servidor**, y eso corta las partidas en curso. Para jugar con otros, usar `npm run jugar`.
 
 ## 🧠 Cómo funciona
 

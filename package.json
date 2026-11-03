@@ -8,6 +8,8 @@
     "build:server": "cd server && npm run build",
     "build:client": "cd client && npm run build",
     "build": "npm run build:server && npm run build:client",
+    "start": "cd server && npm start",
+    "jugar": "npm run build && npm start",
     "test:rooms": "node loadtest/rooms-test.mjs",
     "test:mechanics": "node loadtest/mechanics-test.mjs",
     "loadtest": "node loadtest/loadtest.mjs --clients 20 --duration 30"
