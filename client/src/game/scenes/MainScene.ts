@@ -4220,7 +4220,8 @@ export class MainScene extends Phaser.Scene {
     // 2. Interpolación Suave (Lerp) para Jugadores Remotos y Frustum Culling
     this.players.forEach(v => {
       const isLocal = v.isMe;
-      const canSee = isLocal || this.canSeeWorldPoint(v.container.x, v.container.y);
+      // los ajenos escondidos (arbusto o casa) o fantasmas no se dibujan
+      const canSee = isLocal || (!v.isHidden && !v.isGhost && this.canSeeWorldPoint(v.container.x, v.container.y));
       const inCam = isLocal || (canSee && this.isInCameraView(v.container.x, v.container.y, 120));
 
       if (isLocal) {
