@@ -1,6 +1,73 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Heart, Flame, Skull, Zap, EyeOff, Radio, Wifi, WifiOff, Loader2, Volume2, VolumeX, Trophy, RotateCcw, Sparkles, Shield, Smile, MessageCircle, Send, Clock, Users } from "lucide-react";
+import { Zap, EyeOff, Volume2, VolumeX, Trophy, Smile, MessageCircle, Send } from "lucide-react";
 import { soundManager } from "../game/SoundManager";
+import { getMoveMode, setMoveMode, MOVE_MODE_EVENT, type MoveMode } from "../game/controls";
+import { PixelPortrait } from "./PixelPortrait";
+import { SKINS, type PlayerConfig } from "./StartScreen";
+
+/** Cuánto se ve la guía de teclas al empezar una partida. */
+const KEYS_HINT_MS = 20_000;
+
+/* ── Piezas del HUD pixel art ────────────────────────────────────────────── */
+
+/** Primer frame de un sprite del juego (public/sprites), a escala entera. */
+const SpriteIcon: React.FC<{ name: string; w: number; h: number; scale?: number; frame?: number; className?: string }> = ({
+  name, w, h, scale = 1, frame = 0, className = "",
+}) => (
+  <span
+    aria-hidden="true"
+    className={`hud-sprite ${className}`}
+    style={{
+      width: w * scale,
+      height: h * scale,
+      backgroundImage: `url(sprites/${name}.png)`,
+      backgroundSize: `auto ${h * scale}px`,
+      backgroundPosition: `${-frame * w * scale}px 0`,
+    }}
+  />
+);
+
+/** Colores de la barra de vida sobre los gatos (MainScene.redrawHp): [franja clara, base]. */
+const hpColors = (pct: number, ghost: boolean): [string, string] =>
+  ghost ? ["#bae6fd", "#38bdf8"]
+  : pct < 30 ? ["#fca5a5", "#ef4444"]
+  : pct < 60 ? ["#fde68a", "#f59e0b"]
+  : ["#6ee7b7", "#10b981"];
+
+/** Sprite de cada arma (primer frame del ítem del suelo; garras = zarpazo). */
+const WEAPON_SPRITES: Record<string, { name: string; w: number; h: number; frame?: number }> = {
+  LASER: { name: "item-pistola", w: 12, h: 8 },
+  SHOTGUN: { name: "item-escopeta", w: 19, h: 9 },
+  SNIPER: { name: "item-sniper", w: 26, h: 9 },
+  GRENADE: { name: "item-granada", w: 9, h: 10 },
+  MELEE: { name: "efecto-zarpazo", w: 22, h: 18, frame: 2 },
+};
+
+const WeaponSprite: React.FC<{ id: string; scale?: number }> = ({ id, scale = 2 }) => {
+  const s = WEAPON_SPRITES[id];
+  return s ? <SpriteIcon name={s.name} w={s.w} h={s.h} frame={s.frame} scale={scale} /> : null;
+};
+
+/** Barra segmentada: un corte cada `segments` partes, como bloques de vida. */
+const HudBar: React.FC<{ pct: number; light: string; base: string; segments?: number; empty?: string; height?: number }> = ({
+  pct, light, base, segments = 0, empty, height,
+}) => (
+  <div className="hud-bar flex-1" style={{ background: empty, height }}>
+    <div
+      className="hud-fill"
+      style={{ width: `${pct}%`, background: `linear-gradient(${light} 0 3px, ${base} 3px)` }}
+    />
+    {segments > 1 && (
+      <div
+        className="hud-ticks"
+        style={{
+          backgroundImage: "linear-gradient(90deg, transparent calc(100% - 2px), var(--hud-ink) 0)",
+          backgroundSize: `${100 / segments}% 100%`,
+        }}
+      />
+    )}
+  </div>
+);
 
 interface PlayerState {
   hp: number;
@@ -89,9 +156,11 @@ interface RoomInfo {
 
 interface UIOverlayProps {
   onOpenMenu?: () => void;
+  /** Nombre y skin elegidos en el menú (retrato del HUD). */
+  playerConfig?: PlayerConfig | null;
 }
 
-export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
+export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }) => {
   const [conn, setConn] = useState("CONNECTING");
   const [player, setPlayer] = useState<PlayerState>(DEFAULT_PLAYER);
   const [zone, setZone] = useState<ZoneState>({ timer: 18, isShrinking: false, phase: 1 });
@@ -105,6 +174,9 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
   const [showEmotes, setShowEmotes] = useState(false);
   const [roomInfo, setRoomInfo] = useState<RoomInfo | null>(null);
   const [codeCopied, setCodeCopied] = useState(false);
+  const [showKeys, setShowKeys] = useState(true);
+  const [moveMode, setMoveModeState] = useState<MoveMode>(getMoveMode);
+  const [keysEpoch, setKeysEpoch] = useState(0);
   const [sseInfo, setSseInfo] = useState<{ connected: boolean; tickRate: number; ping: number }>({
     connected: false,
     tickRate: 60,
@@ -150,6 +222,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
     setSpectatorQueue(null);
   }, []);
   const onPlaying = useCallback(() => {
+    setKeysEpoch(n => n + 1);
     setVictory(null);
     setRedirectCountdown(null);
     setLobbyState(null); // La partida empieza: cerrar el lobby overlay
@@ -193,6 +266,33 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
   const onQueuePromotion = useCallback((e: Event) => {
     setSpectatorQueue(null);
     setChatMessages(prev => [...prev, { id: Date.now(), senderName: "Sistema", text: "🚀 ¡Comenzó tu turno para jugar! Has sido añadido a la partida.", isSpectator: false, isSystem: true }]);
+  }, []);
+
+  // Clic fuera de un campo de texto: soltarlo. Phaser cancela el pointerdown sobre el
+  // canvas, así que el navegador no saca el foco solo y el juego seguía sin teclado.
+  useEffect(() => {
+    const onPointerDown = (e: PointerEvent) => {
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA") && !el.contains(e.target as Node)) {
+        el.blur();
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => window.removeEventListener("pointerdown", onPointerDown, true);
+  }, []);
+
+  // La guía de teclas se ve al entrar y al arrancar cada partida, y se oculta sola
+  useEffect(() => {
+    setShowKeys(true);
+    const id = setTimeout(() => setShowKeys(false), KEYS_HINT_MS);
+    return () => clearTimeout(id);
+  }, [keysEpoch]);
+
+  // Modo de movimiento: el botón del HUD y la escena se enteran por el mismo evento
+  useEffect(() => {
+    const onMode = (e: Event) => setMoveModeState((e as CustomEvent).detail);
+    window.addEventListener(MOVE_MODE_EVENT, onMode);
+    return () => window.removeEventListener(MOVE_MODE_EVENT, onMode);
   }, []);
 
   // Countdown auto redirect
@@ -358,6 +458,8 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
     return { rank: "RANGO D", label: "DORMILÓN", badge: "bg-slate-700/50 text-slate-300" };
   };
 
+  /** Sala privada esperando que el anfitrión arranque: su panel va en el lugar de la zona. */
+  const roomWaiting = !!roomInfo?.isCustomRoom && roomInfo.status === "WAITING";
   const styleInfo = getStyleRank(styleScore);
   const hpPct = Math.max(0, Math.min(100, (player.hp / player.maxHp) * 100));
   const shdPct = (player.maxShield || 0) > 0 ? Math.max(0, Math.min(100, ((player.shield || 0) / (player.maxShield || 1)) * 100)) : 0;
@@ -381,72 +483,39 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
     if (e.key === "Enter") { e.preventDefault(); sendChatMessage(); }
   };
 
-  // ── PANTALLA EXCLUSIVA DE LOBBY: Solo Cuenta Regresiva de 40s + Chat General ──
+  // ── Sala de espera de la partida rápida: cuenta regresiva + chat ──
   if (lobbyState?.active) {
+    const left = lobbyState.countdown;
+    const [cdLight, cdBase] = left <= 10 ? ["#fca5a5", "#ef4444"] : left <= 20 ? ["#fde68a", "#f59e0b"] : ["#6ee7b7", "#10b981"];
     return (
-      <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center font-game select-none" style={{ background: "rgba(2, 6, 23, 0.92)", backdropFilter: "blur(18px)" }}>
-        <div className="flex flex-col items-center gap-6 w-full max-w-lg px-4 pointer-events-auto">
+      <div className="hud pointer-events-none absolute inset-0 z-50 flex items-center justify-center select-none" style={{ background: "rgba(11, 8, 16, 0.9)" }}>
+        <div className="flex flex-col items-center gap-5 w-full max-w-md px-4 pointer-events-auto">
 
-          {/* Header */}
-          <div className="flex items-center gap-3">
-            <span className="text-4xl animate-bounce">🐾</span>
-            <div className="text-center">
-              <h1 className="text-2xl font-black uppercase tracking-widest text-white drop-shadow">BattleCats.io</h1>
-              <p className="text-xs font-bold text-emerald-400 uppercase tracking-widest">
-                ⏳ Sala de Espera — Cuenta Regresiva
-              </p>
+          <div className="hud-panel w-full px-6 py-5 flex flex-col items-center gap-3">
+            <span className="text-[16px]" style={{ color: "var(--hud-dim)" }}>La partida rápida arranca en</span>
+            <span className="text-[72px] leading-none tabular-nums" style={{ color: cdBase }}>{left}</span>
+            <div className="flex w-full">
+              <HudBar pct={(left / 40) * 100} light={cdLight} base={cdBase} segments={8} />
             </div>
-            <span className="text-4xl animate-bounce" style={{ animationDelay: "0.2s" }}>🐾</span>
+            <span className="text-[14px] text-center" style={{ color: "var(--hud-dim)" }}>
+              Nadie se puede mover hasta que termine la cuenta.
+            </span>
           </div>
 
-          {/* Countdown grande circular */}
-          <div className="relative flex flex-col items-center">
-            <div
-              className="w-44 h-44 rounded-full flex flex-col items-center justify-center shadow-2xl border-4 transition-all duration-300"
-              style={{
-                background: "radial-gradient(circle, rgba(16,185,129,0.2) 0%, rgba(2,6,23,0.95) 80%)",
-                borderColor: lobbyState.countdown <= 10 ? "#f87171" : lobbyState.countdown <= 20 ? "#fbbf24" : "#10b981",
-                boxShadow: lobbyState.countdown <= 10 ? "0 0 50px rgba(248,113,113,0.5)" : "0 0 45px rgba(16,185,129,0.35)",
-              }}
-            >
-              <span className="text-[10px] font-extrabold tracking-widest text-slate-400 uppercase">Inicio en</span>
-              <span
-                className="font-black font-mono leading-none"
-                style={{
-                  fontSize: "clamp(2.8rem, 8vw, 4.4rem)",
-                  color: lobbyState.countdown <= 10 ? "#f87171" : lobbyState.countdown <= 20 ? "#fbbf24" : "#10b981",
-                }}
-              >
-                {lobbyState.countdown}s
-              </span>
-              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">¡Prepárate!</span>
+          <div className="hud-panel w-full flex flex-col" style={{ height: "270px" }}>
+            <div className="flex items-center gap-2 px-3 py-2 text-[15px]" style={{ borderBottom: "2px solid var(--hud-ink)" }}>
+              <MessageCircle className="w-4 h-4" style={{ color: "#6ee7b7" }} />
+              Chat
             </div>
-            <div className="mt-3 flex items-center gap-2 text-xs font-bold text-slate-300 bg-slate-900/80 px-4 py-1.5 rounded-full border border-slate-700/60 shadow-lg">
-              <Clock className="w-3.5 h-3.5 text-amber-400 animate-spin" />
-              <span>Nadie se puede mover hasta que termine la cuenta regresiva</span>
-            </div>
-          </div>
-
-          {/* Chat General */}
-          <div className="w-full glass-panel rounded-2xl border border-slate-700/60 shadow-2xl overflow-hidden flex flex-col" style={{ height: "270px" }}>
-            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-700/50 bg-slate-900/70">
-              <MessageCircle className="w-4 h-4 text-emerald-400" />
-              <span className="text-xs font-black uppercase tracking-wider text-emerald-400">Chat General</span>
-              <span className="ml-auto text-[10px] text-slate-400">Habla con los demás antes del combate</span>
-            </div>
-            <div
-              ref={chatScrollRef}
-              className="flex-1 overflow-y-auto px-3.5 py-2.5 space-y-1.5"
-              style={{ scrollbarWidth: "thin" }}
-            >
+            <div ref={chatScrollRef} className="flex-1 overflow-y-auto px-3 py-2 space-y-1 text-[14px]" style={{ scrollbarWidth: "thin" }}>
               {chatMessages.length === 0 && (
-                <p className="text-xs text-slate-500 text-center py-6 italic">Sé el primero en saludar a tus rivales 🐾</p>
+                <p className="text-[14px] text-center py-6" style={{ color: "var(--hud-dim)" }}>Saludá a tus rivales antes de que arranque.</p>
               )}
               {chatMessages.map(msg => (
-                <div key={msg.id} className={`text-xs flex gap-1.5 items-baseline ${msg.isSystem ? "text-amber-400 italic bg-amber-500/10 px-2 py-1 rounded-lg" : "text-slate-200"}` }>
+                <div key={msg.id} className="flex gap-1.5 items-baseline" style={{ color: msg.isSystem ? "var(--hud-gold)" : "var(--hud-text)" }}>
                   {!msg.isSystem && (
-                    <span className={`font-black whitespace-nowrap ${msg.isSpectator ? "text-cyan-400" : "text-emerald-400"}`}>
-                      {msg.isSpectator ? "👻" : "🐾"} {msg.senderName}:
+                    <span className="whitespace-nowrap" style={{ color: msg.isSpectator ? "var(--hud-shield)" : "#6ee7b7" }}>
+                      {msg.senderName}:
                     </span>
                   )}
                   <span className="break-all">{msg.text}</span>
@@ -454,7 +523,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
               ))}
               <div ref={chatEndRef} />
             </div>
-            <div className="flex gap-2 px-3 py-2 border-t border-slate-700/50 bg-slate-900/60">
+            <div className="flex gap-2 p-2.5" style={{ borderTop: "2px solid var(--hud-ink)" }}>
               <input
                 type="text"
                 value={chatInput}
@@ -467,21 +536,15 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
                   }
                 }}
                 onKeyUp={e => e.stopPropagation()}
-                placeholder="Escribe un mensaje en el chat... (Enter para enviar)"
-                className="flex-1 bg-slate-800/90 border border-slate-600/70 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500/70 transition"
+                placeholder="Escribí un mensaje y apretá Enter"
+                className="flex-1 min-w-0 px-2 h-[28px] text-[14px] outline-none"
+                style={{ background: "#120e18", color: "var(--hud-text)", boxShadow: "0 0 0 2px var(--hud-ink), inset 0 2px 0 var(--hud-shade)" }}
               />
-              <button
-                onClick={sendChatMessage}
-                className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center gap-1 cursor-pointer shadow-lg shadow-emerald-900/30"
-              >
+              <button onClick={sendChatMessage} className="hud-chip h-[28px] cursor-pointer" aria-label="Enviar mensaje">
                 <Send className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
-
-          <p className="text-[11px] text-slate-400 text-center">
-            💬 Usa este tiempo para coordinar. La partida arrancará automáticamente.
-          </p>
         </div>
       </div>
     );
@@ -490,235 +553,149 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex flex-col justify-between p-5 select-none font-game opacity-85 transition-opacity">
 
-      {/* ── BANNER MODO ESPECTADOR (En cola para próxima partida) ── */}
-      {spectatorQueue && (
-        <div className="absolute top-5 left-1/2 -translate-x-1/2 z-40 pointer-events-auto flex items-center gap-3 px-5 py-2.5 rounded-2xl glass-panel border border-cyan-400/50 bg-slate-950/85 shadow-[0_0_30px_rgba(6,182,212,0.35)] animate-pulse">
-          <span className="text-2xl">👻</span>
-          <div className="flex flex-col">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-black uppercase tracking-wider text-cyan-300">Modo Espectador</span>
-              <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-200 text-[11px] font-black border border-cyan-400/40">
-                Cola #{spectatorQueue.position}
-              </span>
-            </div>
-            <span className="text-[10px] text-slate-300">
-              Viendo la partida en curso. ¡Entrarás a jugar automáticamente al comenzar la próxima!
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* ── CHAT FLOTANTE DURANTE PARTIDA (Para espectadores y jugadores) ── */}
-      {(spectatorQueue || player.isGhost) && (
-        <div className="absolute bottom-6 left-6 z-40 pointer-events-auto flex flex-col w-80 glass-panel rounded-2xl border border-slate-700/60 shadow-2xl overflow-hidden bg-slate-950/85">
-          <div className="flex items-center justify-between px-3.5 py-1.5 border-b border-slate-700/50 bg-slate-900/60 cursor-pointer" onClick={() => setSpectatorChatOpen(!spectatorChatOpen)}>
-            <div className="flex items-center gap-1.5">
-              <MessageCircle className="w-3.5 h-3.5 text-cyan-400" />
-              <span className="text-xs font-black uppercase tracking-wider text-cyan-400">Chat General</span>
-            </div>
-            <span className="text-[10px] text-slate-400 hover:text-white transition font-mono">
-              {spectatorChatOpen ? "▼" : "▲"}
-            </span>
-          </div>
-
-          {spectatorChatOpen && (
-            <>
-              <div
-                className="overflow-y-auto px-3 py-2 space-y-1"
-                style={{ maxHeight: "140px", scrollbarWidth: "thin" }}
-              >
-                {chatMessages.length === 0 && (
-                  <p className="text-[11px] text-slate-500 text-center py-2 italic">Sin mensajes aún</p>
-                )}
-                {chatMessages.map(msg => (
-                  <div key={msg.id} className={`text-xs flex gap-1.5 items-baseline ${msg.isSystem ? "text-amber-400 italic text-[11px]" : "text-slate-200"}` }>
-                    {!msg.isSystem && (
-                      <span className={`font-black whitespace-nowrap ${msg.isSpectator ? "text-cyan-400" : "text-emerald-400"}`}>
-                        {msg.isSpectator ? "👻" : "🐾"} {msg.senderName}:
-                      </span>
-                    )}
-                    <span className="break-all">{msg.text}</span>
-                  </div>
-                ))}
-                <div ref={chatEndRef} />
-              </div>
-              <div className="flex gap-1.5 px-2.5 py-2 border-t border-slate-700/50 bg-slate-900/40">
-                <input
-                  type="text"
-                  value={chatInput}
-                  onChange={e => setChatInput(e.target.value.slice(0, 120))}
-                  onKeyDown={e => {
-                    e.stopPropagation();
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      sendChatMessage();
-                    }
-                  }}
-                  onKeyUp={e => e.stopPropagation()}
-                  placeholder="Escribe un mensaje..."
-                  className="flex-1 bg-slate-800/80 border border-slate-600/60 rounded-lg px-2.5 py-1 text-xs text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-500/60 transition"
-                />
-                <button
-                  onClick={sendChatMessage}
-                  className="px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition flex items-center cursor-pointer"
-                >
-                  <Send className="w-3 h-3" />
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
       {/* ── FILA SUPERIOR (HUD) ───────────────────────────── */}
       <div className="flex items-start justify-between gap-4 pointer-events-none">
 
-        {/* ── Izquierda: Barra de Salud, Escudo, Estilo ── */}
-        <div className="pointer-events-none flex flex-col gap-2 min-w-[280px]">
+        {/* ── Izquierda: placa del jugador (retrato, vida, escudo, estilo) ── */}
+        <div className="hud pointer-events-none flex flex-col gap-3 w-[340px]">
 
-          {/* Badges de Conexión, Audio y Menú */}
-          <div className="flex items-center gap-2 pointer-events-none">
-            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full glass-panel text-xs font-bold shadow-lg">
-              {conn === "CONNECTED" && <><Wifi className="w-3.5 h-3.5 text-emerald-400" /><span className="text-emerald-400">Servidor Conectado</span></>}
-              {conn === "CONNECTING" && <><Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" /><span className="text-amber-400">Conectando…</span></>}
-              {conn === "ERROR" && <><WifiOff className="w-3.5 h-3.5 text-red-400" /><span className="text-red-400">Error de conexión</span></>}
-            </div>
-
-            {/* SSE Stream Telemetry */}
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full glass-panel text-xs font-bold shadow-lg border border-cyan-500/30" title="Server-Sent Events Telemetría en Vivo">
-              <span className={`w-2 h-2 rounded-full ${sseInfo.connected ? "bg-emerald-400 animate-pulse" : "bg-amber-400"}`} />
-              <span className="text-cyan-400 font-mono text-[11px]">
-                ⚡ SSE {sseInfo.tickRate}Hz
-              </span>
-              {sseInfo.connected && (
-                <span className="text-emerald-300 font-mono text-[10px]">
-                  {sseInfo.ping}ms
-                </span>
-              )}
-            </div>
-
+          {/* Estado de la conexión, SSE, sonido y menú */}
+          <div className="flex items-center gap-2.5 pointer-events-none">
+            {/* Conectado: solo el cuadrado verde. El texto aparece cuando hay un problema. */}
+            <span
+              className="hud-chip"
+              title={conn === "CONNECTED" ? "Conectado al servidor de juego (WebSocket)" : "Conexión con el servidor de juego (WebSocket)"}
+              aria-label={conn === "CONNECTED" ? "Conectado" : undefined}
+            >
+              <span
+                className="w-2 h-2"
+                style={{ background: conn === "CONNECTED" ? "#10b981" : conn === "CONNECTING" ? "#f59e0b" : "#ef4444" }}
+              />
+              {conn === "CONNECTING" ? "Conectando…" : conn === "ERROR" ? "Sin conexión" : null}
+            </span>
+            <span className="hud-chip" title="Server-Sent Events: telemetría del servidor. El ping se mide ida y vuelta por WebSocket.">
+              <span style={{ color: "var(--hud-shield)" }}>SSE {sseInfo.tickRate} Hz</span>
+              {sseInfo.connected && <span style={{ color: "var(--hud-dim)" }}>{sseInfo.ping} ms</span>}
+            </span>
             <button
               onClick={toggleMute}
-              className="pointer-events-auto glass-panel px-2.5 py-1 rounded-full text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1 hover:border-emerald-500/50 cursor-pointer"
-              title="Alternar Sonido SFX"
+              className="hud-chip pointer-events-auto cursor-pointer"
+              title={isMuted ? "Activar sonido" : "Silenciar"}
+              aria-label={isMuted ? "Activar sonido" : "Silenciar"}
             >
-              {isMuted ? <VolumeX className="w-3.5 h-3.5 text-red-400" /> : <Volume2 className="w-3.5 h-3.5 text-emerald-400" />}
-              <span>{isMuted ? "Mute" : "Audio"}</span>
+              {isMuted ? <VolumeX className="w-3.5 h-3.5 text-red-400" /> : <Volume2 className="w-3.5 h-3.5" />}
             </button>
-
+            <button
+              // sin foco: si no, el Espacio del dash volvería a apretar este botón
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setMoveMode(moveMode === "AIM" ? "CLASSIC" : "AIM")}
+              className="hud-chip pointer-events-auto cursor-pointer whitespace-nowrap"
+              title="Cambiar el modo de movimiento. Clásico: W va hacia arriba. Mira: W avanza hacia el mouse y A/D se mueven de costado."
+            >
+              WASD: <span style={{ color: "var(--hud-gold)" }}>{moveMode === "AIM" ? "mira" : "clásico"}</span>
+            </button>
             {onOpenMenu && (
-              <button
-                onClick={onOpenMenu}
-                className="pointer-events-auto glass-panel px-3 py-1 rounded-full text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1 hover:border-cyan-500/50 cursor-pointer"
-                title="Volver al Menú Principal"
-              >
-                <span>⚙️ Menú</span>
+              <button onClick={onOpenMenu} className="hud-chip pointer-events-auto cursor-pointer" title="Volver al menú principal">
+                Menú
               </button>
             )}
           </div>
 
-          {/* Barra de Salud & Escudo */}
-          <div className="glass-panel rounded-2xl p-3.5 border border-emerald-500/25 shadow-2xl backdrop-blur-md space-y-2">
-            {/* HP */}
-            <div>
-              <div className="flex justify-between items-center mb-1">
-                <div className="flex items-center gap-1.5">
-                  <Heart className={`w-4 h-4 ${player.isGhost ? "text-cyan-400 fill-cyan-400" : "text-emerald-400 fill-emerald-400 animate-pulse"}`} />
-                  <span className="text-[11px] font-black tracking-widest uppercase text-emerald-400">
-                    {player.isGhost ? "FANTASMA MICHI" : "SALUD FELINA"}
-                  </span>
-                </div>
-                <span className="font-mono text-xs font-bold text-slate-200">{Math.ceil(player.hp)} / {player.maxHp}</span>
-              </div>
-              <div className="w-full h-3 bg-slate-900/90 rounded-full overflow-hidden border border-slate-700/60 p-0.5">
-                <div
-                  className="h-full rounded-full transition-all duration-200 shadow-md"
-                  style={{
-                    width: `${hpPct}%`,
-                    background: player.isGhost
-                      ? "linear-gradient(90deg, #0284c7, #38bdf8)"
-                      : hpPct < 30 ? "linear-gradient(90deg, #dc2626, #f87171)"
-                      : hpPct < 60 ? "linear-gradient(90deg, #d97706, #fbbf24)"
-                      : "linear-gradient(90deg, #059669, #10b981)",
-                  }}
-                />
-              </div>
+          {/* Placa: retrato animado + barras */}
+          <div className="hud-panel flex gap-3 p-3">
+            <div
+              className="flex-none overflow-hidden"
+              style={{
+                width: 64, height: 80,
+                background: "#120e18",
+                boxShadow: "0 0 0 2px var(--hud-ink), inset 0 0 0 2px var(--hud-bevel)",
+                filter: player.isGhost ? "grayscale(1) brightness(1.2) sepia(1) hue-rotate(160deg)" : undefined,
+                opacity: player.isGhost ? 0.75 : 1,
+              }}
+            >
+              <PixelPortrait name={(SKINS[playerConfig?.skin ?? 0] ?? SKINS[0]).portrait} scale={1} />
             </div>
 
-            {/* Escudo / Chaleco Suroi */}
-            {!player.isGhost && (
-              <div>
-                <div className="flex justify-between items-center mb-1">
-                  <div className="flex items-center gap-1.5">
-                    <Shield className={`w-3.5 h-3.5 ${(player.maxShield || 0) <= 0 ? "text-slate-500 fill-slate-500" : "text-cyan-400 fill-cyan-400"}`} />
-                    <span className={`text-[10px] font-black tracking-widest uppercase ${(player.maxShield || 0) <= 0 ? "text-slate-500" : "text-cyan-400"}`}>
-                      {(player.maxShield || 0) <= 0 ? "Sin Escudo (Solo Garras)" : "Escudo Felino"}
-                    </span>
-                  </div>
-                  <span className={`font-mono text-[11px] font-bold ${(player.maxShield || 0) <= 0 ? "text-slate-500" : "text-cyan-300"}`}>
-                    {(player.maxShield || 0) <= 0 ? "BLOQUEADO" : `${Math.ceil(player.shield || 0)} / ${player.maxShield || 50}`}
-                  </span>
-                </div>
-                <div className="w-full h-2 bg-slate-900/90 rounded-full overflow-hidden border border-slate-700/60 p-0.5">
-                  <div
-                    className={`h-full rounded-full transition-all duration-200 ${(player.maxShield || 0) <= 0 ? "bg-slate-700/40" : "bg-gradient-to-r from-sky-500 to-cyan-400 shadow-md"}`}
-                    style={{ width: `${shdPct}%` }}
+            <div className="flex-1 min-w-0 flex flex-col justify-between">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-[18px] leading-none truncate">{playerConfig?.name || "Michi"}</span>
+                {player.isGhost
+                  ? <span className="text-[13px]" style={{ color: "#38bdf8" }}>Fantasma</span>
+                  : <span className="text-[13px]" style={{ color: "var(--hud-dim)" }} title="Rango de estilo">
+                      {styleInfo.label.charAt(0) + styleInfo.label.slice(1).toLowerCase()}
+                    </span>}
+              </div>
+
+              {/* Vida: un bloque cada 10 puntos */}
+              <div className="flex items-center gap-2">
+                <SpriteIcon name="item-botiquin" w={18} h={16} />
+                {(() => {
+                  const [light, base] = hpColors(hpPct, player.isGhost);
+                  return <HudBar pct={hpPct} light={light} base={base} segments={Math.round(player.maxHp / 10)} />;
+                })()}
+                <span className="text-[14px] tabular-nums w-[52px] text-right">{Math.ceil(player.hp)}/{player.maxHp}</span>
+              </div>
+
+              {/* Escudo */}
+              {!player.isGhost && (
+                <div className="flex items-center gap-2" style={{ opacity: (player.maxShield || 0) > 0 ? 1 : 0.55 }}>
+                  <SpriteIcon name="item-escudo" w={16} h={16} className="mx-px" />
+                  <HudBar
+                    pct={shdPct}
+                    light="#bae6fd"
+                    base="var(--hud-shield)"
+                    empty="var(--hud-shield-empty)"
+                    height={10}
+                    segments={(player.maxShield || 0) > 0 ? Math.round((player.maxShield || 50) / 10) : 0}
                   />
+                  <span className="text-[14px] tabular-nums w-[52px] text-right" style={{ color: "var(--hud-dim)" }}>
+                    {(player.maxShield || 0) > 0 ? `${Math.ceil(player.shield || 0)}/${player.maxShield}` : "—"}
+                  </span>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
 
-          {/* Barra de Estilo (Devil May Cry) */}
-          <div className="glass-panel rounded-xl p-2.5 border border-amber-500/25 shadow-lg backdrop-blur-md">
-            <div className="flex justify-between items-center mb-1">
-              <div className="flex items-center gap-1.5">
-                <Flame className="w-3.5 h-3.5 text-amber-400 animate-bounce" />
-                <span className="text-[10px] font-black tracking-widest uppercase text-amber-400">Estilo Felino</span>
+              {/* Estilo: letra de rango + barra fina */}
+              <div className="flex items-center gap-2">
+                <span
+                  className="w-[18px] h-[18px] flex items-center justify-center text-[14px] leading-none"
+                  style={{ background: "var(--hud-gold)", color: "var(--hud-ink)", boxShadow: "0 0 0 2px var(--hud-ink)" }}
+                  title="Rango de estilo"
+                >
+                  {styleInfo.rank.replace("RANGO ", "")}
+                </span>
+                <HudBar pct={stylePct} light="#fde68a" base="#f59e0b" height={6} />
+                <span className="text-[13px] w-[52px] text-right" style={{ color: "var(--hud-dim)" }} title="Sube con kills, armas y dash; baja si no hacés nada">
+                  Estilo
+                </span>
               </div>
-              <span className={`text-[9px] font-black px-2 py-0.5 rounded shadow ${styleInfo.badge}`}>
-                {styleInfo.rank} · {styleInfo.label}
-              </span>
-            </div>
-            <div className="w-full h-2 bg-slate-900/90 rounded-full overflow-hidden border border-slate-700/50">
-              <div
-                className="h-full bg-gradient-to-r from-amber-500 to-red-500 rounded-full transition-all duration-300 shadow-lg"
-                style={{ width: `${stylePct}%` }}
-              />
             </div>
           </div>
 
-          {/* Buffs Activos */}
+          {/* Buff activo */}
           {player.activeBuff && (
-            <div className="glass-panel self-start px-3 py-1.5 rounded-xl border border-yellow-500/40 text-xs font-bold flex items-center gap-2 animate-bounce">
-              {player.activeBuff === "SPEED" && <><span>⚡</span><span className="text-amber-300">Super Velocidad</span></>}
-              {player.activeBuff === "TRIPLE" && <><span>🌟</span><span className="text-purple-300">Triple Láser</span></>}
-            </div>
+            <span className="hud-chip self-start">
+              {player.activeBuff === "SPEED" && <><SpriteIcon name="item-velocidad" w={14} h={18} /><span style={{ color: "var(--hud-gold)" }}>Velocidad</span></>}
+              {player.activeBuff === "TRIPLE" && <><SpriteIcon name="item-triple" w={20} h={16} /><span style={{ color: "#c4b5fd" }}>Triple láser</span></>}
+            </span>
           )}
         </div>
 
-        {/* ── Centro: Zona Segura, Fase y Lobby de Sala ── */}
-        <div className="pointer-events-none flex flex-col items-center gap-2">
-          {/* Sala Personalizada: Banner de Espera y Control de Host */}
-          {roomInfo?.isCustomRoom && roomInfo.status === "WAITING" && (
-            <div className="pointer-events-auto glass-panel p-4 rounded-2xl border-2 border-emerald-400 bg-slate-950/95 shadow-[0_0_40px_rgba(16,185,129,0.35)] backdrop-blur-xl flex flex-col items-center gap-2.5 animate-fadeIn max-w-sm w-full mb-1">
-              <div className="flex items-center justify-between w-full border-b border-slate-700/60 pb-1.5">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-base">👑</span>
-                  <span className="text-[11px] font-black uppercase tracking-wider text-emerald-400">
-                    Sala Privada (Sin Bots)
-                  </span>
-                </div>
-                <div className="px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-[10px] font-bold text-slate-300">
-                  Máx 20
-                </div>
+        {/* ── Centro: sala privada, aturdido, inmunidad y zona ── */}
+        <div className="hud pointer-events-none flex flex-col items-center gap-3">
+          {/* Sala privada esperando: código, jugadores y arranque del anfitrión */}
+          {roomWaiting && (
+            <div className="hud-panel pointer-events-auto w-[320px] p-4 flex flex-col gap-3">
+              <div className="flex items-baseline justify-between">
+                <span className="text-[16px]">Sala privada</span>
+                <span className="text-[14px] tabular-nums" style={{ color: "var(--hud-dim)" }}>
+                  {roomInfo.playerCount}/20 jugadores
+                </span>
               </div>
 
-              {/* Código de Sala */}
-              <div className="flex items-center justify-between w-full bg-slate-900/80 p-2.5 rounded-xl border border-slate-800">
+              <div className="flex items-center justify-between px-3 py-2" style={{ background: "#120e18", boxShadow: "0 0 0 2px var(--hud-ink)" }}>
                 <div className="flex flex-col">
-                  <span className="text-[9px] uppercase font-bold text-slate-400">Código de Sala:</span>
-                  <span className="font-mono text-xl font-black text-amber-400 tracking-widest">
+                  <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Código</span>
+                  <span className="room-code text-[30px] leading-none" style={{ color: "var(--hud-gold)" }}>
                     {roomInfo.roomCode || "----"}
                   </span>
                 </div>
@@ -731,153 +708,144 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
                     setCodeCopied(true);
                     setTimeout(() => setCodeCopied(false), 2000);
                   }}
-                  className="px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-bold transition flex items-center gap-1 shadow cursor-pointer"
+                  className="hud-chip cursor-pointer"
                 >
-                  <span>📋</span>
-                  <span>{codeCopied ? "¡Copiado!" : "Copiar Enlace"}</span>
+                  {codeCopied ? "Copiado" : "Copiar enlace"}
                 </button>
               </div>
 
-              {/* Lista de Jugadores */}
-              <div className="w-full space-y-1">
-                <div className="flex justify-between items-center text-[10px] font-extrabold text-slate-400 uppercase">
-                  <span>Jugadores Conectados:</span>
-                  <span className="font-mono text-emerald-400 font-bold">{roomInfo.playerCount} / 20</span>
-                </div>
-                <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto p-1 bg-slate-900/50 rounded-lg border border-slate-800/50">
-                  {roomInfo.players?.map((p) => (
-                    <div
-                      key={p.id}
-                      className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-800/80 border border-slate-700/60 text-[11px] font-bold text-slate-200"
-                    >
-                      <span>{p.isHost ? "👑" : "🐾"}</span>
-                      <span>{p.name}</span>
-                      {p.isHost && <span className="text-[8px] text-amber-400 font-extrabold">(Host)</span>}
-                    </div>
-                  ))}
-                </div>
+              <div className="flex flex-wrap gap-2 max-h-[72px] overflow-y-auto p-0.5">
+                {roomInfo.players?.map((p) => (
+                  <span key={p.id} className="hud-chip">
+                    <span>{p.name}</span>
+                    {p.isHost && <span style={{ color: "var(--hud-gold)" }}>anfitrión</span>}
+                  </span>
+                ))}
               </div>
 
-              {/* Acciones de Host vs Invitado */}
               {roomInfo.isHost ? (
-                <div className="flex flex-col items-center w-full pt-0.5">
+                <div className="flex flex-col gap-2">
                   <button
                     type="button"
                     onClick={() => {
                       soundManager.playClick();
                       window.dispatchEvent(new CustomEvent("start-match"));
                     }}
-                    className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-black text-xs uppercase tracking-wider shadow-2xl flex items-center justify-center gap-1.5 transform hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer"
+                    className="hud-btn w-full py-2 cursor-pointer"
                   >
-                    <span>🚀</span>
-                    <span>Comenzar Partida (Host)</span>
+                    Comenzar partida
                   </button>
-                  <span className="text-[9px] text-slate-400 mt-1 font-medium text-center">
-                    Inicia cuando todos los jugadores estén listos.
+                  <span className="text-[13px] text-center" style={{ color: "var(--hud-dim)" }}>
+                    Arrancala cuando estén todos adentro.
                   </span>
                 </div>
               ) : (
-                <div className="flex flex-col items-center w-full pt-0.5 text-center">
-                  <div className="w-full py-2 px-2.5 rounded-xl bg-slate-900/80 border border-cyan-500/40 text-cyan-300 text-[11px] font-bold flex items-center justify-center gap-1.5 animate-pulse">
-                    <span>⏳</span>
-                    <span>Esperando a que el anfitrión inicie...</span>
-                  </div>
-                  <span className="text-[9px] text-slate-400 mt-1">
-                    ¡Prepárate! Todos tendrán 15s de inmunidad al comenzar.
+                <div className="flex flex-col gap-1 text-center">
+                  <span className="text-[15px] hud-blink" style={{ color: "var(--hud-shield)" }}>
+                    Esperando al anfitrión…
+                  </span>
+                  <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>
+                    Al empezar, todos tienen 15 s de inmunidad.
                   </span>
                 </div>
               )}
             </div>
           )}
 
-          {/* Banner de Stun / Aturdimiento */}
+          {/* Zona: fase y cuenta regresiva (mientras la sala espera, su lugar es del panel de la sala) */}
+          {!roomWaiting && (
+            <div className="hud-panel px-5 py-2 flex flex-col items-center min-w-[150px]" style={zone.isShrinking ? { background: "#3a1218" } : undefined}>
+              <span className="text-[13px]" style={{ color: zone.isShrinking ? "#fca5a5" : "var(--hud-dim)" }}>
+                {zone.isShrinking ? "La zona se cierra" : `Fase ${zone.phase} · zona segura`}
+              </span>
+              <span
+                className={`text-[30px] leading-none tabular-nums ${zone.isShrinking ? "hud-blink" : ""}`}
+                style={{ color: zone.isShrinking ? "#ef4444" : "var(--hud-gold)" }}
+              >
+                {zone.timer} s
+              </span>
+            </div>
+          )}
+
+          {/* Avisos: uno debajo del otro, sin tapar la zona */}
+                {/* Espectador en la fila para la próxima partida ── */}
+              {spectatorQueue && (
+            <div className="hud-panel pointer-events-auto flex items-center gap-4 px-4 py-2.5">
+              <SpriteIcon name="efecto-gatito-fantasma" w={11} h={11} scale={3} />
+              <div className="flex flex-col">
+                <span className="text-[16px]">
+                  Mirando la partida <span style={{ color: "var(--hud-shield)" }}>· lugar {spectatorQueue.position} en la fila</span>
+                </span>
+                <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Entrás a jugar cuando empiece la próxima.</span>
+              </div>
+            </div>
+          )}
+
+          {/* Aturdido por una trampa fantasma */}
           {(player.stunTimer ?? 0) > 0 && (
-            <div className="glass-panel px-6 py-2 rounded-2xl flex items-center gap-3 border-2 border-amber-400 bg-amber-950/85 shadow-[0_0_30px_rgba(251,191,36,0.6)] backdrop-blur-md animate-pulse">
-              <span className="text-xl animate-bounce">⚡</span>
-              <div className="flex flex-col items-center">
-                <span className="text-[10px] font-black tracking-widest text-amber-300 uppercase">
-                  ¡TRAMPA ESPECTRAL!
-                </span>
-                <span className="text-base font-black font-mono tracking-wider text-yellow-200">
-                  💫 ATURDIDO ({(player.stunTimer!).toFixed(1)}s)
+            <div className="hud-panel px-4 py-2 flex items-center gap-3" style={{ background: "#3b2410" }}>
+              <SpriteIcon name="efecto-trampa" w={22} h={22} scale={2} />
+              <div className="flex flex-col">
+                <span className="text-[13px]" style={{ color: "#fde68a" }}>Trampa fantasma</span>
+                <span className="text-[20px] leading-none tabular-nums" style={{ color: "var(--hud-gold)" }}>
+                  Aturdido {(player.stunTimer!).toFixed(1)} s
                 </span>
               </div>
             </div>
           )}
 
-          {/* Banner de Invulnerabilidad Inicial */}
+          {/* Inmunidad inicial */}
           {(player.invulnerableTimer ?? 0) > 0 && (
-            <div className="glass-panel px-6 py-2 rounded-2xl flex items-center gap-3 border-2 border-cyan-400 bg-cyan-950/80 shadow-[0_0_30px_rgba(56,189,248,0.5)] backdrop-blur-md animate-pulse">
-              <Shield className="w-5 h-5 text-cyan-300 animate-bounce" />
-              <div className="flex flex-col items-center">
-                <span className="text-[10px] font-black tracking-widest text-cyan-300 uppercase">
-                  ESCUDO PROTECTOR INICIAL
-                </span>
-                <span className="text-base font-black font-mono tracking-wider text-white">
-                  🛡️ {Math.ceil(player.invulnerableTimer!)}s INMUNIDAD
-                </span>
-              </div>
+            <div className="hud-chip h-[30px] px-3 text-[15px]">
+              <SpriteIcon name="item-escudo" w={16} h={16} />
+              <span style={{ color: "var(--hud-shield)" }}>Inmune</span>
+              <span className="tabular-nums">{Math.ceil(player.invulnerableTimer!)} s</span>
             </div>
           )}
-
-          <div className="glass-panel px-7 py-3 rounded-2xl flex items-center gap-3.5 border border-amber-500/35 shadow-2xl backdrop-blur-md">
-            <Radio className={`w-5 h-5 ${zone.isShrinking ? "text-red-400 animate-spin" : "text-emerald-400 animate-pulse"}`} />
-            <div className="flex flex-col items-center">
-              <span className="text-[10px] font-extrabold tracking-widest text-slate-300 uppercase">
-                {zone.isShrinking ? "¡LA ZONA SE ESTÁ CERRANDO!" : `Fase ${zone.phase} · Zona Segura`}
-              </span>
-              <span className={`text-2xl font-black font-mono tracking-wider ${zone.isShrinking ? "text-red-400 animate-pulse" : "text-amber-400"}`}>
-                {zone.timer}s
-              </span>
-            </div>
-          </div>
 
           {stylePopup && (
-            <div className="glass-panel px-4 py-1 rounded-full border border-yellow-400/50 text-xs font-black text-amber-300 animate-bounce shadow-xl flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-yellow-300" />
-              <span>{stylePopup}</span>
-            </div>
+            <span className="hud-chip" style={{ color: "var(--hud-gold)" }}>{stylePopup}</span>
           )}
         </div>
 
-        {/* ── Derecha: Vivos, Kills, Emotes & KillFeed ── */}
-        <div className="pointer-events-none flex flex-col items-end gap-2 min-w-[200px]">
+        {/* ── Derecha: vivos, kills, emotes y eliminaciones ── */}
+        <div className="hud pointer-events-none flex flex-col items-end gap-3 min-w-[200px]">
 
-          {/* Vivos, Kills & Botón de Emotes */}
-          <div className="flex items-center gap-2 pointer-events-none">
+          <div className="flex items-start gap-3">
             <button
               onClick={() => setShowEmotes(!showEmotes)}
-              className="pointer-events-auto glass-panel p-2 rounded-xl text-amber-400 hover:text-yellow-300 hover:border-amber-400/60 transition shadow-lg flex items-center justify-center cursor-pointer"
-              title="Expresiones y Emotes (E)"
+              className="hud-chip pointer-events-auto cursor-pointer h-[44px] px-3"
+              title="Emotes (E)"
+              aria-label="Emotes"
             >
-              <Smile className="w-5 h-5" />
+              <Smile className="w-5 h-5" style={{ color: "var(--hud-gold)" }} />
             </button>
 
-            <div className="glass-panel px-3.5 py-2 rounded-xl flex items-center gap-2 border border-slate-700/60 shadow-lg">
-              <span className="text-sm">😼</span>
-              <div>
-                <div className="text-[9px] text-slate-400 font-extrabold uppercase">Gatos Vivos</div>
-                <div className="text-sm font-black font-mono text-emerald-400">{alive.alive} / {alive.total}</div>
+            <div className="hud-panel flex">
+              <div className="px-3 py-1.5 flex flex-col items-end">
+                <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Vivos</span>
+                <span className="text-[20px] leading-none tabular-nums" style={{ color: "#6ee7b7" }}>
+                  {alive.alive}<span style={{ color: "var(--hud-dim)" }}>/{alive.total}</span>
+                </span>
               </div>
-            </div>
-
-            <div className="glass-panel px-3.5 py-2 rounded-xl flex items-center gap-2 border border-slate-700/60 shadow-lg">
-              <Skull className="w-4 h-4 text-red-400" />
-              <div>
-                <div className="text-[9px] text-slate-400 font-extrabold uppercase">Kills</div>
-                <div className="text-sm font-black font-mono text-slate-100">{player.kills}</div>
+              <div className="w-[2px] my-1.5" style={{ background: "var(--hud-ink)" }} />
+              <div className="px-3 py-1.5 flex items-center gap-2">
+                <SpriteIcon name="efecto-tumba" w={14} h={15} />
+                <div className="flex flex-col items-end">
+                  <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Kills</span>
+                  <span className="text-[20px] leading-none tabular-nums">{player.kills}</span>
+                </div>
               </div>
             </div>
           </div>
 
-          {/* Menú de Emotes Flotante */}
           {showEmotes && (
-            <div className="glass-panel p-2 rounded-2xl flex items-center gap-2 border border-amber-500/40 shadow-2xl animate-fadeIn">
+            <div className="hud-panel pointer-events-auto p-2 flex items-center gap-2">
               {emotes.map((em) => (
                 <button
                   key={em}
                   onClick={() => triggerEmote(em)}
-                  className="w-9 h-9 rounded-xl glass-panel hover:bg-amber-500/30 flex items-center justify-center text-lg hover:scale-110 transition cursor-pointer"
+                  className="hud-chip w-9 h-9 justify-center text-lg cursor-pointer"
                 >
                   {em}
                 </button>
@@ -885,237 +853,292 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu }) => {
             </div>
           )}
 
-          {/* Badge Oculto en Arbusto */}
           {player.isHidden && !player.isGhost && (
-            <div className="glass-panel px-3 py-1.5 rounded-lg flex items-center gap-1.5 border border-emerald-500/50 animate-pulse shadow-lg">
-              <EyeOff className="w-4 h-4 text-emerald-400" />
-              <span className="text-xs font-black text-emerald-400">Sigilo: Oculto en Arbusto</span>
-            </div>
+            <span className="hud-chip" style={{ color: "#6ee7b7" }}>
+              <EyeOff className="w-4 h-4" />
+              Oculto en el arbusto
+            </span>
           )}
 
-          {/* Kill Feed Toasts estilo Suroi */}
-          <div className="flex flex-col gap-1.5 items-end mt-1">
+          {/* Eliminaciones */}
+          <div className="flex flex-col gap-2 items-end">
             {killsFeed.map(k => (
-              <div key={k.id} className="glass-panel px-3 py-1 rounded-lg border border-red-500/30 text-[11px] font-bold text-slate-200 flex items-center gap-1.5 animate-fadeIn">
-                <span className="text-amber-400">{k.killer}</span>
-                <span className="text-xs text-slate-400">[{k.weapon}]</span>
-                <span className="text-red-400">{k.victim}</span>
-              </div>
+              <span key={k.id} className="hud-chip">
+                <span style={{ color: "var(--hud-gold)" }}>{k.killer}</span>
+                <span style={{ color: "var(--hud-dim)" }}>{k.weapon}</span>
+                <span style={{ color: "#fca5a5" }}>{k.victim}</span>
+              </span>
             ))}
           </div>
         </div>
       </div>
 
-      {/* ── MODAL: VICTORIA ROYALE (#1) ────────────────────── */}
+      {/* ── Fin de la partida ── */}
       {victory && (
-        <div className="self-center pointer-events-auto glass-panel border-2 border-yellow-500/60 bg-slate-950/90 p-8 rounded-3xl text-center max-w-md shadow-2xl backdrop-blur-xl animate-fadeIn space-y-4">
-          <div className="w-16 h-16 rounded-full bg-yellow-500/20 border-2 border-yellow-400 mx-auto flex items-center justify-center animate-bounce">
-            <Trophy className="w-9 h-9 text-yellow-400" />
-          </div>
+        <div className="hud hud-panel self-center pointer-events-auto p-6 w-[360px] flex flex-col items-center gap-4 text-center">
+          {victory.isMe ? (
+            <div style={{ boxShadow: "0 0 0 2px var(--hud-ink), inset 0 0 0 2px var(--hud-gold)", background: "#120e18" }}>
+              <PixelPortrait name={(SKINS[playerConfig?.skin ?? 0] ?? SKINS[0]).portrait} scale={2} />
+            </div>
+          ) : (
+            <Trophy className="w-10 h-10" style={{ color: "var(--hud-gold)" }} />
+          )}
 
-          <div>
-            <h2 className="text-3xl font-black tracking-wider text-yellow-400 uppercase drop-shadow-md">
-              {victory.isMe ? "¡VICTORIA ROYALE!" : "PARTIDA TERMINADA"}
+          <div className="flex flex-col gap-1">
+            <h2 className="text-[34px] leading-none" style={{ color: "var(--hud-gold)" }}>
+              {victory.isMe ? "Ganaste" : "Partida terminada"}
             </h2>
-            <p className="text-sm text-slate-300 mt-1">
-              {victory.isMe
-                ? "👑 ¡Eres el Michi Supremo y el último sobreviviente de la jungla!"
-                : `🏆 Ganador: ${victory.winnerName}`}
+            <p className="text-[15px]" style={{ color: "var(--hud-dim)" }}>
+              {victory.isMe ? "Sos el último gato en pie." : `Ganó ${victory.winnerName}.`}
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-3 p-3 rounded-2xl bg-slate-900/60 border border-slate-800 text-xs">
-            <div>
-              <span className="text-slate-400 block font-bold">Tus Eliminaciones</span>
-              <span className="text-xl font-black text-white font-mono">{player.kills}</span>
+          <div className="flex w-full" style={{ background: "#120e18", boxShadow: "0 0 0 2px var(--hud-ink)" }}>
+            <div className="flex-1 py-2 flex flex-col">
+              <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Kills</span>
+              <span className="text-[24px] leading-none tabular-nums">{player.kills}</span>
             </div>
-            <div>
-              <span className="text-slate-400 block font-bold">Rango de Estilo</span>
-              <span className="text-xl font-black text-amber-400 font-mono">{styleInfo.rank}</span>
+            <div className="w-[2px]" style={{ background: "var(--hud-ink)" }} />
+            <div className="flex-1 py-2 flex flex-col">
+              <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>Rango de estilo</span>
+              <span className="text-[24px] leading-none" style={{ color: "var(--hud-gold)" }}>{styleInfo.rank.replace("RANGO ", "")}</span>
             </div>
           </div>
 
-          <button
-            onClick={handleRestart}
-            className="w-full py-3.5 px-6 rounded-2xl font-black tracking-wider text-sm bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-400 text-slate-950 hover:brightness-110 active:scale-95 transition shadow-lg flex items-center justify-center gap-2 cursor-pointer"
-          >
-            <RotateCcw className="w-4 h-4" />
-            <span>
-              {redirectCountdown !== null
-                ? `VOLVER A PANTALLA DE INICIO (${redirectCountdown}s)`
-                : "VOLVER A PANTALLA DE INICIO"}
-            </span>
+          <button onClick={handleRestart} className="hud-btn w-full py-2.5 cursor-pointer">
+            {redirectCountdown !== null ? `Volver al menú (${redirectCountdown} s)` : "Volver al menú"}
           </button>
         </div>
       )}
 
-      {/* ── BARRA MODO FANTASMA (arriba, no tapa el centro de la pantalla) ── */}
-      {player.isGhost && !victory && !spectatorQueue && (() => {
-        const TRAP_COOLDOWN = 6.0; // igual que el servidor (JungleRoom: trapCooldown = 6.0)
-        const cooldown = player.trapCooldown ?? 0;
-        const ready = cooldown <= 0;
-        const progress = ready ? 1 : Math.max(0, Math.min(1, 1 - cooldown / TRAP_COOLDOWN));
-        return (
-          <div className="absolute left-1/2 -translate-x-1/2 top-32 pointer-events-auto glass-panel border border-cyan-500/40 bg-slate-950/80 px-4 py-2 rounded-xl shadow-xl flex items-center gap-3 w-[min(92vw,360px)]">
-            <span className="text-cyan-400 font-black text-xs whitespace-nowrap">👻 FANTASMA</span>
-            <div className="flex-1 min-w-0">
-              <div className="flex justify-between text-[10px] font-bold mb-1">
-                <span className="text-cyan-200 truncate">Clic der.: trampa</span>
-                <span className={`font-mono ml-2 whitespace-nowrap ${ready ? "text-emerald-400" : "text-amber-400"}`}>
-                  {ready ? "¡Trampa lista!" : `${cooldown.toFixed(1)}s`}
-                </span>
-              </div>
-              <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-[width] duration-100 ${ready ? "bg-emerald-400" : "bg-amber-400"}`}
-                  style={{ width: `${progress * 100}%` }}
-                />
-              </div>
-            </div>
-            <button
-              onClick={handleRestart}
-              title="Reiniciar partida"
-              className="py-1 px-2 rounded-lg text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1 transition whitespace-nowrap"
-            >
-              <RotateCcw className="w-3 h-3" />
-              Reiniciar
-            </button>
-          </div>
-        );
-      })()}
+      {/* ── Fila inferior: grilla de 3 columnas fijas. Con flex + justify-between, al
+           ocultarse la guía de teclas las armas saltaban a la derecha, sobre el minimapa ── */}
+      <div className="hud grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-end gap-4 pointer-events-none">
 
-      {/* ── FILA INFERIOR (SELECTOR DE ARMAS, DASH Y CONTROLES) ── */}
-      <div className="flex items-end justify-between gap-4 pointer-events-none">
+        {/* Columna izquierda: chat (fantasma o espectador) arriba del dash */}
+        <div className="col-start-1 justify-self-start flex flex-col items-start gap-3">
+          {/* ── Chat (fantasmas y espectadores) ── */}
+          {(spectatorQueue || player.isGhost) && (
+            <div className="hud-panel pointer-events-auto flex flex-col w-80">
+              <button
+                type="button"
+                className="flex items-center justify-between px-3 py-2 text-[15px] cursor-pointer"
+                style={{ borderBottom: spectatorChatOpen ? "2px solid var(--hud-ink)" : undefined }}
+                onClick={() => setSpectatorChatOpen(!spectatorChatOpen)}
+                aria-expanded={spectatorChatOpen}
+              >
+                <span className="flex items-center gap-2"><MessageCircle className="w-4 h-4" style={{ color: "var(--hud-shield)" }} />Chat</span>
+                <span style={{ color: "var(--hud-dim)" }}>{spectatorChatOpen ? "Ocultar" : "Mostrar"}</span>
+              </button>
 
-        {/* Cooldown del Dash / Roll */}
-        <div className="pointer-events-none glass-panel flex items-center gap-3 px-4 py-3 rounded-2xl border border-slate-700/60 shadow-xl backdrop-blur-md">
-          <div className="relative w-11 h-11 rounded-xl bg-slate-800 border border-slate-600 flex items-center justify-center shadow-inner">
-            <Zap className={`w-6 h-6 ${player.equippedWeapon === "MELEE" ? "text-amber-400" : "text-cyan-400"}`} />
-            {player.dashCooldown > 0 && (
-              <div className="absolute inset-0 bg-slate-950/85 rounded-xl flex items-center justify-center text-xs font-mono font-black text-amber-400">
-                {player.dashCooldown.toFixed(1)}s
+              {spectatorChatOpen && (
+                <>
+                  <div className="overflow-y-auto px-3 py-2 space-y-1 text-[14px]" style={{ maxHeight: "140px", scrollbarWidth: "thin" }}>
+                    {chatMessages.length === 0 && (
+                      <p className="text-[13px] text-center py-2" style={{ color: "var(--hud-dim)" }}>Todavía no hay mensajes.</p>
+                    )}
+                    {chatMessages.map(msg => (
+                      <div key={msg.id} className="flex gap-1.5 items-baseline" style={{ color: msg.isSystem ? "var(--hud-gold)" : "var(--hud-text)" }}>
+                        {!msg.isSystem && (
+                          <span className="whitespace-nowrap" style={{ color: msg.isSpectator ? "var(--hud-shield)" : "#6ee7b7" }}>
+                            {msg.senderName}:
+                          </span>
+                        )}
+                        <span className="break-all">{msg.text}</span>
+                      </div>
+                    ))}
+                    <div ref={chatEndRef} />
+                  </div>
+                  <div className="flex gap-2 p-2.5" style={{ borderTop: "2px solid var(--hud-ink)" }}>
+                    <input
+                      type="text"
+                      value={chatInput}
+                      onChange={e => setChatInput(e.target.value.slice(0, 120))}
+                      onKeyDown={e => {
+                        e.stopPropagation();
+                        // Al mandar (o con Escape) se suelta el campo: el juego ignora el
+                        // teclado mientras haya un input con foco y quedabas sin poder moverte
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          sendChatMessage();
+                          e.currentTarget.blur();
+                        } else if (e.key === "Escape") {
+                          e.currentTarget.blur();
+                        }
+                      }}
+                      onKeyUp={e => e.stopPropagation()}
+                      placeholder="Mensaje (Esc para salir)"
+                      className="flex-1 min-w-0 px-2 h-[26px] text-[14px] outline-none"
+                      style={{ background: "#120e18", color: "var(--hud-text)", boxShadow: "0 0 0 2px var(--hud-ink), inset 0 2px 0 var(--hud-shade)" }}
+                    />
+                    <button onClick={sendChatMessage} className="hud-chip h-[26px] cursor-pointer" aria-label="Enviar mensaje">
+                      <Send className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          {/* Dash / rodar con su recarga */}
+          {(() => {
+            const isMelee = player.equippedWeapon === "MELEE";
+            const maxCd = isMelee ? 1.8 : 2.5;
+            const cdPct = Math.min(100, (player.dashCooldown / maxCd) * 100);
+            return (
+              <div className="hud-panel flex items-center gap-3 px-3 py-2.5">
+                <div className="relative w-11 h-11 flex items-center justify-center overflow-hidden" style={{ background: "#120e18", boxShadow: "0 0 0 2px var(--hud-ink)" }}>
+                  <Zap className="w-6 h-6" style={{ color: isMelee ? "var(--hud-gold)" : "var(--hud-shield)" }} />
+                  {player.dashCooldown > 0 && (
+                    <>
+                      <div className="absolute inset-x-0 bottom-0" style={{ height: `${cdPct}%`, background: "rgba(11,8,16,0.82)" }} />
+                      <span className="absolute inset-0 flex items-center justify-center text-[15px] tabular-nums" style={{ color: "var(--hud-gold)" }}>
+                        {player.dashCooldown.toFixed(1)}
+                      </span>
+                    </>
+                  )}
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[16px] leading-none">{isMelee ? "Dash" : "Rodar"}</span>
+                  <span className="flex items-center gap-2 text-[13px] whitespace-nowrap" style={{ color: "var(--hud-dim)" }}>
+                    <span className="hud-key">Espacio</span>
+                    {maxCd.toString().replace(".", ",")} s
+                  </span>
+                </div>
               </div>
-            )}
-          </div>
-          <div>
-            <div className="text-xs font-black tracking-wide text-slate-100">
-              {player.equippedWeapon === "MELEE" ? "DASH FELINO" : "ROLL FELINO"}
-            </div>
-            <div className="text-[10px] font-bold text-slate-400">
-              {player.equippedWeapon === "MELEE" ? "ESPACIO • 1.8s CD (RÁPIDO)" : "ESPACIO • 2.5s CD (ESQUIVAR)"}
-            </div>
-          </div>
+            );
+          })()}
         </div>
 
-        {/* Selector de Armas Suroi (3 Slots) + Widget de Munición y Recarga */}
+        {/* Arma equipada + slots */}
         {!player.isGhost && (
-          <div className="flex flex-col items-center gap-2 pointer-events-none">
-            {/* Widget de Munición y Recarga del Arma Equipada */}
-            <div className="pointer-events-none glass-panel px-4 py-1.5 rounded-2xl flex items-center gap-3 border border-slate-700/60 shadow-2xl backdrop-blur-md">
-              {/* Icono y Nombre */}
-              <div className="flex items-center gap-2 pr-3 border-r border-slate-800">
-                <span className="text-xl">
-                  {WEAPON_DEFS[player.equippedWeapon || "MELEE"]?.icon || "🐾"}
-                </span>
-                <div className="flex flex-col">
-                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-200">
-                    {WEAPON_DEFS[player.equippedWeapon || "MELEE"]?.name || "Garras"}
-                  </span>
-                  <span className="text-[9px] font-bold text-emerald-400">
-                    {player.equippedWeapon === "MELEE" ? "ZARPAZOS (0.5s CD • 1/4 VIDA vs GARRAS)" : (player.equippedWeapon === "GRENADE" ? "LANZABLE (100/70 DMG)" : (player.equippedWeapon === "SHOTGUN" ? "15x5 DMG (75)" : (player.equippedWeapon === "SNIPER" ? "50 DMG • 0.4s CADENCIA" : "20 DMG")))}
-                  </span>
-                </div>
+          <div className="col-start-2 flex flex-col items-center gap-3 pointer-events-none">
+            {/* Guía de teclas: en la sala de espera y los primeros segundos de la partida.
+                Va acá y no a la derecha, que es del minimapa. */}
+            {(showKeys || roomWaiting) && (
+              <div className="hud-panel hidden md:flex items-center gap-4 px-4 py-2.5 text-[13px] whitespace-nowrap" style={{ color: "var(--hud-dim)" }}>
+                <span className="flex items-center gap-1.5"><span className="hud-key">WASD</span> Moverse</span>
+                <span className="flex items-center gap-1.5"><span className="hud-key">F</span> Agarrar</span>
+                <span className="flex items-center gap-1.5"><span className="hud-key">R</span> Recargar</span>
+                <span className="flex items-center gap-1.5"><span className="hud-key">1-3</span> Armas</span>
+                <span className="flex items-center gap-1.5"><span className="hud-key">E</span> Emotes</span>
               </div>
+            )}
 
-              {/* Indicador de Munición */}
-              {player.equippedWeapon === "MELEE" ? (
-                <div className="flex items-center gap-1.5 font-mono text-amber-400 font-black text-sm">
-                  <span>∞</span>
-                  <span className="text-[10px] text-slate-400 font-bold uppercase">INFINITO</span>
-                </div>
-              ) : player.equippedWeapon === "GRENADE" ? (
-                <div className="flex items-center gap-1.5 font-mono">
-                  <span className="text-xl font-black text-lime-400">{player.ammo ?? 3}</span>
-                  <span className="text-[10px] font-bold text-slate-400 uppercase">/ 3 GRANADAS</span>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 font-mono">
-                  <span className={`text-2xl font-black ${(player.ammo || 0) === 0 ? "text-red-400 animate-pulse" : "text-slate-100"}`}>
-                    {player.ammo ?? 12}
-                  </span>
-                  <span className="text-xs font-bold text-slate-500">/</span>
-                  <span className="text-sm font-bold text-emerald-400">
-                    {player.reserveAmmo ?? 24}
-                  </span>
-                </div>
-              )}
+            {(() => {
+              const w = player.equippedWeapon || "MELEE";
+              const detail: Record<string, string> = {
+                MELEE: "Zarpazo cada 0,5 s",
+                GRENADE: "100 de daño al centro, 70 en el borde",
+                SHOTGUN: "5 perdigones de 15",
+                SNIPER: "50 de daño por tiro",
+                LASER: "20 de daño por tiro",
+              };
+              const canReload = (player.ammo ?? 0) < (player.maxAmmo ?? 12) && (player.reserveAmmo ?? 0) > 0;
+              return (
+                <div className="hud-panel flex items-center gap-4 px-4 py-2">
+                  <div className="flex items-center gap-3">
+                    <WeaponSprite id={w} />
+                    <div className="flex flex-col">
+                      <span className="text-[16px] leading-tight">{WEAPON_DEFS[w]?.name || "Garras"}</span>
+                      <span className="text-[13px]" style={{ color: "var(--hud-dim)" }}>{detail[w] || ""}</span>
+                    </div>
+                  </div>
 
-              {/* Botón / Estado de Recarga */}
-              {player.isReloading ? (
-                <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs font-black animate-pulse">
-                  <RotateCcw className="w-3.5 h-3.5 animate-spin" />
-                  <span>RECARGANDO {((player.reloadTimer || 0)).toFixed(1)}s</span>
-                </div>
-              ) : (
-                player.equippedWeapon !== "MELEE" && player.equippedWeapon !== "GRENADE" && (
-                  <button
-                    onClick={triggerReload}
-                    disabled={(player.ammo ?? 0) >= (player.maxAmmo ?? 12) || (player.reserveAmmo ?? 0) <= 0}
-                    className={`pointer-events-auto px-3 py-1 rounded-xl text-xs font-black transition flex items-center gap-1.5 cursor-pointer border ${
-                      (player.ammo ?? 0) < (player.maxAmmo ?? 12) && (player.reserveAmmo ?? 0) > 0
-                        ? "bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40 shadow-sm"
-                        : "bg-slate-900/40 text-slate-600 border-slate-800 cursor-not-allowed"
-                    }`}
-                    title="Recargar arma (R)"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    <span>[R] RECARGAR</span>
-                  </button>
-                )
-              )}
-            </div>
-
-            {/* Selector de Armas Suroi (3 Slots: Slot 1, Slot 2, Slot 3 Garras) */}
-            <div className="pointer-events-none glass-panel p-2 rounded-2xl flex items-center gap-2 border border-slate-700/60 shadow-2xl backdrop-blur-md">
-              {weaponSlots.map((w) => {
-                return (
-                  <button
-                    key={w.key}
-                    type="button"
-                    tabIndex={-1}
-                    disabled={!w.available}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => w.available && selectWeapon(w.id)}
-                    title={w.available ? `Equipar ${w.name} (${w.key})` : `Espacio ${w.key} vacío (recoge un arma en el mapa)`}
-                    className={`pointer-events-auto px-3.5 py-2 rounded-xl flex flex-col items-center min-w-[58px] transition border focus:outline-none ${
-                      !w.available
-                        ? "opacity-35 bg-slate-950/40 border-slate-800/50 text-slate-600 cursor-not-allowed"
-                        : w.active
-                        ? "bg-emerald-500/25 border-emerald-400 text-white scale-105 shadow-lg cursor-pointer"
-                        : "bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 cursor-pointer"
-                    }`}
-                  >
-                    <span className="text-xs font-mono font-black text-slate-400">{w.key}</span>
-                    <span className="text-lg my-0.5">{w.icon}</span>
-                    <span className="text-[9px] font-bold uppercase tracking-wider">
-                      {w.name}
+                  {w === "MELEE" ? null : w === "GRENADE" ? (
+                    <span className="text-[22px] leading-none tabular-nums">
+                      {player.ammo ?? 3}<span className="text-[14px]" style={{ color: "var(--hud-dim)" }}>/3</span>
                     </span>
-                  </button>
-                );
-              })}
+                  ) : (
+                    <span className="text-[24px] leading-none tabular-nums" style={{ color: (player.ammo || 0) === 0 ? "#ef4444" : undefined }}>
+                      {player.ammo ?? 12}
+                      <span className="text-[15px]" style={{ color: "var(--hud-dim)" }}> / {player.reserveAmmo ?? 24}</span>
+                    </span>
+                  )}
+
+                  {player.isReloading ? (
+                    <span className="hud-chip hud-blink" style={{ color: "var(--hud-gold)" }}>
+                      Recargando {(player.reloadTimer || 0).toFixed(1)} s
+                    </span>
+                  ) : (
+                    w !== "MELEE" && w !== "GRENADE" && (
+                      <button
+                        onClick={triggerReload}
+                        disabled={!canReload}
+                        className="hud-chip pointer-events-auto cursor-pointer disabled:cursor-not-allowed"
+                        style={{ opacity: canReload ? 1 : 0.45 }}
+                        title="Recargar (R)"
+                      >
+                        <span className="hud-key">R</span>
+                        Recargar
+                      </button>
+                    )
+                  )}
+                </div>
+              );
+            })()}
+
+            <div className="hud-panel flex items-center gap-3 p-3">
+              {weaponSlots.map((w) => (
+                <button
+                  key={w.key}
+                  type="button"
+                  tabIndex={-1}
+                  disabled={!w.available}
+                  data-active={w.active}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => w.available && selectWeapon(w.id)}
+                  title={w.available ? `Equipar ${w.name} (${w.key})` : `Slot ${w.key} vacío: agarrá un arma del mapa`}
+                  className="hud-slot pointer-events-auto cursor-pointer disabled:cursor-default focus:outline-none"
+                >
+                  <span className="absolute top-1 left-1.5 text-[12px] leading-none" style={{ color: w.active ? "var(--hud-gold)" : "var(--hud-dim)" }}>
+                    {w.key}
+                  </span>
+                  <span className="flex-1 flex items-center">
+                    {w.available ? <WeaponSprite id={w.id} /> : null}
+                  </span>
+                  <span className="text-[12px] leading-none" style={{ color: w.available ? "var(--hud-text)" : "var(--hud-dim)", opacity: w.available ? 1 : 0.6 }}>
+                    {w.name}
+                  </span>
+                </button>
+              ))}
             </div>
           </div>
         )}
 
-        {/* Guía de controles */}
-        <div className="pointer-events-none glass-panel px-5 py-2.5 rounded-2xl border border-slate-800/80 text-[11px] text-slate-400 flex items-center gap-3 shadow-xl backdrop-blur-md">
-          <span><b className="text-slate-100">WASD</b> Moverse</span>
-          <span><b className="text-emerald-400">F</b> Recoger/Cambiar</span>
-          <span><b className="text-amber-400">R</b> Recargar</span>
-          <span><b className="text-slate-100">1-3 / Rueda</b> Armas</span>
-          <span><b className="text-slate-100">E</b> Emotes</span>
-          <span><b className="text-slate-100">Espacio</b> {player.equippedWeapon === "MELEE" ? "Dash rápido" : "Roll esquiva"}</span>
-        </div>
+          {/* Fantasma: la trampa ocupa el lugar de las armas */}
+        {player.isGhost && !victory && !spectatorQueue && (() => {
+          const TRAP_COOLDOWN = 6.0; // igual que el servidor (JungleRoom: trapCooldown = 6.0)
+          const cooldown = player.trapCooldown ?? 0;
+          const ready = cooldown <= 0;
+          const progress = ready ? 1 : Math.max(0, Math.min(1, 1 - cooldown / TRAP_COOLDOWN));
+          return (
+            <div className="col-start-2 hud-panel pointer-events-auto px-4 py-2.5 flex items-center gap-3 w-[min(92vw,400px)]">
+              <SpriteIcon name="efecto-trampa" w={22} h={22} />
+              <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+                <div className="flex justify-between text-[14px]">
+                  <span className="flex items-center gap-1.5 truncate" style={{ color: "var(--hud-shield)" }}>
+                    <span className="hud-key">Clic der.</span> Trampa
+                  </span>
+                  <span className="tabular-nums whitespace-nowrap" style={{ color: ready ? "#6ee7b7" : "var(--hud-gold)" }}>
+                    {ready ? "Lista" : `${cooldown.toFixed(1)} s`}
+                  </span>
+                </div>
+                <div className="flex">
+                  <HudBar
+                    pct={progress * 100}
+                    light={ready ? "#a7f3d0" : "#fde68a"}
+                    base={ready ? "#10b981" : "#f59e0b"}
+                    height={8}
+                  />
+                </div>
+              </div>
+              <button onClick={handleRestart} className="hud-chip cursor-pointer whitespace-nowrap" title="Salir de la partida y volver al menú">
+                Volver al menú
+              </button>
+            </div>
+          );
+        })()}
+
       </div>
     </div>
   );

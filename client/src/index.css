@@ -97,14 +97,6 @@ html, body, #root {
   box-shadow: 0 0 30px rgba(56, 189, 248, 0.6);
 }
 
-.glass-panel {
-  background: rgba(15, 23, 42, 0.70);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border: 1px solid rgba(16, 185, 129, 0.25);
-  border-radius: 20px;
-}
-
 @keyframes float3d {
   0%, 100% {
     transform: translateY(0px) rotateX(0deg) rotateY(0deg);
@@ -118,57 +110,205 @@ html, body, #root {
   animation: float3d 4s ease-in-out infinite;
 }
 
-/* Diep.io Signature Aesthetic */
+/* Menú: mismas piezas pixel que el HUD (antes estilo Diep.io) */
 .diep-title {
-  font-family: 'Ubuntu', 'Orbitron', 'Outfit', sans-serif;
+  font-family: 'Pixelify Sans Variable', 'Outfit', sans-serif;
+  font-weight: 700;
   color: #ffffff;
+  letter-spacing: 0.02em;
+  /* contorno de 4 px en escalones + sombra dura hacia abajo, sin blur */
   text-shadow:
-    -3px -3px 0 #000,
-     3px -3px 0 #000,
-    -3px  3px 0 #000,
-     3px  3px 0 #000,
-     0px  6px 0 #000,
-     0px 10px 18px rgba(0, 0, 0, 0.6);
+    -4px 0 0 #14101c, 4px 0 0 #14101c, 0 -4px 0 #14101c, 0 4px 0 #14101c,
+    -4px -4px 0 #14101c, 4px -4px 0 #14101c, -4px 4px 0 #14101c, 4px 4px 0 #14101c,
+    0 8px 0 #14101c;
 }
 
 .diep-btn-play {
   background-color: #00b2e1;
-  border: 3px solid #0f172a;
-  border-bottom: 6px solid #0081a3;
-  transition: all 0.12s ease;
+  box-shadow: 0 0 0 3px #14101c, inset 0 4px 0 #7dd8f0, inset 0 -4px 0 #0081a3, 0 6px 0 3px #14101c;
+  transition: transform 80ms steps(2);
 }
-
-.diep-btn-play:hover {
-  background-color: #1cc5f2;
-  transform: translateY(-2px);
-}
-
+.diep-btn-play:hover { background-color: #1cc5f2; }
 .diep-btn-play:active {
-  border-bottom-width: 3px;
-  transform: translateY(3px);
+  transform: translateY(4px);
+  box-shadow: 0 0 0 3px #14101c, inset 0 4px 0 #7dd8f0, inset 0 -4px 0 #0081a3, 0 2px 0 3px #14101c;
 }
 
 .diep-btn-pill {
-  border: 2.5px solid #0f172a;
-  border-bottom-width: 4.5px;
-  transition: all 0.12s ease;
+  box-shadow: 0 0 0 2px #14101c, inset 0 2px 0 rgba(255, 255, 255, 0.35), inset 0 -3px 0 rgba(0, 0, 0, 0.3), 0 3px 0 2px #14101c;
+  transition: transform 80ms steps(2);
 }
-
-.diep-btn-pill:hover {
-  filter: brightness(1.1);
-  transform: translateY(-1px);
-}
-
+.diep-btn-pill:hover { filter: brightness(1.12); }
 .diep-btn-pill:active {
-  border-bottom-width: 2.5px;
-  transform: translateY(2px);
+  transform: translateY(3px);
+  box-shadow: 0 0 0 2px #14101c, inset 0 2px 0 rgba(255, 255, 255, 0.35), inset 0 -3px 0 rgba(0, 0, 0, 0.3), 0 0 0 2px #14101c;
 }
 
+/* Tarjeta del personaje: panel del HUD con la grilla de 16 px de los tiles */
 .diep-grid-blueprint {
-  background-color: #1e293b;
-  background-image: 
-    linear-gradient(to right, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  background-color: #231b2b;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.04) 2px, transparent 2px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.04) 2px, transparent 2px);
   background-size: 16px 16px;
+  box-shadow:
+    0 0 0 2px #14101c,
+    inset 2px 2px 0 #3d3348,
+    inset -2px -2px 0 #0b0810,
+    4px 4px 0 2px rgba(11, 8, 16, 0.55);
 }
 
+/* ── HUD pixel art ──────────────────────────────────────────────────────────
+ * Mismos colores que la barra de vida y escudo sobre los gatos (MainScene.redrawHp),
+ * para que el HUD se lea como parte del juego y no como una capa encima. */
+:root {
+  --hud-ink: #14101c;          /* borde de las barras del juego */
+  --hud-panel: #231b2b;
+  --hud-bevel: #3d3348;
+  --hud-shade: #0b0810;
+  --hud-empty: #3a3a44;        /* parte vacía de la barra */
+  --hud-text: #f1ead8;
+  --hud-dim: #9d93ad;
+  --hud-shield: #5dcbfa;
+  --hud-shield-empty: #1e3a5f;
+  --hud-gold: #f5c04a;
+}
+
+.hud {
+  font-family: 'Pixelify Sans Variable', 'Outfit', sans-serif;
+  color: var(--hud-text);
+  -webkit-font-smoothing: none;
+  font-smooth: never;
+}
+
+/* Panel: borde de 2 px, bisel claro arriba-izquierda y sombra dura (sin blur) */
+.hud-panel {
+  background: var(--hud-panel);
+  box-shadow:
+    0 0 0 2px var(--hud-ink),
+    inset 2px 2px 0 var(--hud-bevel),
+    inset -2px -2px 0 var(--hud-shade),
+    4px 4px 0 2px rgba(11, 8, 16, 0.55);
+}
+
+/* Barra: marco oscuro, relleno con franja clara arriba y cortes cada 10 puntos */
+.hud-bar {
+  position: relative;
+  height: 14px;
+  background: var(--hud-empty);
+  box-shadow: 0 0 0 2px var(--hud-ink);
+}
+.hud-bar > .hud-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  transition: width 120ms steps(4);
+}
+.hud-bar > .hud-ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.hud-sprite {
+  image-rendering: pixelated;
+  background-repeat: no-repeat;
+  flex: none;
+}
+
+.hud-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 13px;
+  white-space: nowrap;
+  background: var(--hud-panel);
+  box-shadow: 0 0 0 2px var(--hud-ink), inset 0 2px 0 var(--hud-bevel);
+}
+button.hud-chip:hover { background: var(--hud-bevel); }
+button.hud-chip:focus-visible { outline: 2px solid var(--hud-gold); outline-offset: 2px; }
+
+/* Botón principal del HUD: relleno sólido, bisel y se "hunde" 2 px al apretar */
+.hud-btn {
+  font-family: inherit;
+  font-size: 16px;
+  color: var(--hud-ink);
+  background: #10b981;
+  box-shadow: 0 0 0 2px var(--hud-ink), inset 0 3px 0 #6ee7b7, inset 0 -3px 0 #047857, 0 4px 0 2px var(--hud-ink);
+  transform: translateY(0);
+}
+.hud-btn:hover { background: #34d399; }
+.hud-btn:active { transform: translateY(3px); box-shadow: 0 0 0 2px var(--hud-ink), inset 0 3px 0 #6ee7b7, inset 0 -3px 0 #047857, 0 1px 0 2px var(--hud-ink); }
+.hud-btn:focus-visible { outline: 2px solid var(--hud-gold); outline-offset: 4px; }
+
+/* Parpadeo en dos pasos (sin fundido), para "esperando" y la zona cerrándose */
+@keyframes hud-blink { 50% { opacity: 0.35; } }
+.hud-blink { animation: hud-blink 1s steps(1) infinite; }
+@media (prefers-reduced-motion: reduce) { .hud-blink { animation: none; } }
+
+/* Tecla (WASD, R, Espacio…) */
+.hud-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  font-size: 13px;
+  white-space: nowrap;
+  color: var(--hud-text);
+  background: #120e18;
+  box-shadow: 0 0 0 2px var(--hud-ink), inset 0 -2px 0 var(--hud-bevel);
+}
+
+/* Slot de inventario */
+.hud-slot {
+  position: relative;
+  width: 76px;
+  height: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding-bottom: 5px;
+  background: #120e18;
+  box-shadow: 0 0 0 2px var(--hud-ink), inset 2px 2px 0 var(--hud-shade);
+}
+.hud-slot[data-active="true"] {
+  background: #2c2238;
+  box-shadow: 0 0 0 2px var(--hud-ink), inset 0 0 0 2px var(--hud-gold);
+}
+.hud-slot:not(:disabled):hover { background: #2c2238; }
+
+/* Cuatro bloques que saltan. Solo transform: el compositor lo sigue animando aunque
+ * Phaser tenga bloqueado el hilo principal armando el mapa. */
+@keyframes hud-hop { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-10px); } }
+.hud-hop > span {
+  width: 12px;
+  height: 12px;
+  box-shadow: 0 0 0 2px var(--hud-ink);
+  animation: hud-hop 0.9s steps(3) infinite;
+  will-change: transform;
+}
+.hud-hop > span:nth-child(2) { animation-delay: 0.15s; }
+.hud-hop > span:nth-child(3) { animation-delay: 0.3s; }
+.hud-hop > span:nth-child(4) { animation-delay: 0.45s; }
+@media (prefers-reduced-motion: reduce) { .hud-hop > span { animation-duration: 2.4s; } }
+
+/* Variante azul del botón principal (unirse a una sala) */
+.hud-btn-blue { background: #0ea5e9; box-shadow: 0 0 0 2px var(--hud-ink), inset 0 3px 0 #7dd3fc, inset 0 -3px 0 #0369a1, 0 4px 0 2px var(--hud-ink); }
+.hud-btn-blue:hover { background: #38bdf8; }
+.hud-btn-blue:active { box-shadow: 0 0 0 2px var(--hud-ink), inset 0 3px 0 #7dd3fc, inset 0 -3px 0 #0369a1, 0 1px 0 2px var(--hud-ink); }
+
+/* Códigos de sala: letra del sistema monoespaciada y suavizada. En la letra pixel
+ * 3, 8 y S se confunden, y un código mal leído es una sala a la que no se entra. */
+.room-code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: auto;
+  font-smooth: auto;
+}

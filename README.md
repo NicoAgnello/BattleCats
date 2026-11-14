@@ -33,7 +33,7 @@ Hasta **16 jugadores por sala** (humanos y 6 bots) aparecen en una isla de 8000�
 
 | Acción | Tecla |
 |---|---|
-| Moverse | `W` `A` `S` `D` |
+| Moverse | `W` `A` `S` `D` (modo clásico o "hacia la mira", se elige en el menú) |
 | Apuntar | Mouse |
 | Disparar / atacar | Clic izquierdo (mantener para autodisparo) |
 | Dash o roll | `Espacio` |
@@ -68,6 +68,20 @@ Abrí `http://localhost:3000`. Para probar el multijugador, abrí varias pestañ
 
 Chequeo rápido del servidor: `http://localhost:2567/health`.
 
+### Para jugar en la red o presentar: versión compilada
+
+El modo de arriba es para **programar** (recarga sola al guardar, pero la página son ~1500 archivos sueltos y carga lento desde otras compus). Para **jugar** conviene la versión compilada:
+
+```bash
+npm run jugar
+```
+
+Compila cliente y servidor, y arranca **un solo servidor en un solo puerto (2567)** que sirve la página y el juego. Al arrancar muestra la dirección para los demás, por ejemplo `http://192.168.1.101:2567`. La página pasa a ser un solo archivo JS y carga mucho más rápido.
+
+Si ya está compilado y no cambiaste nada, `npm start` lo arranca sin volver a compilar.
+
+> ⚠️ El servidor de desarrollo (`./start.sh` / `npm run dev`) se **reinicia al guardar cualquier archivo del servidor**, y eso corta las partidas en curso. Para jugar con otros, usar `npm run jugar`.
+
 ## 🧠 Cómo funciona
 
 El **servidor es autoritativo**: decide posiciones válidas, daño, muertes, zona y botín. Los clientes solo mandan lo que el jugador quiere hacer y dibujan lo que reciben. Para que se sienta fluido, cada cliente se mueve y dispara al instante en su pantalla (predicción) y el servidor valida.
@@ -78,13 +92,13 @@ flowchart LR
   S["Servidor Node.js<br>Express + Colyseus<br>JungleRoom a 60 Hz"]
   C -- "WebSocket: acciones<br>move, shoot, dash..." --> S
   S -- "WebSocket: estado (schema)" --> C
-  S -- "SSE: eventos<br>tick, disparos, daño..." --> C
+  S -- "SSE: telemetría del HUD" --> C
 ```
 
 | Canal | Para qué |
 |---|---|
-| **WebSocket (Colyseus)** | Entrar a la sala, enviar acciones y recibir el estado sincronizado |
-| **SSE** (`/api/events`) | Eventos en tiempo real: posiciones, disparos, golpes, explosiones, kills |
+| **WebSocket (Colyseus)** | Entrar a la sala, enviar acciones, recibir el estado sincronizado (30/s) y los eventos (disparos, golpes, explosiones, kills) y medir el ping |
+| **SSE** (`/api/events`) | Telemetría del HUD cada 1 s (clientes conectados, memoria del servidor) |
 
 No hay base de datos: todo el estado vive en la memoria del servidor mientras la sala está abierta.
 

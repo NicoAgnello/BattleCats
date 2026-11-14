@@ -21,8 +21,6 @@ export class SSEManager {
   };
 
   private reconnectTimer: any = null;
-  /** Sala a la que está suscripto el stream (los eventos de juego son por sala). */
-  private roomId = "";
 
   constructor() {
     this.connect();
@@ -34,8 +32,8 @@ export class SSEManager {
       this.es = null;
     }
 
-    const query = this.roomId ? `?roomId=${encodeURIComponent(this.roomId)}` : "";
-    const url = `${SERVER_HTTP}/api/events${query}`;
+    // Solo telemetría del HUD: el estado y los eventos del juego van por el WebSocket
+    const url = `${SERVER_HTTP}/api/events`;
 
     try {
       this.es = new EventSource(url);
@@ -58,65 +56,17 @@ export class SSEManager {
         try {
           const data = JSON.parse(e.data);
           const now = Date.now();
-          const latency = Math.max(1, now - (data.timestamp || now));
+          // El ping no se calcula acá: restar la hora del servidor a la de esta PC solo
+          // da la diferencia entre sus relojes. Lo mide NetworkManager (setPing).
           this.telemetry = {
             connected: true,
             tickRate: data.tickRate || 60,
-            ping: latency,
+            ping: this.telemetry.ping,
             clientsConnected: data.clientsConnected || 1,
             memoryMb: data.memoryMb || 0,
             lastUpdate: now,
           };
           this.notifyTelemetry();
-        } catch {}
-      });
-
-      this.es.addEventListener("kill", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data);
-          window.dispatchEvent(new CustomEvent("sse-kill", { detail: data }));
-        } catch {}
-      });
-
-      this.es.addEventListener("tick", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data);
-          window.dispatchEvent(new CustomEvent("sse-tick", { detail: data }));
-        } catch {}
-      });
-
-      this.es.addEventListener("playerShoot", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data);
-          window.dispatchEvent(new CustomEvent("sse-shoot", { detail: data }));
-        } catch {}
-      });
-
-      this.es.addEventListener("playerMelee", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data);
-          window.dispatchEvent(new CustomEvent("sse-melee", { detail: data }));
-        } catch {}
-      });
-
-      this.es.addEventListener("hit", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data);
-          window.dispatchEvent(new CustomEvent("sse-hit", { detail: data }));
-        } catch {}
-      });
-
-      this.es.addEventListener("playerDash", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data);
-          window.dispatchEvent(new CustomEvent("sse-dash", { detail: data }));
-        } catch {}
-      });
-
-      this.es.addEventListener("explosion", (e: MessageEvent) => {
-        try {
-          const data = JSON.parse(e.data);
-          window.dispatchEvent(new CustomEvent("sse-explosion", { detail: data }));
         } catch {}
       });
 
@@ -136,12 +86,10 @@ export class SSEManager {
     }
   }
 
-  /** Cambia la sala suscripta (vacío = solo telemetría) y reabre el stream. */
-  public setRoom(roomId: string) {
-    if (roomId === this.roomId) return;
-    this.roomId = roomId;
-    clearTimeout(this.reconnectTimer);
-    this.connect();
+  /** Latencia medida con ping/pong por el WebSocket del juego (ida y vuelta, en ms). */
+  public setPing(ms: number) {
+    this.telemetry.ping = ms;
+    this.notifyTelemetry();
   }
 
   private notifyTelemetry() {

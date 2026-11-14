@@ -74,8 +74,8 @@ BattleCats/
 ├── client/                   FRONTEND (React + Vite + Phaser 3)
 │   ├── index.html, vite.config.ts, tailwind.config.js, postcss.config.js, tsconfig.json
 │   ├── public/
-│   │   ├── sprites/          Hojas de sprites pixel art (PNG + JSON estilo Aseprite) y manifest.json
-│   │   └── gameplay.mp4/.webm  Video de fondo de la pantalla de inicio
+│   │   └── sprites/          Hojas de sprites pixel art (PNG + JSON estilo Aseprite) y manifest.json;
+│   │                         también arman el fondo animado del menú (GameplayBackground.tsx)
 │   └── src/
 │       ├── main.tsx          Entrada de React
 │       ├── App.tsx           Alterna entre StartScreen y juego (GameCanvas + UIOverlay + DebugOverlay)
@@ -121,15 +121,15 @@ BattleCats/
 │ NetworkManager ──────────┼─── acciones ────────►│  └─ Colyseus Server      │
 │  (move, shoot, dash...)  │◄── estado (schema) ──┼──     └─ JungleRoom      │
 │                          │                      │         loop a 60 Hz     │
-│ SSEClient ◄──────────────┼── eventos (tick,     │         SpatialHashGrid  │
-│  (EventSource)           │   disparos, daño...) │         GameState en RAM │
+│ SSEClient ◄──────────────┼── telemetría (1 s)   │         SpatialHashGrid  │
+│  (EventSource)           │                      │         GameState en RAM │
 └──────────────────────────┘                      └──────────────────────────┘
 ```
 
 **Reglas de la arquitectura:**
 
 1. **Servidor autoritativo.** El cliente no decide daños, muertes ni recogida de ítems. Solo manda *intenciones* (mover hacia X, disparar hacia Y).
-2. **Dos canales de red** (ver 5.12): WebSocket para el estado y las acciones, SSE para eventos de baja latencia.
+2. **Dos canales de red** (ver 5.12): WebSocket para todo el juego (acciones, estado y eventos), SSE para la telemetría del HUD.
 3. **Todo en memoria.** No hay base de datos: el estado vive en la RAM del servidor mientras la sala está abierta.
 4. **Predicción en el cliente.** Cada cliente se mueve y dispara al instante en su pantalla sin esperar al servidor; los demás jugadores se ven interpolados.
 
@@ -155,7 +155,7 @@ Para cada funcionalidad se indica **cómo funciona**, **qué archivos interviene
 
 ### 5.2 Estado compartido (schemas de Colyseus)
 
-**Cómo funciona.** El servidor tiene un único objeto `GameState` con colecciones (`players`, `projectiles`, `traps`, `bushes`, `obstacles`, `items`) y la `zone`. Colyseus detecta los cambios y manda a cada cliente solo las diferencias (*delta*), a 60 patches por segundo (`setPatchRate(1000/60)`). El cliente tiene una copia del esquema para poder deserializar y se suscribe con `onAdd`, `onChange` y `onRemove` (`bindRoom` en `MainScene.ts`) para crear, actualizar o borrar los objetos que dibuja.
+**Cómo funciona.** El servidor tiene un único objeto `GameState` con colecciones (`players`, `projectiles`, `traps`, `bushes`, `obstacles`, `items`) y la `zone`. Colyseus detecta los cambios y manda a cada cliente solo las diferencias (*delta*), a 30 patches por segundo (`setPatchRate(1000/30)`). La simulación corre a 60 Hz, pero mandar el estado 60 veces por segundo saturaba el WiFi con muchos jugadores; el cliente interpola entre patches, así que a 30 se sigue viendo fluido. El cliente tiene una copia del esquema para poder deserializar y se suscribe con `onAdd`, `onChange` y `onRemove` (`bindRoom` en `MainScene.ts`) para crear, actualizar o borrar los objetos que dibuja.
 
 | Entidad | Datos principales |
 |---|---|
@@ -185,18 +185,29 @@ Para cada funcionalidad se indica **cómo funciona**, **qué archivos interviene
 
 **Cómo funciona.**
 
-1. **Cliente (`MainScene.update`):** lee WASD, calcula la dirección normalizada y mueve a su propio gato **de inmediato** (velocidad 220 px/s; ×1,15 con garras; ×1,4 con buff de velocidad; ×0,75 dentro del río). Aplica choque contra obstáculos con una grilla espacial local. La rotación del gato sigue al mouse.
-2. **Envío:** manda `move { dx, dy, rotation, x, y }` al servidor al instante si cambia la dirección; si no, hasta cada ~16 ms mientras se mueve o gira, y cada 100 ms si está quieto. Incluye la posición que predijo.
+1. **Cliente (`MainScene.update`):** lee WASD, lo convierte en una dirección del mapa según el modo de movimiento elegido (ver abajo), la normaliza y mueve a su propio gato **de inmediato** (velocidad 220 px/s; ×1,15 con garras; ×1,4 con buff de velocidad; ×0,75 dentro del río). Aplica choque contra obstáculos con una grilla espacial local. La rotación del gato sigue al mouse.
+2. **Envío:** manda `move { dx, dy, rotation, x, y }` al servidor al instante si cambian las teclas apretadas; si no, hasta cada ~16 ms mientras se mueve o gira, y cada 100 ms si está quieto. Incluye la posición que predijo.
 3. **Servidor (`onMessage("move")`):** calcula la velocidad que *debería* tener ese jugador (mismas reglas). Si la posición que mandó el cliente está a **≤ 140 px** de la que tiene el servidor, la acepta; si no, ignora la del cliente y avanza desde su propia posición. Después resuelve choques con obstáculos (consulta a la grilla espacial), limita al mapa (30 a 7970 px) y actualiza si el gato está oculto.
-4. **Otros jugadores:** el cliente los dibuja moviéndose suavemente (interpolación LERP) hacia la última posición recibida (`tx`, `ty`), que llega por el estado de Colyseus y por el canal SSE.
+4. **Otros jugadores:** el cliente los dibuja moviéndose suavemente (interpolación LERP) hacia la última posición recibida (`tx`, `ty`), que llega por el estado de Colyseus (30 patches/s).
 
-**Archivos.** `MainScene.ts` (`update`), `NetworkManager.ts` (`sendMove`), `JungleRoom.ts` (handler `move`), `SpatialHashGrid.ts`.
+**Modos de movimiento** (`client/src/game/controls.ts`). Cada jugador elige uno con el botón "Movimiento" del menú o "WASD" del HUD; se guarda en el navegador (`localStorage`).
+
+| Modo | W | S | A / D |
+|---|---|---|---|
+| **Clásico** | hacia arriba de la pantalla | hacia abajo | izquierda / derecha de la pantalla |
+| **Hacia la mira** | hacia donde apunta el mouse | se aleja del mouse | de costado respecto de la mira |
+
+`keysToDirection(adelante, costado, ánguloMira, modo)` hace la cuenta. En el modo "hacia la mira": `dirección = adelante·(cos θ, sin θ) + costado·(−sin θ, cos θ)`, con θ el ángulo hacia el mouse. Con el mouse a menos de 30 px del gato el ángulo salta, así que ahí se usa el último (`moveAim`).
+
+Es **solo del cliente**: al servidor le sigue llegando una dirección en el mapa (`dx, dy`), así que no cambia el protocolo ni la validación. El envío inmediato se dispara al cambiar las teclas y no la dirección: en el modo "hacia la mira" la dirección cambia con cada movimiento del mouse y se mandaría un mensaje por frame; los giros entran por el límite de ~16 ms.
+
+**Archivos.** `MainScene.ts` (`update`, `moveAim`), `controls.ts`, `NetworkManager.ts` (`sendMove`), `JungleRoom.ts` (handler `move`), `SpatialHashGrid.ts`.
 
 **Por qué.** Si el jugador esperara la respuesta del servidor para moverse, sentiría el ping en cada paso. Con predicción el control es instantáneo y el servidor sigue teniendo la última palabra.
 
 ### 5.4 Dash / Roll (barra espaciadora)
 
-**Cómo funciona.** El cliente ejecuta la animación al instante (`performLocalDash`) y manda `dash { dirX, dirY }`. La dirección es la de WASD, o hacia el mouse si está quieto. El servidor valida el cooldown y aplica el desplazamiento:
+**Cómo funciona.** El cliente ejecuta la animación al instante (`performLocalDash`) y manda `dash { dirX, dirY }`. La dirección es la del movimiento (según el modo elegido), o hacia el mouse si está quieto. El servidor valida el cooldown y aplica el desplazamiento:
 
 | | Con garras (MELEE) | Con arma de fuego |
 |---|---|---|
@@ -298,18 +309,17 @@ Los bots usan las mismas reglas de daño, armas, loot y zona que un jugador.
 | | WebSocket (Colyseus) | SSE (`/api/events`) |
 |---|---|---|
 | Dirección | ida y vuelta | solo servidor → cliente |
-| Para qué | entrar a la sala, **enviar acciones** (`move`, `shoot`, `dash`, `reload`, `interact`, `switchWeapon`, `emote`, `placeTrap`, `restart`), **estado sincronizado** | **eventos en tiempo real**: `tick` (posiciones, vida y zona a 30 Hz), `playerShoot`, `playerMelee`, `playerDash`, `hit`, `explosion`, `kill`, `telemetry` (cada 1 s) |
+| Para qué | entrar a la sala, **enviar acciones** (`move`, `shoot`, `dash`, `reload`, `interact`, `switchWeapon`, `emote`, `placeTrap`, `restart`), **estado sincronizado** (30 patches/s) y **eventos** (`playerShoot`, `playerMelee`, `playerDash`, `hit`, `explosion`, `kill`, …), `ping`/`pong` | **telemetría del HUD** (`telemetry` cada 1 s: clientes conectados, memoria, tick rate) |
 | Puerto | 2567 (`ws://`) | 2567 (HTTP `text/event-stream`) |
 
-- `sse.ts` mantiene las respuestas HTTP abiertas. Cada cliente se suscribe a su sala (`/api/events?roomId=…`, lo hace `sseManager.setRoom()` al conectar) y `broadcastRoomSSE` manda los eventos de una sala solo a sus suscriptores; `broadcastSSE` (telemetría) va a todos. Se activa `setNoDelay(true)` (sin algoritmo de Nagle) para que los paquetes salgan inmediatamente.
-- `JungleRoom.sse()` agrega igual el `roomId` a cada evento y el cliente descarta los de otras salas (`onWindow` en `MainScene.ts`).
-- El `tick` solo se arma si la sala tiene suscriptores y lleva los gatos que cambiaron desde el anterior; una vez por segundo va la lista completa.
-- `SSEClient.ts` escucha cada tipo de evento y lo reenvía como `CustomEvent` de `window` (`sse-tick`, `sse-shoot`, …); la escena de Phaser reacciona a esos eventos para animar disparos, golpes, explosiones y actualizar a los demás jugadores. Si se corta, reintenta cada 2,5 s.
-- El HUD muestra el estado de la conexión y el ping estimado con `telemetry`.
+- `sse.ts` mantiene las respuestas HTTP abiertas y `broadcastSSE` manda la telemetría a todos cada 1 s. Se activa `setNoDelay(true)` (sin algoritmo de Nagle) para que los paquetes salgan inmediatamente.
+- `SSEClient.ts` escucha `init` y `telemetry` y los reenvía al HUD como `CustomEvent` (`sse-telemetry`). Si se corta, reintenta cada 2,5 s.
+- **Ping real.** `NetworkManager` manda `ping` por el WebSocket cada 1 s con `performance.now()`; el servidor devuelve el mismo número en `pong` y el cliente resta con su propio reloj (ida y vuelta). Antes se calculaba `hora del cliente - hora del servidor`, que entre máquinas distintas es la diferencia de relojes y no la latencia.
+- **Antes** las posiciones (`tick` a 30 Hz) y los eventos de juego también iban por SSE, además de por el WebSocket: cada dato llegaba dos veces y algunos efectos (explosiones, dash, zarpazo) se dibujaban dos veces. Con 20 jugadores, sacar el duplicado y bajar los patches a 30/s llevó el tráfico por jugador de ~117 KB/s a ~30 KB/s (`loadtest`).
 
-**Por qué.** SSE es simple (HTTP común, reconexión automática del navegador) y alcanza para empujar eventos del servidor. Colyseus (WebSocket) cubre lo bidireccional y la sincronización de estado.
+**Por qué.** SSE es simple (HTTP común, reconexión automática del navegador) y alcanza para empujar datos del servidor que no necesitan respuesta, como la telemetría. El juego va todo por Colyseus (WebSocket): es bidireccional, manda el estado en binario y solo lo que cambió, y tener una sola fuente evita que dos canales se pisen.
 
-**Archivos.** `server/src/sse.ts`, `JungleRoom.ts` (`sse`, bloque "SSE State Tick" en `update`), `SSEClient.ts`, `NetworkManager.ts`, `MainScene.ts` (`onWindow("sse-…")`).
+**Archivos.** `server/src/sse.ts`, `JungleRoom.ts` (`ping`, `setPatchRate`), `SSEClient.ts`, `NetworkManager.ts` (`startPing`), `UIOverlay.tsx` (HUD).
 
 ### 5.13 Render y arte
 

@@ -3,7 +3,7 @@ import { Room } from "colyseus.js";
 import { NetworkClient } from "../NetworkManager";
 import { GameState, Player, Projectile, Trap, Bush, ItemPickup, Obstacle } from "../schema/GameState";
 import { soundManager } from "../SoundManager";
-import { sseManager } from "../SSEClient";
+import { getMoveMode, keysToDirection, MOVE_MODE_EVENT, MoveMode } from "../controls";
 import { STRUCTURES, StructureDef } from "../structures";
 import { buildStructureArt } from "../structureArt";
 import { inRiver, onBridge, RIVER_PATH } from "../river";
@@ -16,6 +16,12 @@ import {
   effectAnimKey, playCatDash, makeItemSprite, worldFrame, worldFrameAt, worldVariant, worldVariantCount,
   CAT_SPRITE_SCALE,
 } from "../catSprites";
+
+/** Radio (px del mundo) alrededor del gato donde el mouse no cambia la dirección de avance. */
+const MOVE_AIM_DEADZONE = 30;
+
+/** Letra pixel del juego (la misma del HUD; se precarga en main.tsx). */
+const GAME_FONT = "'Pixelify Sans Variable', Outfit, sans-serif";
 
 /** Celdas (pixels de 2px) del anillo de recarga, con su posición angular 0..1
  *  desde arriba en sentido horario. */
@@ -33,7 +39,7 @@ const RELOAD_RING: [number, number, number][] = (() => {
 })();
 
 /** Margen inferior del minimapa: queda por encima de la barra de controles del HUD. */
-const MINIMAP_BOTTOM = 84;
+const MINIMAP_BOTTOM = 40;   // la esquina es del minimapa (la guía de teclas va al centro); 40 deja lugar al botón Debug
 
 /** Indicadores de rango/mira en pixel art (false = versión vectorial original). */
 const PIXEL_AIM = true;
@@ -399,8 +405,13 @@ export class MainScene extends Phaser.Scene {
   private styleScore = 0;
   private wasInBush = false;
 
-  private lastSentDx = 0;
-  private lastSentDy = 0;
+  /** Teclas (W−S, D−A) del último envío: en modo "hacia la mira" la dirección cambia
+   *  con cada movimiento del mouse, así que el envío inmediato se dispara por teclas. */
+  private lastSentForward = 0;
+  private lastSentStrafe = 0;
+  /** Modo de movimiento (ver game/controls.ts) y último ángulo usado para moverse. */
+  private moveMode: MoveMode = getMoveMode();
+  private lastMoveAim = 0;
   private lastSentRot = 0;
   private lastMoveSendTime = 0;
 
@@ -528,21 +539,21 @@ export class MainScene extends Phaser.Scene {
     keyBg.fillStyle(0x10b981, 1);
     keyBg.fillRoundedRect(-103, -14, 28, 28, 6);
     const keyText = this.add.text(-89, 0, "F", {
-      fontFamily: "Outfit, Inter, sans-serif",
+      fontFamily: GAME_FONT,
       fontSize: "16px",
       fontStyle: "bold",
       color: "#022c22"
     }).setOrigin(0.5);
 
     this.interactTitleText = this.add.text(-64, -6, "RECOGER ARMA", {
-      fontFamily: "Outfit, Inter, sans-serif",
+      fontFamily: GAME_FONT,
       fontSize: "12px",
       fontStyle: "bold",
       color: "#ffffff"
     }).setOrigin(0, 0.5);
 
     this.interactStatsText = this.add.text(-64, 10, "Daño: 25 | Rango: Medio", {
-      fontFamily: "Outfit, Inter, sans-serif",
+      fontFamily: GAME_FONT,
       fontSize: "10px",
       color: "#94a3b8"
     }).setOrigin(0, 0.5);
@@ -709,125 +720,12 @@ export class MainScene extends Phaser.Scene {
       if (e.detail?.emote) this.triggerEmote(e.detail.emote);
     });
 
+    this.onWindow(MOVE_MODE_EVENT, (e: any) => {
+      if (e.detail === "AIM" || e.detail === "CLASSIC") this.moveMode = e.detail;
+    });
+
     this.onWindow("send-chat", (e: any) => {
       if (e.detail?.text) this.net.sendChat(e.detail.text);
-    });
-
-    // 8. Integración con Pipeline Ultra-Rápido SSE (Server-Sent Events)
-    this.onWindow("sse-tick", (e: any) => {
-      const data = e.detail;
-      if (!data?.players) return;
-      if (data.roomId && this.room && data.roomId !== this.room.roomId) return;
-      data.players.forEach((pState: any) => {
-        const v = this.players.get(pState.id);
-        if (v && !v.isMe) {
-          // Push autoritativo en tiempo real a 60/30Hz sin retardo de websocket
-          v.tx = pState.x;
-          v.ty = pState.y;
-          v.tr = pState.rot;
-          v.hp = pState.hp;
-          v.shield = pState.shield;
-          if (typeof pState.isGhost === "boolean" && pState.isGhost !== v.isGhost) {
-            v.isGhost = pState.isGhost;
-            this.applyGhostTransition(v);
-          }
-          if (pState.w && pState.w !== v.equippedWeapon) {
-            v.equippedWeapon = pState.w;
-            this.drawCat(v);
-          }
-        }
-      });
-      if (data.zone) {
-        this.zone.x = data.zone.x;
-        this.zone.y = data.zone.y;
-        this.zone.r = data.zone.r;
-        this.zoneDirty = true;
-      }
-    });
-
-    this.onWindow("sse-shoot", (e: any) => {
-      const d = e.detail;
-      if (!d || d.id === this.myId) return;
-      if (d.roomId && this.room && d.roomId !== this.room.roomId) return;
-      const p = this.players.get(d.id);
-      if (p) {
-        if (d.weapon === "SHOTGUN") soundManager.playShotgun();
-        else if (d.weapon === "SNIPER") soundManager.playSniper();
-        else if (d.weapon === "GRENADE") soundManager.playGrenadeThrow();
-        else soundManager.playShoot();
-
-        // Retroceso en arma y manos estilo Suroi.io
-        const kick = d.weapon === "SNIPER" ? 10 : d.weapon === "SHOTGUN" ? 8 : 4;
-        p.aimGfx.setPosition(-kick, 0);
-
-        const lx = p.leftHandGfx.getData("baseX") ?? 16;
-        const ly = p.leftHandGfx.getData("baseY") ?? -4;
-        const rx = p.rightHandGfx.getData("baseX") ?? 12;
-        const ry = p.rightHandGfx.getData("baseY") ?? 6.5;
-
-        p.leftHandGfx.setPosition(lx - kick, ly);
-        p.rightHandGfx.setPosition(rx - kick, ry);
-
-        this.tweens.killTweensOf([p.aimGfx, p.leftHandGfx, p.rightHandGfx]);
-        this.tweens.add({ targets: p.aimGfx, x: 0, duration: 65, ease: "Quad.easeOut" });
-        this.tweens.add({ targets: p.leftHandGfx, x: lx, duration: 65, ease: "Quad.easeOut" });
-        this.tweens.add({ targets: p.rightHandGfx, x: rx, duration: 65, ease: "Quad.easeOut" });
-      }
-    });
-
-    this.onWindow("sse-melee", (e: any) => {
-      const d = e.detail;
-      if (!d || d.id === this.myId) return;
-      if (d.roomId && this.room && d.roomId !== this.room.roomId) return;
-      this.showGraphicClawSlash(d.x, d.y, d.angle);
-
-      const p = this.players.get(d.id);
-      if (p) {
-        p.punchAlternator = (p.punchAlternator || 0) + 1;
-        const isRight = p.punchAlternator % 2 === 1;
-        const hand = isRight ? p.rightHandGfx : p.leftHandGfx;
-        const bx = hand.getData("baseX") ?? 18;
-        const by = hand.getData("baseY") ?? (isRight ? 13 : -13);
-
-        this.tweens.killTweensOf(hand);
-        hand.setPosition(bx + 15, by);
-        this.tweens.add({ targets: hand, x: bx, duration: 110, ease: "Cubic.easeOut" });
-      }
-    });
-
-    this.onWindow("sse-dash", (e: any) => {
-      const d = e.detail;
-      if (!d || d.id === this.myId) return;
-      if (d.roomId && this.room && d.roomId !== this.room.roomId) return;
-      const p = this.players.get(d.id);
-      if (p) {
-        if (d.isRoll) {
-          this.playRollAnimation(p, d.dirX || 0, d.dirY || 0, 120, d.x, d.y);
-        } else {
-          this.playFastDashAnimation(p, d.dirX || 0, d.dirY || 0, 160, d.x, d.y);
-        }
-      }
-    });
-
-    this.onWindow("sse-hit", (e: any) => {
-      const d = e.detail;
-      if (!d) return;
-      if (d.roomId && this.room && d.roomId !== this.room.roomId) return;
-      // sin número de daño flotante: el daño se marca en la barra de vida (destello rojo)
-      this.createSparksFX(d.x, d.y, 0xff4444);
-      if (d.victimId === this.myId) {
-        soundManager.playHit();
-        this.cameras.main.shake(120, 0.012);
-      }
-    });
-
-    this.onWindow("sse-explosion", (e: any) => {
-      const d = e.detail;
-      if (!d) return;
-      if (d.roomId && this.room && d.roomId !== this.room.roomId) return;
-      soundManager.playExplosion();
-      this.createExplosionFX(d.x, d.y, d.type === "GRENADE", d.radius || 140, d.innerRadius || 70);
-      this.cameras.main.shake(d.type === "GRENADE" ? 320 : 220, d.type === "GRENADE" ? 0.022 : 0.016);
     });
 
     // 9. Conectar sala Colyseus
@@ -1115,36 +1013,30 @@ export class MainScene extends Phaser.Scene {
     // (sin texto "RECARGANDO...": lo indica el ícono pixel de flechas girando)
   }
 
+  /** Ángulo que usa el modo "hacia la mira". Con el mouse casi encima del gato el
+   *  ángulo salta de un lado a otro, así que ahí se mantiene el último. */
+  private moveAim(me: VPlayer, wx: number, wy: number, aim: number): number {
+    if (Math.hypot(wx - me.container.x, wy - me.container.y) > MOVE_AIM_DEADZONE) this.lastMoveAim = aim;
+    return this.lastMoveAim;
+  }
+
   private performLocalDash(me: VPlayer) {
     if (this.room?.state?.status === "LOBBY") return;
     const isTyping = typeof document !== "undefined" && (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA");
     if (isTyping) return;
     if (me.isGhost || (me.dashCooldown || 0) > 0 || (me.stunTimer || 0) > 0) return;
 
-    let dx = 0;
-    let dy = 0;
-    if (this.keys.W.isDown) dy -= 1;
-    if (this.keys.S.isDown) dy += 1;
-    if (this.keys.A.isDown) dx -= 1;
-    if (this.keys.D.isDown) dx += 1;
-
-    let dirX = 0;
-    let dirY = 0;
+    const forward = (this.keys.W.isDown ? 1 : 0) - (this.keys.S.isDown ? 1 : 0);
+    const strafe = (this.keys.D.isDown ? 1 : 0) - (this.keys.A.isDown ? 1 : 0);
+    const ptrX = this.windowPointerX ?? this.input.activePointer.x;
+    const ptrY = this.windowPointerY ?? this.input.activePointer.y;
+    const wp = this.cameras.main.getWorldPoint(ptrX, ptrY);
+    const angle = Phaser.Math.Angle.Between(me.container.x, me.container.y, wp.x, wp.y);
+    // Con teclas: hacia donde lleva el movimiento (según el modo). Quieto: hacia el mouse.
+    const [dx, dy] = keysToDirection(forward, strafe, this.moveAim(me, wp.x, wp.y, angle), this.moveMode);
     const mag = Math.hypot(dx, dy);
-
-    if (mag > 0) {
-      // Movimiento con WASD activo: se desplaza hacia la dirección de WASD
-      dirX = dx / mag;
-      dirY = dy / mag;
-    } else {
-      // Estacionario (sin movimiento): se desplaza hacia donde apunta el cursor del ratón
-      const ptrX = this.windowPointerX ?? this.input.activePointer.x;
-      const ptrY = this.windowPointerY ?? this.input.activePointer.y;
-      const wp = this.cameras.main.getWorldPoint(ptrX, ptrY);
-      const angle = Phaser.Math.Angle.Between(me.container.x, me.container.y, wp.x, wp.y);
-      dirX = Math.cos(angle);
-      dirY = Math.sin(angle);
-    }
+    const dirX = mag > 0 ? dx / mag : Math.cos(angle);
+    const dirY = mag > 0 ? dy / mag : Math.sin(angle);
 
     const isMelee = me.equippedWeapon === "MELEE";
     const isRoll = !isMelee;
@@ -1411,11 +1303,6 @@ export class MainScene extends Phaser.Scene {
     try {
       this.room = await this.net.connect(this.playerOptions);
       this.myId = this.net.sessionId;
-      // eventos SSE solo de esta sala
-      sseManager.setRoom(this.room.roomId);
-      const leaveSse = () => sseManager.setRoom("");
-      this.events.once(Phaser.Scenes.Events.SHUTDOWN, leaveSse);
-      this.events.once(Phaser.Scenes.Events.DESTROY, leaveSse);
       emit("conn", "CONNECTED");
       console.log("✅ Conectado como:", this.myId);
       this.bindRoom();
@@ -1601,6 +1488,48 @@ export class MainScene extends Phaser.Scene {
 
     this.room.onMessage("playerMelee", (d: any) => {
       this.showGraphicClawSlash(d.x, d.y, d.angle);
+      if (d.id === this.myId) return;   // la mano propia ya se animó al atacar
+      const p = this.players.get(d.id);
+      if (p) {
+        p.punchAlternator = (p.punchAlternator || 0) + 1;
+        const isRight = p.punchAlternator % 2 === 1;
+        const hand = isRight ? p.rightHandGfx : p.leftHandGfx;
+        const bx = hand.getData("baseX") ?? 18;
+        const by = hand.getData("baseY") ?? (isRight ? 13 : -13);
+
+        this.tweens.killTweensOf(hand);
+        hand.setPosition(bx + 15, by);
+        this.tweens.add({ targets: hand, x: bx, duration: 110, ease: "Cubic.easeOut" });
+      }
+    });
+
+    // Disparo de otro jugador: sonido y retroceso (las balas llegan por el estado)
+    this.room.onMessage("playerShoot", (d: any) => {
+      if (d.id === this.myId) return;   // el disparo propio ya se predijo localmente
+      const p = this.players.get(d.id);
+      if (p) {
+        if (d.weapon === "SHOTGUN") soundManager.playShotgun();
+        else if (d.weapon === "SNIPER") soundManager.playSniper();
+        else if (d.weapon === "GRENADE") soundManager.playGrenadeThrow();
+        else soundManager.playShoot();
+
+        // Retroceso en arma y manos estilo Suroi.io
+        const kick = d.weapon === "SNIPER" ? 10 : d.weapon === "SHOTGUN" ? 8 : 4;
+        p.aimGfx.setPosition(-kick, 0);
+
+        const lx = p.leftHandGfx.getData("baseX") ?? 16;
+        const ly = p.leftHandGfx.getData("baseY") ?? -4;
+        const rx = p.rightHandGfx.getData("baseX") ?? 12;
+        const ry = p.rightHandGfx.getData("baseY") ?? 6.5;
+
+        p.leftHandGfx.setPosition(lx - kick, ly);
+        p.rightHandGfx.setPosition(rx - kick, ry);
+
+        this.tweens.killTweensOf([p.aimGfx, p.leftHandGfx, p.rightHandGfx]);
+        this.tweens.add({ targets: p.aimGfx, x: 0, duration: 65, ease: "Quad.easeOut" });
+        this.tweens.add({ targets: p.leftHandGfx, x: lx, duration: 65, ease: "Quad.easeOut" });
+        this.tweens.add({ targets: p.rightHandGfx, x: rx, duration: 65, ease: "Quad.easeOut" });
+      }
     });
 
     this.room.onMessage("playerReloading", (d: any) => {
@@ -1874,7 +1803,7 @@ export class MainScene extends Phaser.Scene {
 
       // Rótulo interior táctico en el suelo
       const floorLabel = this.add.text(0, 0, def.name.toUpperCase(), {
-        fontFamily: "Outfit, Inter, sans-serif",
+        fontFamily: GAME_FONT,
         fontSize: "15px",
         fontStyle: "bold",
         color: "rgba(255, 255, 255, 0.22)",
@@ -1933,7 +1862,7 @@ export class MainScene extends Phaser.Scene {
       roofContainer.add(roofSignBg);
 
       const roofLabel = this.add.text(0, 0, `🏠 ${def.name.toUpperCase()}`, {
-        fontFamily: "Outfit, Inter, sans-serif",
+        fontFamily: GAME_FONT,
         fontSize: "13px",
         fontStyle: "bold",
         color: "#f8fafc",
@@ -3245,7 +3174,7 @@ export class MainScene extends Phaser.Scene {
     const label = this.add.text(0, -54,
       isMe ? "" : (p.name || id.slice(0, 6)),   // sin "TÚ" sobre el propio gato
       {
-        fontFamily: "Outfit, Inter, sans-serif",
+        fontFamily: GAME_FONT,
         fontSize: "12px",
         fontStyle: "bold",
         color: isMe ? "#10b981" : "#f1f5f9",
@@ -3305,7 +3234,7 @@ export class MainScene extends Phaser.Scene {
     container.add(invulnerableShieldGfx);
 
     const invulnerableBadge = this.add.text(0, -68, "🛡️ 15s", {
-      fontFamily: "Outfit, Inter, sans-serif",
+      fontFamily: GAME_FONT,
       fontSize: "11px",
       fontStyle: "bold",
       color: "#38bdf8",
@@ -3707,9 +3636,8 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
-  /** Pasaje vivo <-> fantasma (HUD del personaje, tumba y sprite). Se llama tanto
-   *  desde la sincronización de Colyseus como desde el tick SSE: si solo dependía de
-   *  uno, un bot muerto podía seguir figurando vivo (punto rojo quieto en el minimapa). */
+  /** Pasaje vivo <-> fantasma (HUD del personaje, tumba y sprite). Se llama desde la
+   *  sincronización de Colyseus (updatePlayer) cuando cambia isGhost. */
   private applyGhostTransition(v: VPlayer) {
     if (v.isGhost) {
       v.hpBg.setVisible(false);
@@ -3741,7 +3669,7 @@ export class MainScene extends Phaser.Scene {
     if (stone) box.add(stone);
     else box.add(this.add.text(0, 0, "🪦", { fontSize: "28px" }).setOrigin(0.5));
     const name = this.add.text(0, -34, v.name, {
-      fontFamily: "Outfit, Inter, sans-serif", fontSize: "10px", fontStyle: "bold",
+      fontFamily: GAME_FONT, fontSize: "10px", fontStyle: "bold",
       color: "#cbd5e1", stroke: "#000000", strokeThickness: 3,
     }).setOrigin(0.5).setAlpha(0.85);
     box.add(name);
@@ -3852,7 +3780,7 @@ export class MainScene extends Phaser.Scene {
     if (!this.isInCameraView(x, y, 60)) return;
     if (!this.canSeeWorldPoint(x, y)) return;
     const txt = this.add.text(x, y - 20, text, {
-      fontFamily: "Outfit, Inter, sans-serif",
+      fontFamily: GAME_FONT,
       fontSize: "16px",
       fontStyle: "bold",
       color,
@@ -4087,18 +4015,19 @@ export class MainScene extends Phaser.Scene {
       const isTyping = typeof document !== "undefined" && (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA");
       const isStunned = (me.stunTimer ?? 0) > 0;
 
-      let dx = 0, dy = 0;
+      let forward = 0, strafe = 0;
       if (!isLobby && !isTyping && !isStunned) {
-        if (this.keys.W.isDown) dy -= 1;
-        if (this.keys.S.isDown) dy += 1;
-        if (this.keys.A.isDown) dx -= 1;
-        if (this.keys.D.isDown) dx += 1;
+        if (this.keys.W.isDown) forward += 1;
+        if (this.keys.S.isDown) forward -= 1;
+        if (this.keys.D.isDown) strafe += 1;
+        if (this.keys.A.isDown) strafe -= 1;
       }
 
       const ptrX = this.windowPointerX ?? this.input.activePointer.x;
       const ptrY = this.windowPointerY ?? this.input.activePointer.y;
       const wp = this.cameras.main.getWorldPoint(ptrX, ptrY);
       const rot = Phaser.Math.Angle.Between(me.container.x, me.container.y, wp.x, wp.y);
+      const [dx, dy] = keysToDirection(forward, strafe, this.moveAim(me, wp.x, wp.y, rot), this.moveMode);
 
       // Rotación 0ms ultra reactiva (Responsive Rotation estilo Suroi)
       me.tr = rot;
@@ -4213,14 +4142,14 @@ export class MainScene extends Phaser.Scene {
       const rotDiff = Math.abs(rot - this.lastSentRot);
       const sinceLast = time - this.lastMoveSendTime;
       if (
-        dx !== this.lastSentDx ||
-        dy !== this.lastSentDy ||
-        ((dx !== 0 || dy !== 0 || rotDiff > 0.02) && sinceLast >= 16) ||
+        forward !== this.lastSentForward ||
+        strafe !== this.lastSentStrafe ||
+        ((forward !== 0 || strafe !== 0 || rotDiff > 0.02) && sinceLast >= 16) ||
         sinceLast >= 100
       ) {
         this.net.sendMove(dx, dy, rot, me.container.x, me.container.y);
-        this.lastSentDx = dx;
-        this.lastSentDy = dy;
+        this.lastSentForward = forward;
+        this.lastSentStrafe = strafe;
         this.lastSentRot = rot;
         this.lastMoveSendTime = time;
       }
@@ -4291,7 +4220,8 @@ export class MainScene extends Phaser.Scene {
     // 2. Interpolación Suave (Lerp) para Jugadores Remotos y Frustum Culling
     this.players.forEach(v => {
       const isLocal = v.isMe;
-      const canSee = isLocal || this.canSeeWorldPoint(v.container.x, v.container.y);
+      // los ajenos escondidos (arbusto o casa) o fantasmas no se dibujan
+      const canSee = isLocal || (!v.isHidden && !v.isGhost && this.canSeeWorldPoint(v.container.x, v.container.y));
       const inCam = isLocal || (canSee && this.isInCameraView(v.container.x, v.container.y, 120));
 
       if (isLocal) {
@@ -5352,17 +5282,10 @@ export class MainScene extends Phaser.Scene {
   }
 
   /** Escucha un evento de la ventana y lo quita al cerrar la escena (si no, al jugar
-   *  otra partida quedaban vivos los de la anterior). Los eventos SSE de otra sala se
-   *  ignoran: los bots se llaman igual en todas las salas (bot_1..bot_6). */
+   *  otra partida quedaban vivos los de la anterior). */
   private windowHandlers: [string, EventListener][] = [];
   private onWindow(type: string, fn: (e: any) => void) {
-    const h: EventListener = (e: any) => {
-      if (type.startsWith("sse-")) {
-        const rid = e?.detail?.roomId;
-        if (!this.room || (rid && rid !== this.room.roomId)) return;
-      }
-      fn(e);
-    };
+    const h: EventListener = (e: any) => fn(e);
     if (!this.windowHandlers.length) {
       const off = () => { this.windowHandlers.forEach(([t, f]) => window.removeEventListener(t, f)); this.windowHandlers = []; };
       this.events.once(Phaser.Scenes.Events.SHUTDOWN, off);

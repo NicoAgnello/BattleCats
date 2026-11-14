@@ -48,7 +48,7 @@ export const App: React.FC = () => {
           {canvasReady && <GameCanvas playerConfig={playerConfig} />}
 
           {/* External React UI Overlay */}
-          <UIOverlay onOpenMenu={handleOpenMenu} />
+          <UIOverlay onOpenMenu={handleOpenMenu} playerConfig={playerConfig} />
 
           {/* Debug console — visible in any browser without DevTools */}
           <DebugOverlay />

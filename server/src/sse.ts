@@ -1,12 +1,11 @@
 import express from "express";
 
 /**
- * Clientes SSE. Cada conexión puede suscribirse a una sala (?roomId=...): los eventos
- * de una sala (tick, disparos, golpes...) solo van a sus suscriptores. Antes iban a
- * todos, y con varias salas cada navegador recibía y descartaba el tráfico de las demás.
+ * Clientes SSE. El stream lleva solo la telemetría del HUD (estado del servidor cada
+ * 1 s). El juego (estado y eventos) va únicamente por el WebSocket de Colyseus: antes
+ * las posiciones y los eventos se mandaban también por acá y llegaban dos veces.
  */
 export const sseClients = new Set<express.Response>();
-const roomSubscribers = new Map<string, Set<express.Response>>();
 
 function write(client: express.Response, payload: string) {
   try {
@@ -23,18 +22,6 @@ export function broadcastSSE(type: string, data: any) {
   sseClients.forEach((client) => write(client, payload));
 }
 
-export function hasRoomSubscribers(roomId: string): boolean {
-  return (roomSubscribers.get(roomId)?.size ?? 0) > 0;
-}
-
-/** Evento de una sala: solo para los clientes suscriptos a ella. */
-export function broadcastRoomSSE(roomId: string, type: string, data: any) {
-  const subs = roomSubscribers.get(roomId);
-  if (!subs || subs.size === 0) return;
-  const payload = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
-  subs.forEach((client) => write(client, payload));
-}
-
 export function setupSSERoutes(app: express.Express) {
   // SSE Event Stream Endpoint
   app.get("/api/events", (req, res) => {
@@ -48,12 +35,6 @@ export function setupSSERoutes(app: express.Express) {
     res.flushHeaders?.();
 
     sseClients.add(res);
-    const roomId = typeof req.query.roomId === "string" ? req.query.roomId : "";
-    if (roomId) {
-      let subs = roomSubscribers.get(roomId);
-      if (!subs) roomSubscribers.set(roomId, (subs = new Set()));
-      subs.add(res);
-    }
 
     // Immediate Welcome Packet
     const initMsg = {
@@ -66,11 +47,6 @@ export function setupSSERoutes(app: express.Express) {
 
     req.on("close", () => {
       sseClients.delete(res);
-      if (roomId) {
-        const subs = roomSubscribers.get(roomId);
-        subs?.delete(res);
-        if (subs && subs.size === 0) roomSubscribers.delete(roomId);
-      }
     });
   });
 
