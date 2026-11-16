@@ -618,6 +618,7 @@ export class JungleRoom extends Room<GameState> {
       const t0 = performance.now();
       this.update(deltaTime / 1000);
       record(this.perf.sim, performance.now() - t0);
+      this.perf.ticks++;
     }, 1000 / 60);
   }
 
@@ -632,6 +633,7 @@ export class JungleRoom extends Room<GameState> {
     const t0 = performance.now();
     const hasChanges = super.broadcastPatch();
     record(this.perf.patch, performance.now() - t0);
+    this.perf.patches++;
     this.perf.roomCode = this.state.roomCode;
     this.perf.clients = this.clients.length;
     this.perf.players = this.state.players.size;

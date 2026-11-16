@@ -177,9 +177,9 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
   const [showKeys, setShowKeys] = useState(true);
   const [moveMode, setMoveModeState] = useState<MoveMode>(getMoveMode);
   const [keysEpoch, setKeysEpoch] = useState(0);
-  const [sseInfo, setSseInfo] = useState<{ connected: boolean; tickRate: number; ping: number }>({
+  const [sseInfo, setSseInfo] = useState<{ connected: boolean; tickRate: number | null; ping: number }>({
     connected: false,
-    tickRate: 60,
+    tickRate: null,
     ping: 0,
   });
 
@@ -205,7 +205,7 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
     if (d) {
       setSseInfo({
         connected: !!d.connected,
-        tickRate: d.tickRate || 60,
+        tickRate: typeof d.tickRate === "number" ? d.tickRate : null,
         ping: d.ping || 0,
       });
     }
@@ -573,8 +573,8 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onOpenMenu, playerConfig }
               />
               {conn === "CONNECTING" ? "Conectando…" : conn === "ERROR" ? "Sin conexión" : null}
             </span>
-            <span className="hud-chip" title="Server-Sent Events: telemetría del servidor. El ping se mide ida y vuelta por WebSocket.">
-              <span style={{ color: "var(--hud-shield)" }}>SSE {sseInfo.tickRate} Hz</span>
+            <span className="hud-chip" title="Server-Sent Events: telemetría del servidor. Hz = ciclos de simulación por segundo de tu sala, medidos en el servidor. El ping se mide ida y vuelta por WebSocket.">
+              <span style={{ color: "var(--hud-shield)" }}>SSE{sseInfo.tickRate !== null ? ` ${sseInfo.tickRate} Hz` : ""}</span>
               {sseInfo.connected && <span style={{ color: "var(--hud-dim)" }}>{sseInfo.ping} ms</span>}
             </span>
             <button

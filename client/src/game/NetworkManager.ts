@@ -62,6 +62,7 @@ export class NetworkClient {
       throw new Error("Conexión cancelada al volver al menú");
     }
     this.startPing(this.room);
+    sseManager.setRoom(this.room.roomId);
     return this.room;
   }
 
@@ -86,6 +87,7 @@ export class NetworkClient {
   public disconnect() {
     this.cancelled = true;
     this.stopPing();
+    sseManager.setRoom("");
     if (this.room) {
       this.room.leave();
       this.room = null;
